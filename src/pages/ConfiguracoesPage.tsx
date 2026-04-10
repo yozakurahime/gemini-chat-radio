@@ -6,8 +6,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Settings, Bot, MapPin, Save, RotateCcw, Send } from "lucide-react";
+import { Settings, Bot, MapPin, Save, RotateCcw, Send, Users } from "lucide-react";
 import { toast } from "sonner";
+import UserManagement from "@/components/settings/UserManagement";
 
 export default function ConfiguracoesPage() {
   const [aiContext, setAiContext] = useState(
@@ -53,7 +54,6 @@ export default function ConfiguracoesPage() {
   const handleTestAI = async () => {
     if (!testMessage.trim()) return;
     setIsTestLoading(true);
-    // Mock response for now - will integrate with Lovable AI Gateway
     setTimeout(() => {
       setTestResponse(
         "Olá! 🏋️ Baseado no nosso contexto, posso responder: A academia funciona de segunda a sexta das 6h às 22h. Deseja saber mais sobre nossos planos?"
@@ -73,8 +73,11 @@ export default function ConfiguracoesPage() {
         <h1 className="text-2xl font-bold">Configurações</h1>
       </div>
 
-      <Tabs defaultValue="ai" className="space-y-4">
+      <Tabs defaultValue="users" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="users" className="gap-1">
+            <Users className="h-4 w-4" /> Atendentes
+          </TabsTrigger>
           <TabsTrigger value="ai" className="gap-1">
             <Bot className="h-4 w-4" /> Contexto da IA
           </TabsTrigger>
@@ -82,6 +85,10 @@ export default function ConfiguracoesPage() {
             <MapPin className="h-4 w-4" /> Localização
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="users">
+          <UserManagement />
+        </TabsContent>
 
         <TabsContent value="ai" className="space-y-4">
           <Card>
@@ -117,7 +124,6 @@ export default function ConfiguracoesPage() {
             </CardContent>
           </Card>
 
-          {/* Test AI */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Testar Resposta da IA</CardTitle>
