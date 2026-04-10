@@ -106,7 +106,7 @@ export default function RadioReports() {
         </Card>
         <Card>
           <CardContent className="p-4 text-center">
-            <Building2 className="h-5 w-5 mx-auto text-yellow-500 mb-1" />
+            <Building2 className="h-5 w-5 mx-auto text-muted-foreground mb-1" />
             <span className="text-xl font-bold block">{expiringContracts.length}</span>
             <span className="text-xs text-muted-foreground">A vencer (30 dias)</span>
           </CardContent>
