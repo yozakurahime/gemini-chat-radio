@@ -14,6 +14,344 @@ export type Database = {
   }
   public: {
     Tables: {
+      ad_contracts: {
+        Row: {
+          ad_duration_seconds: number
+          advertiser_id: string
+          contract_status: string
+          created_at: string
+          daily_executions: number
+          end_date: string
+          id: string
+          notes: string | null
+          payment_status: string
+          plan_name: string
+          segment_exclusive: boolean
+          start_date: string
+          updated_at: string
+          value_cents: number
+        }
+        Insert: {
+          ad_duration_seconds?: number
+          advertiser_id: string
+          contract_status?: string
+          created_at?: string
+          daily_executions?: number
+          end_date: string
+          id?: string
+          notes?: string | null
+          payment_status?: string
+          plan_name?: string
+          segment_exclusive?: boolean
+          start_date: string
+          updated_at?: string
+          value_cents?: number
+        }
+        Update: {
+          ad_duration_seconds?: number
+          advertiser_id?: string
+          contract_status?: string
+          created_at?: string
+          daily_executions?: number
+          end_date?: string
+          id?: string
+          notes?: string | null
+          payment_status?: string
+          plan_name?: string
+          segment_exclusive?: boolean
+          start_date?: string
+          updated_at?: string
+          value_cents?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ad_contracts_advertiser_id_fkey"
+            columns: ["advertiser_id"]
+            isOneToOne: false
+            referencedRelation: "advertisers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ad_execution_logs: {
+        Row: {
+          actual_duration_seconds: number | null
+          ad_id: string | null
+          advertiser_id: string | null
+          contract_id: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          played_at: string
+          scheduled_time: string | null
+          status: string
+        }
+        Insert: {
+          actual_duration_seconds?: number | null
+          ad_id?: string | null
+          advertiser_id?: string | null
+          contract_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          played_at?: string
+          scheduled_time?: string | null
+          status?: string
+        }
+        Update: {
+          actual_duration_seconds?: number | null
+          ad_id?: string | null
+          advertiser_id?: string | null
+          contract_id?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          played_at?: string
+          scheduled_time?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ad_execution_logs_ad_id_fkey"
+            columns: ["ad_id"]
+            isOneToOne: false
+            referencedRelation: "ads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ad_execution_logs_advertiser_id_fkey"
+            columns: ["advertiser_id"]
+            isOneToOne: false
+            referencedRelation: "advertisers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ad_execution_logs_contract_id_fkey"
+            columns: ["contract_id"]
+            isOneToOne: false
+            referencedRelation: "ad_contracts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ad_schedule: {
+        Row: {
+          ad_id: string
+          contract_id: string | null
+          created_at: string
+          execution_status: string
+          id: string
+          schedule_date: string
+          scheduled_time: string
+        }
+        Insert: {
+          ad_id: string
+          contract_id?: string | null
+          created_at?: string
+          execution_status?: string
+          id?: string
+          schedule_date?: string
+          scheduled_time: string
+        }
+        Update: {
+          ad_id?: string
+          contract_id?: string | null
+          created_at?: string
+          execution_status?: string
+          id?: string
+          schedule_date?: string
+          scheduled_time?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ad_schedule_ad_id_fkey"
+            columns: ["ad_id"]
+            isOneToOne: false
+            referencedRelation: "ads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ad_schedule_contract_id_fkey"
+            columns: ["contract_id"]
+            isOneToOne: false
+            referencedRelation: "ad_contracts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ads: {
+        Row: {
+          advertiser_id: string
+          allowed_hours_end: string | null
+          allowed_hours_start: string | null
+          approved_at: string | null
+          audio_url: string | null
+          contract_id: string | null
+          created_at: string
+          duration_seconds: number
+          id: string
+          name: string
+          priority: number
+          status: string
+          updated_at: string
+          volume: number
+        }
+        Insert: {
+          advertiser_id: string
+          allowed_hours_end?: string | null
+          allowed_hours_start?: string | null
+          approved_at?: string | null
+          audio_url?: string | null
+          contract_id?: string | null
+          created_at?: string
+          duration_seconds?: number
+          id?: string
+          name: string
+          priority?: number
+          status?: string
+          updated_at?: string
+          volume?: number
+        }
+        Update: {
+          advertiser_id?: string
+          allowed_hours_end?: string | null
+          allowed_hours_start?: string | null
+          approved_at?: string | null
+          audio_url?: string | null
+          contract_id?: string | null
+          created_at?: string
+          duration_seconds?: number
+          id?: string
+          name?: string
+          priority?: number
+          status?: string
+          updated_at?: string
+          volume?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ads_advertiser_id_fkey"
+            columns: ["advertiser_id"]
+            isOneToOne: false
+            referencedRelation: "advertisers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ads_contract_id_fkey"
+            columns: ["contract_id"]
+            isOneToOne: false
+            referencedRelation: "ad_contracts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      advertisers: {
+        Row: {
+          company_name: string
+          contact_person: string | null
+          created_at: string
+          id: string
+          notes: string | null
+          phone: string | null
+          segment_id: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          company_name: string
+          contact_person?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          phone?: string | null
+          segment_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          company_name?: string
+          contact_person?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          phone?: string | null
+          segment_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "advertisers_segment_id_fkey"
+            columns: ["segment_id"]
+            isOneToOne: false
+            referencedRelation: "business_segments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      business_segments: {
+        Row: {
+          active: boolean
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      radio_settings: {
+        Row: {
+          created_at: string
+          id: string
+          min_interval_minutes: number
+          min_same_advertiser_interval_minutes: number
+          operating_hours_end: string
+          operating_hours_start: string
+          prime_hours_end: string | null
+          prime_hours_start: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          min_interval_minutes?: number
+          min_same_advertiser_interval_minutes?: number
+          operating_hours_end?: string
+          operating_hours_start?: string
+          prime_hours_end?: string | null
+          prime_hours_start?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          min_interval_minutes?: number
+          min_same_advertiser_interval_minutes?: number
+          operating_hours_end?: string
+          operating_hours_start?: string
+          prime_hours_end?: string | null
+          prime_hours_start?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       whatsapp_conversations: {
         Row: {
           assigned_to: string | null
