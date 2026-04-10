@@ -1,16 +1,21 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Settings, Bot, MapPin, Save, RotateCcw, Send, Users } from "lucide-react";
 import { toast } from "sonner";
 import UserManagement from "@/components/settings/UserManagement";
+import { useAcademySettings, useUpdateAcademySettings } from "@/hooks/usePontoData";
 
 export default function ConfiguracoesPage() {
+  const { data: settings } = useAcademySettings();
+  const updateSettings = useUpdateAcademySettings();
+
   const [aiContext, setAiContext] = useState(
     `Academia FitMax - Informações para Atendimento
 
@@ -25,27 +30,32 @@ export default function ConfiguracoesPage() {
 💪 Planos:
 - Básico: R$ 89,90/mês (musculação)
 - Completo: R$ 139,90/mês (musculação + aulas)
-- Premium: R$ 199,90/mês (tudo incluso + personal 2x/semana)
-
-🏋️ Aulas:
-- Spinning: Ter/Qui 7h, 12h, 19h
-- Funcional: Seg/Qua/Sex 8h, 17h
-- Yoga: Seg/Qua 9h, 18h
-- Muay Thai: Ter/Qui 20h
-
-📋 Regras:
-- É obrigatório o uso de toalha
-- Atestado médico na matrícula
-- Cancelamento com 30 dias de antecedência`
+- Premium: R$ 199,90/mês (tudo incluso + personal 2x/semana)`
   );
 
   const [testMessage, setTestMessage] = useState("");
   const [testResponse, setTestResponse] = useState("");
   const [isTestLoading, setIsTestLoading] = useState(false);
 
-  const [gymLat, setGymLat] = useState("-23.5505");
-  const [gymLng, setGymLng] = useState("-46.6333");
-  const [gymRadius, setGymRadius] = useState("100");
+  const [gymName, setGymName] = useState("");
+  const [gymLat, setGymLat] = useState("");
+  const [gymLng, setGymLng] = useState("");
+  const [gymRadius, setGymRadius] = useState("");
+  const [opStart, setOpStart] = useState("");
+  const [opEnd, setOpEnd] = useState("");
+  const [autoClose, setAutoClose] = useState(true);
+
+  useEffect(() => {
+    if (settings) {
+      setGymName(settings.academy_name);
+      setGymLat(settings.lat.toString());
+      setGymLng(settings.lng.toString());
+      setGymRadius(settings.radius_meters.toString());
+      setOpStart(settings.operating_start.slice(0, 5));
+      setOpEnd(settings.operating_end.slice(0, 5));
+      setAutoClose(settings.auto_close_enabled);
+    }
+  }, [settings]);
 
   const handleSaveContext = () => {
     toast.success("Contexto da IA salvo com sucesso!");
@@ -63,7 +73,17 @@ export default function ConfiguracoesPage() {
   };
 
   const handleSaveLocation = () => {
-    toast.success("Localização da academia atualizada!");
+    if (!settings) return;
+    updateSettings.mutate({
+      id: settings.id,
+      academy_name: gymName,
+      lat: parseFloat(gymLat),
+      lng: parseFloat(gymLng),
+      radius_meters: parseInt(gymRadius),
+      operating_start: opStart,
+      operating_end: opEnd,
+      auto_close_enabled: autoClose,
+    });
   };
 
   return (
@@ -82,7 +102,7 @@ export default function ConfiguracoesPage() {
             <Bot className="h-4 w-4" /> Contexto da IA
           </TabsTrigger>
           <TabsTrigger value="location" className="gap-1">
-            <MapPin className="h-4 w-4" /> Localização
+            <MapPin className="h-4 w-4" /> Academia
           </TabsTrigger>
         </TabsList>
 
@@ -97,8 +117,7 @@ export default function ConfiguracoesPage() {
                 <Bot className="h-4 w-4" /> Contexto da IA (Gemini)
               </CardTitle>
               <CardDescription>
-                Este texto será usado como base de conhecimento para a IA responder automaticamente
-                no WhatsApp. Inclua todas as informações relevantes sobre a academia.
+                Texto usado como base de conhecimento para a IA responder no WhatsApp.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -106,18 +125,15 @@ export default function ConfiguracoesPage() {
                 value={aiContext}
                 onChange={(e) => setAiContext(e.target.value)}
                 className="min-h-[400px] font-mono text-sm"
-                placeholder="Digite aqui todas as informações da academia..."
               />
               <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
-                  {aiContext.length} caracteres
-                </p>
+                <p className="text-xs text-muted-foreground">{aiContext.length} caracteres</p>
                 <div className="flex gap-2">
                   <Button variant="outline" className="gap-1" onClick={() => setAiContext("")}>
                     <RotateCcw className="h-4 w-4" /> Limpar
                   </Button>
                   <Button className="gap-1" onClick={handleSaveContext}>
-                    <Save className="h-4 w-4" /> Salvar Contexto
+                    <Save className="h-4 w-4" /> Salvar
                   </Button>
                 </div>
               </div>
@@ -127,9 +143,6 @@ export default function ConfiguracoesPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Testar Resposta da IA</CardTitle>
-              <CardDescription>
-                Envie uma mensagem de teste para verificar como a IA responde com o contexto atual
-              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex gap-2">
@@ -147,9 +160,7 @@ export default function ConfiguracoesPage() {
                 <div className="p-4 rounded-lg bg-primary/5 border border-primary/20">
                   <div className="flex items-center gap-1 mb-2">
                     <Bot className="h-4 w-4 text-primary" />
-                    <Badge variant="secondary" className="text-[10px] bg-primary/10 text-primary">
-                      IA Gemini
-                    </Badge>
+                    <Badge variant="secondary" className="text-[10px] bg-primary/10 text-primary">IA Gemini</Badge>
                   </div>
                   <p className="text-sm">{testResponse}</p>
                 </div>
@@ -162,13 +173,17 @@ export default function ConfiguracoesPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <MapPin className="h-4 w-4" /> Localização da Academia
+                <MapPin className="h-4 w-4" /> Configurações da Academia
               </CardTitle>
               <CardDescription>
-                Configure as coordenadas e o raio de proximidade para validação do ponto dos funcionários
+                Coordenadas, raio de proximidade para ponto e horário de funcionamento.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label>Nome da Academia</Label>
+                <Input value={gymName} onChange={(e) => setGymName(e.target.value)} />
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label>Latitude</Label>
@@ -180,11 +195,30 @@ export default function ConfiguracoesPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Raio (metros)</Label>
-                  <Input value={gymRadius} onChange={(e) => setGymRadius(e.target.value)} placeholder="100" type="number" />
+                  <Input value={gymRadius} onChange={(e) => setGymRadius(e.target.value)} type="number" />
                 </div>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Horário de Abertura</Label>
+                  <Input type="time" value={opStart} onChange={(e) => setOpStart(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Horário de Fechamento</Label>
+                  <Input type="time" value={opEnd} onChange={(e) => setOpEnd(e.target.value)} />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Fechamento automático do ponto</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Registra saída automaticamente no horário de fechamento
+                  </p>
+                </div>
+                <Switch checked={autoClose} onCheckedChange={setAutoClose} />
+              </div>
               <Button className="gap-1" onClick={handleSaveLocation}>
-                <Save className="h-4 w-4" /> Salvar Localização
+                <Save className="h-4 w-4" /> Salvar Configurações
               </Button>
             </CardContent>
           </Card>

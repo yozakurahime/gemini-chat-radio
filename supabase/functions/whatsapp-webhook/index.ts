@@ -5,6 +5,15 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-webhook-secret",
 };
 
+function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const toRad = (n: number) => (n * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -19,7 +28,6 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const { event, data } = body;
 
-    // Verify webhook secret
     const webhookSecret = req.headers.get("x-webhook-secret");
     const expectedSecret = Deno.env.get("WHATSAPP_WEBHOOK_SECRET");
     if (expectedSecret && webhookSecret !== expectedSecret) {
@@ -31,10 +39,7 @@ Deno.serve(async (req) => {
 
     switch (event) {
       case "qr": {
-        // QR code received from Baileys
         const { qr_code, session_name = "default" } = data;
-
-        // Upsert session with QR code
         const { data: existing } = await supabase
           .from("whatsapp_sessions")
           .select("id")
@@ -58,9 +63,7 @@ Deno.serve(async (req) => {
       }
 
       case "connected": {
-        // WhatsApp connected successfully
         const { session_name = "default", phone_number } = data;
-
         await supabase
           .from("whatsapp_sessions")
           .update({
@@ -78,7 +81,6 @@ Deno.serve(async (req) => {
 
       case "disconnected": {
         const { session_name = "default" } = data;
-
         await supabase
           .from("whatsapp_sessions")
           .update({ status: "disconnected", qr_code: null, phone_number: null })
@@ -90,10 +92,99 @@ Deno.serve(async (req) => {
       }
 
       case "message": {
-        // New message received from WhatsApp
-        const { phone_number, contact_name, content, media_url } = data;
+        const { phone_number, contact_name, content, media_url, latitude, longitude } = data;
 
-        // Find or create conversation
+        // Check if this is a ponto command
+        const pontoKeywords = ["ponto", "entrada", "saída", "saida"];
+        const lowerContent = (content || "").toLowerCase().trim();
+        const isPontoCommand = pontoKeywords.some((k) => lowerContent.includes(k));
+
+        if (isPontoCommand && latitude !== undefined && longitude !== undefined) {
+          // Handle ponto registration
+          const { data: employee } = await supabase
+            .from("employees")
+            .select("id, name, active")
+            .eq("phone", phone_number)
+            .eq("active", true)
+            .maybeSingle();
+
+          if (!employee) {
+            return new Response(
+              JSON.stringify({ success: true, ponto: false, reason: "employee_not_found" }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
+          // Get academy settings for geofencing
+          const { data: settings } = await supabase
+            .from("academy_settings")
+            .select("*")
+            .limit(1)
+            .single();
+
+          const distance = settings
+            ? haversineDistance(latitude, longitude, settings.lat, settings.lng)
+            : 0;
+          const withinRadius = settings ? distance <= settings.radius_meters : true;
+
+          // Determine entry or exit
+          const today = new Date().toISOString().split("T")[0];
+          const { data: todayRecords } = await supabase
+            .from("ponto_records")
+            .select("type")
+            .eq("employee_id", employee.id)
+            .eq("date", today)
+            .order("time", { ascending: false })
+            .limit(1);
+
+          const lastType = todayRecords?.[0]?.type;
+          const newType = lastType === "entrada" ? "saida" : "entrada";
+
+          const now = new Date();
+          const timeStr = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+          await supabase.from("ponto_records").insert({
+            employee_id: employee.id,
+            type: newType,
+            date: today,
+            time: timeStr,
+            lat: latitude,
+            lng: longitude,
+            within_radius: withinRadius,
+            source: "whatsapp",
+          });
+
+          // Also store as a conversation message
+          let { data: conversation } = await supabase
+            .from("whatsapp_conversations")
+            .select("id")
+            .eq("phone_number", phone_number)
+            .maybeSingle();
+
+          if (conversation) {
+            await supabase.from("whatsapp_messages").insert({
+              conversation_id: conversation.id,
+              content: `📍 Ponto registrado: ${newType === "entrada" ? "ENTRADA" : "SAÍDA"} às ${timeStr}${withinRadius ? " ✅" : " ⚠️ Fora do raio"}`,
+              sender: "system",
+              is_ai_response: false,
+            });
+          }
+
+          return new Response(
+            JSON.stringify({
+              success: true,
+              ponto: true,
+              type: newType,
+              within_radius: withinRadius,
+              distance_meters: Math.round(distance),
+              employee_name: employee.name,
+              reply_message: `✅ Ponto registrado!\n\n👤 ${employee.name}\n📋 ${newType === "entrada" ? "Entrada" : "Saída"}\n🕐 ${timeStr}\n📍 ${withinRadius ? "Dentro do raio ✅" : `Fora do raio ⚠️ (${Math.round(distance)}m)`}`,
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        // Regular message handling
         let { data: conversation } = await supabase
           .from("whatsapp_conversations")
           .select("id")
@@ -120,7 +211,7 @@ Deno.serve(async (req) => {
               contact_name: contact_name || undefined,
               last_message: content,
               last_message_at: new Date().toISOString(),
-              unread_count: supabase.rpc ? 1 : 1, // increment handled below
+              unread_count: 1,
             })
             .eq("id", conversation.id);
         }
