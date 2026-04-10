@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   ListMusic, Clock,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import YouTubePlayer from "@/components/radio/YouTubePlayer";
 
 interface Track {
   id: string;
@@ -47,6 +48,22 @@ export default function RadioPage() {
   const [ads, setAds] = useState(mockAds);
   const [newUrl, setNewUrl] = useState("");
   const [duckingLevel, setDuckingLevel] = useState([20]);
+
+  const handleTrackEnd = useCallback(() => {
+    setCurrentTrackIndex((prev) =>
+      prev < playlist.length - 1 ? prev + 1 : 0
+    );
+  }, [playlist.length]);
+
+  const handlePlayStateChange = useCallback((playing: boolean) => {
+    setIsPlaying(playing);
+  }, []);
+
+  const handleTrackTitleUpdate = useCallback((index: number, title: string) => {
+    setPlaylist((prev) =>
+      prev.map((t, i) => (i === index ? { ...t, title } : t))
+    );
+  }, []);
 
   const currentTrack = playlist[currentTrackIndex];
 
@@ -112,6 +129,17 @@ export default function RadioPage() {
               <span className="text-xs text-muted-foreground w-8">{volume[0]}%</span>
             </div>
           </div>
+
+          {/* YouTube Player Progress */}
+          <YouTubePlayer
+            playlist={playlist}
+            currentTrackIndex={currentTrackIndex}
+            isPlaying={isPlaying}
+            volume={volume[0]}
+            onTrackEnd={handleTrackEnd}
+            onPlayStateChange={handlePlayStateChange}
+            onTrackTitleUpdate={handleTrackTitleUpdate}
+          />
         </CardContent>
       </Card>
 
