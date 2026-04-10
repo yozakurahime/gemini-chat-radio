@@ -205,6 +205,7 @@ export default function AtendimentoPage() {
           </div>
         )}
       </div>
+      </div>
     </div>
   );
 }
