@@ -69,7 +69,13 @@ export default function AtendimentoPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)]">
+    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+      {/* WhatsApp Connection Card */}
+      <div className="p-4 border-b">
+        <WhatsAppConnect />
+      </div>
+
+      <div className="flex flex-1 min-h-0">
       {/* Conversations List */}
       <div className="w-80 border-r flex flex-col bg-card">
         <div className="p-3 border-b">
