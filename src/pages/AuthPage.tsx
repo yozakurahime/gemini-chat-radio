@@ -8,7 +8,6 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, Radio } from "lucide-react";
 
 export default function AuthPage() {
-  const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -19,22 +18,9 @@ export default function AuthPage() {
     setLoading(true);
 
     try {
-      if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        toast({ title: "Login realizado com sucesso!" });
-      } else {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: window.location.origin },
-        });
-        if (error) throw error;
-        toast({
-          title: "Conta criada!",
-          description: "Verifique seu email para confirmar o cadastro.",
-        });
-      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      toast({ title: "Login realizado com sucesso!" });
     } catch (error: any) {
       toast({
         title: "Erro",
@@ -55,7 +41,7 @@ export default function AuthPage() {
           </div>
           <CardTitle className="text-2xl">Painel de Gestão</CardTitle>
           <CardDescription>
-            {isLogin ? "Entre com sua conta para acessar o painel" : "Crie uma conta para começar"}
+            Entre com sua conta para acessar o painel
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -85,18 +71,9 @@ export default function AuthPage() {
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isLogin ? "Entrar" : "Criar conta"}
+              Entrar
             </Button>
           </form>
-          <div className="mt-4 text-center">
-            <button
-              type="button"
-              onClick={() => setIsLogin(!isLogin)}
-              className="text-sm text-muted-foreground hover:text-primary transition-colors"
-            >
-              {isLogin ? "Não tem conta? Criar uma" : "Já tem conta? Fazer login"}
-            </button>
-          </div>
         </CardContent>
       </Card>
     </div>

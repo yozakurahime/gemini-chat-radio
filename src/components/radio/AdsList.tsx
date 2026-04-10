@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,8 +8,10 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2 } from "lucide-react";
+import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2, Upload, Loader2 } from "lucide-react";
 import { useAds, useCreateAd, useUpdateAd, useDeleteAd, useAdvertisers, useContracts } from "@/hooks/useRadioData";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 const statusLabels: Record<string, string> = { active: "Ativo", inactive: "Inativo", pending: "Pendente" };
 const statusColors: Record<string, "default" | "secondary" | "destructive"> = { active: "default", inactive: "secondary", pending: "secondary" };
@@ -31,6 +33,8 @@ export default function AdsList() {
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState(defaultForm);
   const [testAudio, setTestAudio] = useState<HTMLAudioElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = ads.filter((a) =>
     a.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -47,6 +51,45 @@ export default function AdsList() {
       allowed_hours_end: a.allowed_hours_end?.substring(0, 5) || "23:00",
     });
     setOpen(true);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.includes("audio")) {
+      toast.error("Selecione um arquivo de áudio (MP3, WAV, etc.)");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("Arquivo muito grande (máx. 10MB)");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const ext = file.name.split(".").pop();
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("ad-audio")
+        .upload(fileName, file, { contentType: file.type });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from("ad-audio")
+        .getPublicUrl(fileName);
+
+      setForm((prev) => ({ ...prev, audio_url: publicUrl }));
+      toast.success("Áudio enviado com sucesso!");
+    } catch (err: any) {
+      toast.error("Erro ao enviar áudio: " + (err.message || "Tente novamente"));
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
   const save = async () => {
@@ -107,13 +150,52 @@ export default function AdsList() {
                 </div>
               )}
               <div><Label>Nome do Anúncio *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+              
+              {/* Audio Upload Section */}
               <div>
-                <Label>URL do Áudio</Label>
-                <div className="flex gap-2">
-                  <Input value={form.audio_url} onChange={(e) => setForm({ ...form, audio_url: e.target.value })} placeholder="https://..." className="flex-1" />
-                  {form.audio_url && <Button variant="outline" size="icon" onClick={() => playTest(form.audio_url)}><Play className="h-4 w-4" /></Button>}
+                <Label>Áudio do Anúncio</Label>
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                    >
+                      {uploading ? (
+                        <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Enviando...</>
+                      ) : (
+                        <><Upload className="h-4 w-4 mr-1" /> Enviar MP3</>
+                      )}
+                    </Button>
+                    {form.audio_url && (
+                      <Button variant="outline" size="icon" onClick={() => playTest(form.audio_url)}>
+                        <Play className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={handleFileUpload}
+                  />
+                  {form.audio_url && (
+                    <p className="text-xs text-muted-foreground truncate">
+                      ✅ {form.audio_url.split("/").pop()}
+                    </p>
+                  )}
+                  <Input
+                    value={form.audio_url}
+                    onChange={(e) => setForm({ ...form, audio_url: e.target.value })}
+                    placeholder="Ou cole a URL do áudio..."
+                    className="text-xs"
+                  />
                 </div>
               </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Duração (seg)</Label><Input type="number" value={form.duration_seconds} onChange={(e) => setForm({ ...form, duration_seconds: Number(e.target.value) })} /></div>
                 <div><Label>Prioridade</Label><Input type="number" value={form.priority} onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })} /></div>
