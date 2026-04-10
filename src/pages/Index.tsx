@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Send, Bot, User, Search, MessageSquare } from "lucide-react";
+import WhatsAppConnect from "@/components/whatsapp/WhatsAppConnect";
 
 interface Message {
   id: string;
