@@ -1,6 +1,7 @@
-import { MessageSquare, Radio, Clock, Settings, Dumbbell } from "lucide-react";
+import { MessageSquare, Radio, Clock, Settings, Dumbbell, LogOut } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Sidebar,
   SidebarContent,
@@ -11,6 +12,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarHeader,
+  SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
 
@@ -24,7 +26,10 @@ const items = [
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
-  const location = useLocation();
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
 
   return (
     <Sidebar collapsible="icon">
@@ -62,6 +67,16 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="p-2">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={handleLogout} className="text-destructive hover:bg-destructive/10">
+              <LogOut className="mr-2 h-4 w-4" />
+              {!collapsed && <span>Sair</span>}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
     </Sidebar>
   );
 }
