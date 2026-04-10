@@ -14,6 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
+      academy_settings: {
+        Row: {
+          academy_name: string
+          auto_close_enabled: boolean
+          created_at: string
+          id: string
+          lat: number
+          lng: number
+          operating_end: string
+          operating_start: string
+          radius_meters: number
+          updated_at: string
+        }
+        Insert: {
+          academy_name?: string
+          auto_close_enabled?: boolean
+          created_at?: string
+          id?: string
+          lat?: number
+          lng?: number
+          operating_end?: string
+          operating_start?: string
+          radius_meters?: number
+          updated_at?: string
+        }
+        Update: {
+          academy_name?: string
+          auto_close_enabled?: boolean
+          created_at?: string
+          id?: string
+          lat?: number
+          lng?: number
+          operating_end?: string
+          operating_start?: string
+          radius_meters?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       ad_contracts: {
         Row: {
           ad_duration_seconds: number
@@ -315,6 +354,136 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      class_schedule: {
+        Row: {
+          active: boolean
+          class_name: string
+          created_at: string
+          day_of_week: number
+          end_time: string
+          id: string
+          instructor_id: string | null
+          instructor_name: string | null
+          max_capacity: number | null
+          start_time: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          class_name: string
+          created_at?: string
+          day_of_week: number
+          end_time: string
+          id?: string
+          instructor_id?: string | null
+          instructor_name?: string | null
+          max_capacity?: number | null
+          start_time: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          class_name?: string
+          created_at?: string
+          day_of_week?: number
+          end_time?: string
+          id?: string
+          instructor_id?: string | null
+          instructor_name?: string | null
+          max_capacity?: number | null
+          start_time?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "class_schedule_instructor_id_fkey"
+            columns: ["instructor_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      employees: {
+        Row: {
+          active: boolean
+          created_at: string
+          id: string
+          name: string
+          phone: string
+          role: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          name: string
+          phone: string
+          role?: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          name?: string
+          phone?: string
+          role?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      ponto_records: {
+        Row: {
+          auto_closed: boolean
+          created_at: string
+          date: string
+          employee_id: string
+          id: string
+          lat: number | null
+          lng: number | null
+          source: string
+          time: string
+          type: string
+          within_radius: boolean
+        }
+        Insert: {
+          auto_closed?: boolean
+          created_at?: string
+          date?: string
+          employee_id: string
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          source?: string
+          time?: string
+          type: string
+          within_radius?: boolean
+        }
+        Update: {
+          auto_closed?: boolean
+          created_at?: string
+          date?: string
+          employee_id?: string
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          source?: string
+          time?: string
+          type?: string
+          within_radius?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ponto_records_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       radio_settings: {
         Row: {
