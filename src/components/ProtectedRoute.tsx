@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Session } from "@supabase/supabase-js";
 import { Loader2 } from "lucide-react";
+import AuthPage from "@/pages/AuthPage";
 
 interface Props {
   children: React.ReactNode;
@@ -34,8 +35,6 @@ export function ProtectedRoute({ children }: Props) {
   }
 
   if (!session) {
-    // Dynamic import to avoid circular deps
-    const AuthPage = require("@/pages/AuthPage").default;
     return <AuthPage />;
   }
 
