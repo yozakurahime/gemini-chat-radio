@@ -137,7 +137,7 @@ export function useCreateAdvertiser() {
 export function useUpdateAdvertiser() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...input }: Partial<Advertiser> & { id: string }) => {
+    mutationFn: async ({ id, segment, ...input }: Partial<Advertiser> & { id: string }) => {
       const { error } = await supabase.from("advertisers").update(input).eq("id", id);
       if (error) throw error;
     },
@@ -189,7 +189,7 @@ export function useCreateContract() {
 export function useUpdateContract() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...input }: Partial<AdContract> & { id: string }) => {
+    mutationFn: async ({ id, advertiser, ...input }: Partial<AdContract> & { id: string }) => {
       const { error } = await supabase.from("ad_contracts").update(input).eq("id", id);
       if (error) throw error;
     },
@@ -229,7 +229,7 @@ export function useCreateAd() {
 export function useUpdateAd() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...input }: Partial<Ad> & { id: string }) => {
+    mutationFn: async ({ id, advertiser, contract, ...input }: Partial<Ad> & { id: string }) => {
       const { error } = await supabase.from("ads").update(input).eq("id", id);
       if (error) throw error;
     },
@@ -282,7 +282,7 @@ export function useCreateScheduleEntries() {
 export function useUpdateScheduleEntry() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...input }: Partial<AdScheduleEntry> & { id: string }) => {
+    mutationFn: async ({ id, ad, ...input }: Partial<AdScheduleEntry> & { id: string }) => {
       const { error } = await supabase.from("ad_schedule").update(input).eq("id", id);
       if (error) throw error;
     },
