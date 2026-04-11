@@ -1,0 +1,49 @@
+﻿:root {
+  --bg: #0b0f14;
+  --panel: #121723;
+  --surface: #161c2a;
+  --text: #e7ecf6;
+  --muted: #8b95aa;
+  --border: #273046;
+  --accent: #ff6f91;
+  --accent-2: #2de2e6;
+  --input-bg: #0f1622;
+  --input-text: #f5f7fb;
+  --placeholder: #7f8aa3;
+  --shadow: 0 12px 30px rgba(0,0,0,.35);
+  --radius: 12px;
+}
+
+[data-theme='light'] {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --surface: #eef2f7;
+  --text: #1a2232;
+  --muted: #5d687d;
+  --border: #d6deea;
+  --accent: #ff6f91;
+  --accent-2: #2de2e6;
+  --input-bg: #ffffff;
+  --input-text: #1a2232;
+  --placeholder: #8b95aa;
+  --shadow: 0 10px 20px rgba(18, 24, 40, .12);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Rajdhani', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  background-image:
+    radial-gradient(circle at 15% 10%, rgba(45,226,230,0.14), transparent 45%),
+    radial-gradient(circle at 85% 20%, rgba(255,111,145,0.12), transparent 40%),
+    radial-gradient(circle at 20% 80%, rgba(45,226,230,0.08), transparent 40%);
+}
+
+input, textarea, button {
+  font-family: inherit;
+}
+
+
