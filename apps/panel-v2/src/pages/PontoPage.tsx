@@ -10,7 +10,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Clock, Download, Calendar, User, CheckCircle, XCircle, ListChecks, MapPin, Plus, Trash2 } from "lucide-react";
+import { Clock, Download, Calendar, User, CheckCircle, XCircle, ListChecks, MapPin, Plus, Trash2, Pencil } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
@@ -76,11 +76,46 @@ function resolvePeriod(fromRaw?: string, toRaw?: string) {
   return { from, to };
 }
 
+function toNumberOrNull(raw: string) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+type EditScheduleState = {
+  id: number;
+  weekday: string;
+  startTime: string;
+  endTime: string;
+  scheduleType: "class" | "function";
+  activityId: string;
+  toleranceMin: string;
+  valuePerClass: string;
+};
+
+type EditCatalogState = {
+  id: number;
+  type: "class" | "function";
+  name: string;
+  defaultValue: string;
+  sortOrder: string;
+};
+
+type EditTemplateState = {
+  id: number;
+  activityId: string;
+  weekday: string;
+  startTime: string;
+  endTime: string;
+};
+
 export default function PontoPage() {
   const {
     user,
     attendanceEmployees,
     attendanceCatalog,
+    attendanceTemplates,
     attendanceSchedules,
     attendanceRecords,
     attendanceSummary,
@@ -90,6 +125,14 @@ export default function PontoPage() {
     setAttendanceSelectedEmployee,
     setAttendanceFromDate,
     setAttendanceToDate,
+    createAttendanceCatalogItem,
+    updateAttendanceCatalogItem,
+    deleteAttendanceCatalogItem,
+    createAttendanceTemplate,
+    updateAttendanceTemplate,
+    deleteAttendanceTemplate,
+    applyEmployeeTemplates,
+    updateAttendanceSchedule,
     refreshAttendance,
   } = usePanelData();
 
@@ -152,11 +195,18 @@ export default function PontoPage() {
     [geoRecords, selectedMapRecordId],
   );
 
-  const [scheduleType, setScheduleType] = useState<"function" | "class">("function");
-  const activityOptions = useMemo(
-    () => attendanceCatalog.filter((item) => String(item.type || "").toLowerCase() === scheduleType && Number(item.active || 0) === 1),
-    [attendanceCatalog, scheduleType],
+  const isAdmin = user?.role === "admin";
+  const classActivities = useMemo(
+    () => attendanceCatalog.filter((item) => String(item.type || "").toLowerCase() === "class" && Number(item.active || 0) === 1),
+    [attendanceCatalog],
   );
+  const functionActivities = useMemo(
+    () => attendanceCatalog.filter((item) => String(item.type || "").toLowerCase() === "function" && Number(item.active || 0) === 1),
+    [attendanceCatalog],
+  );
+
+  const [scheduleType, setScheduleType] = useState<"function" | "class">("function");
+  const scheduleActivityOptions = scheduleType === "class" ? classActivities : functionActivities;
 
   const defaultEmployeeId = useMemo(
     () => String(attendanceEmployees[0]?.id || ""),
@@ -172,24 +222,62 @@ export default function PontoPage() {
     valuePerClass: "0",
   });
 
+  const [catalogForm, setCatalogForm] = useState({
+    type: "class" as "class" | "function",
+    name: "",
+    defaultValue: "20",
+    sortOrder: "900",
+  });
+  const [editingCatalog, setEditingCatalog] = useState<EditCatalogState | null>(null);
+
+  const [templateForm, setTemplateForm] = useState({
+    activityId: "",
+    weekday: "1",
+    startTime: "08:00",
+    endTime: "09:00",
+  });
+  const [editingTemplate, setEditingTemplate] = useState<EditTemplateState | null>(null);
+
+  const [applyEmployeeId, setApplyEmployeeId] = useState("");
+  const [replaceTemplateSchedules, setReplaceTemplateSchedules] = useState(false);
+  const [applyToleranceMin, setApplyToleranceMin] = useState("5");
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+
+  const [editingSchedule, setEditingSchedule] = useState<EditScheduleState | null>(null);
+
   useEffect(() => {
     if (!newSchedule.employeeId && defaultEmployeeId) {
       setNewSchedule((prev) => ({ ...prev, employeeId: defaultEmployeeId }));
     }
-  }, [defaultEmployeeId, newSchedule.employeeId]);
+    if (!applyEmployeeId && defaultEmployeeId) {
+      setApplyEmployeeId(defaultEmployeeId);
+    }
+  }, [applyEmployeeId, defaultEmployeeId, newSchedule.employeeId]);
 
   useEffect(() => {
-    if (!activityOptions.length) {
+    if (!scheduleActivityOptions.length) {
       setNewSchedule((prev) => ({ ...prev, activityId: "" }));
       return;
     }
-    if (!activityOptions.some((item) => String(item.id) === String(newSchedule.activityId))) {
-      setNewSchedule((prev) => ({ ...prev, activityId: String(activityOptions[0].id) }));
+    if (!scheduleActivityOptions.some((item) => String(item.id) === String(newSchedule.activityId))) {
+      const first = scheduleActivityOptions[0];
+      setNewSchedule((prev) => ({
+        ...prev,
+        activityId: String(first.id),
+        valuePerClass: scheduleType === "class" ? String(Number(first.default_value || 0)) : prev.valuePerClass,
+      }));
     }
-  }, [activityOptions, newSchedule.activityId]);
+  }, [newSchedule.activityId, scheduleActivityOptions, scheduleType]);
+
+  useEffect(() => {
+    if (!templateForm.activityId && classActivities.length) {
+      setTemplateForm((prev) => ({ ...prev, activityId: String(classActivities[0].id) }));
+    }
+  }, [classActivities, templateForm.activityId]);
 
   const createSchedule = async () => {
     try {
+      const rawValue = toNumberOrNull(newSchedule.valuePerClass);
       const payload = {
         employeeId: Number(newSchedule.employeeId),
         weekday: Number(newSchedule.weekday),
@@ -198,7 +286,7 @@ export default function PontoPage() {
         scheduleType,
         activityId: Number(newSchedule.activityId),
         toleranceMin: Number(newSchedule.toleranceMin),
-        valuePerClass: Number(newSchedule.valuePerClass),
+        valuePerClass: scheduleType === "class" ? rawValue : 0,
       };
       await apiFetch("/admin/attendance/schedules", {
         method: "POST",
@@ -218,6 +306,7 @@ export default function PontoPage() {
       await apiFetch(`/admin/attendance/schedules/${id}`, { method: "DELETE" });
       toast.success("Escala desativada");
       await refreshAttendance();
+      if (editingSchedule?.id === id) setEditingSchedule(null);
     } catch (error: any) {
       const code = String(error?.code || "");
       if (code === "not_found") {
@@ -226,6 +315,99 @@ export default function PontoPage() {
       }
       toast.error("Falha ao remover escala.");
     }
+  };
+
+  const submitCatalogForm = async () => {
+    const ok = await createAttendanceCatalogItem({
+      type: catalogForm.type,
+      name: catalogForm.name,
+      defaultValue: Number(catalogForm.defaultValue || 0),
+      sortOrder: Number(catalogForm.sortOrder || 0),
+    });
+    if (!ok) return;
+    setCatalogForm({ type: "class", name: "", defaultValue: "20", sortOrder: "900" });
+  };
+
+  const saveCatalogEdit = async () => {
+    if (!editingCatalog) return;
+    const ok = await updateAttendanceCatalogItem(editingCatalog.id, {
+      type: editingCatalog.type,
+      name: editingCatalog.name,
+      defaultValue: Number(editingCatalog.defaultValue || 0),
+      sortOrder: Number(editingCatalog.sortOrder || 0),
+    });
+    if (ok) setEditingCatalog(null);
+  };
+
+  const submitTemplateForm = async () => {
+    const ok = await createAttendanceTemplate({
+      activityId: Number(templateForm.activityId),
+      weekday: Number(templateForm.weekday),
+      startTime: templateForm.startTime,
+      endTime: templateForm.endTime,
+    });
+    if (!ok) return;
+    setTemplateForm((prev) => ({ ...prev, startTime: "08:00", endTime: "09:00" }));
+  };
+
+  const saveTemplateEdit = async () => {
+    if (!editingTemplate) return;
+    const ok = await updateAttendanceTemplate(editingTemplate.id, {
+      activityId: Number(editingTemplate.activityId),
+      weekday: Number(editingTemplate.weekday),
+      startTime: editingTemplate.startTime,
+      endTime: editingTemplate.endTime,
+    });
+    if (ok) setEditingTemplate(null);
+  };
+
+  const toggleTemplateSelection = (id: string) => {
+    setSelectedTemplateIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const applyTemplates = async () => {
+    const ids = selectedTemplateIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+    if (!ids.length && !replaceTemplateSchedules) {
+      toast.error("Selecione ao menos um modelo ou marque substituir para limpar os modelos atuais.");
+      return;
+    }
+    const ok = await applyEmployeeTemplates({
+      employeeId: Number(applyEmployeeId),
+      templateIds: ids,
+      replace: replaceTemplateSchedules,
+      toleranceMin: Number(applyToleranceMin || 5),
+    });
+    if (ok) setSelectedTemplateIds([]);
+  };
+
+  const openScheduleEdit = (schedule: any) => {
+    setEditingSchedule({
+      id: Number(schedule.id),
+      weekday: String(schedule.weekday ?? "1"),
+      startTime: String(schedule.start_time || "08:00"),
+      endTime: String(schedule.end_time || "12:00"),
+      scheduleType: String(schedule.schedule_type || "function").toLowerCase() === "class" ? "class" : "function",
+      activityId: String(schedule.activity_id || ""),
+      toleranceMin: String(schedule.tolerance_min ?? 5),
+      valuePerClass: String(Number(schedule.value_per_class || 0)),
+    });
+  };
+
+  const saveScheduleEdit = async () => {
+    if (!editingSchedule) return;
+    const rawValue = toNumberOrNull(editingSchedule.valuePerClass);
+    const ok = await updateAttendanceSchedule(editingSchedule.id, {
+      weekday: Number(editingSchedule.weekday),
+      startTime: editingSchedule.startTime,
+      endTime: editingSchedule.endTime,
+      scheduleType: editingSchedule.scheduleType,
+      activityId: Number(editingSchedule.activityId),
+      toleranceMin: Number(editingSchedule.toleranceMin || 5),
+      valuePerClass: editingSchedule.scheduleType === "class" ? rawValue : 0,
+    });
+    if (ok) setEditingSchedule(null);
   };
 
   return (
@@ -400,6 +582,226 @@ export default function PontoPage() {
         <TabsContent value="schedules" className="space-y-4">
           <Card>
             <CardHeader>
+              <CardTitle className="text-base">Catalogo de Aulas e Funcoes</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {isAdmin ? (
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                  <Select value={catalogForm.type} onValueChange={(value: "class" | "function") => setCatalogForm((prev) => ({ ...prev, type: value }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="class">Aula</SelectItem>
+                      <SelectItem value="function">Funcao</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Input value={catalogForm.name} onChange={(event) => setCatalogForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome da atividade" />
+                  <Input type="number" min={0} step="0.01" value={catalogForm.defaultValue} onChange={(event) => setCatalogForm((prev) => ({ ...prev, defaultValue: event.target.value }))} placeholder="Valor padrao" />
+                  <Input type="number" value={catalogForm.sortOrder} onChange={(event) => setCatalogForm((prev) => ({ ...prev, sortOrder: event.target.value }))} placeholder="Ordem" />
+                  <Button onClick={submitCatalogForm} disabled={!catalogForm.name.trim()}>Cadastrar</Button>
+                </div>
+              ) : null}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Nome</TableHead>
+                    <TableHead>Valor padrao</TableHead>
+                    <TableHead>Ordem</TableHead>
+                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {attendanceCatalog.length ? attendanceCatalog.map((item) => {
+                    const editing = editingCatalog?.id === Number(item.id);
+                    return (
+                      <TableRow key={item.id}>
+                        <TableCell>{editing ? (
+                          <Select value={editingCatalog?.type || "class"} onValueChange={(value: "class" | "function") => setEditingCatalog((prev) => prev ? { ...prev, type: value } : prev)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="class">Aula</SelectItem>
+                              <SelectItem value="function">Funcao</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : scheduleTypeLabel(item.type)}</TableCell>
+                        <TableCell>{editing ? <Input value={editingCatalog?.name || ""} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, name: event.target.value } : prev)} /> : (item.name || "-")}</TableCell>
+                        <TableCell>{editing ? <Input type="number" min={0} step="0.01" value={editingCatalog?.defaultValue || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, defaultValue: event.target.value } : prev)} /> : Number(item.default_value || 0).toFixed(2)}</TableCell>
+                        <TableCell>{editing ? <Input type="number" value={editingCatalog?.sortOrder || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, sortOrder: event.target.value } : prev)} /> : Number(item.sort_order || 0)}</TableCell>
+                        {isAdmin ? (
+                          <TableCell>
+                            {editing ? (
+                              <div className="flex gap-2">
+                                <Button size="sm" onClick={saveCatalogEdit}>Salvar</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingCatalog(null)}>Cancelar</Button>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button variant="ghost" size="icon" onClick={() => setEditingCatalog({ id: Number(item.id), type: String(item.type || "class").toLowerCase() === "function" ? "function" : "class", name: String(item.name || ""), defaultValue: String(Number(item.default_value || 0)), sortOrder: String(Number(item.sort_order || 0)) })}>
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button variant="ghost" size="icon" onClick={() => deleteAttendanceCatalogItem(Number(item.id))}>
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            )}
+                          </TableCell>
+                        ) : null}
+                      </TableRow>
+                    );
+                  }) : (
+                    <TableRow>
+                      <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhuma atividade cadastrada.</TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Modelos de Escala</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {isAdmin ? (
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                  <Select value={templateForm.activityId} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, activityId: value }))}>
+                    <SelectTrigger><SelectValue placeholder="Aula" /></SelectTrigger>
+                    <SelectContent>
+                      {classActivities.map((item) => (
+                        <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={templateForm.weekday} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, weekday: value }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {WEEKDAY_LABELS.map((label, idx) => (
+                        <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input type="time" value={templateForm.startTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, startTime: event.target.value }))} />
+                  <Input type="time" value={templateForm.endTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, endTime: event.target.value }))} />
+                  <Button onClick={submitTemplateForm} disabled={!templateForm.activityId}>Criar modelo</Button>
+                </div>
+              ) : null}
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Aula</TableHead>
+                    <TableHead>Dia</TableHead>
+                    <TableHead>Inicio</TableHead>
+                    <TableHead>Fim</TableHead>
+                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {attendanceTemplates.length ? attendanceTemplates.map((template) => {
+                    const editing = editingTemplate?.id === Number(template.id);
+                    return (
+                      <TableRow key={template.id}>
+                        <TableCell>{editing ? (
+                          <Select value={editingTemplate?.activityId || ""} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, activityId: value } : prev)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {classActivities.map((item) => (
+                                <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (template.activity_label || template.catalog_name || "Aula")}</TableCell>
+                        <TableCell>{editing ? (
+                          <Select value={editingTemplate?.weekday || "1"} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, weekday: value } : prev)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {WEEKDAY_LABELS.map((label, idx) => (
+                                <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : WEEKDAY_LABELS[Number(template.weekday) || 0]}</TableCell>
+                        <TableCell>{editing ? <Input type="time" value={editingTemplate?.startTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} /> : (template.start_time || "--:--")}</TableCell>
+                        <TableCell>{editing ? <Input type="time" value={editingTemplate?.endTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} /> : (template.end_time || "--:--")}</TableCell>
+                        {isAdmin ? (
+                          <TableCell>
+                            {editing ? (
+                              <div className="flex gap-2">
+                                <Button size="sm" onClick={saveTemplateEdit}>Salvar</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingTemplate(null)}>Cancelar</Button>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button variant="ghost" size="icon" onClick={() => setEditingTemplate({ id: Number(template.id), activityId: String(template.activity_id || ""), weekday: String(template.weekday ?? "1"), startTime: String(template.start_time || "08:00"), endTime: String(template.end_time || "09:00") })}>
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button variant="ghost" size="icon" onClick={() => deleteAttendanceTemplate(Number(template.id))}>
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            )}
+                          </TableCell>
+                        ) : null}
+                      </TableRow>
+                    );
+                  }) : (
+                    <TableRow>
+                      <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhum modelo ativo cadastrado.</TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          {isAdmin ? (
+            <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Aplicar pacote no funcionario</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                <Select value={applyEmployeeId} onValueChange={setApplyEmployeeId}>
+                  <SelectTrigger><SelectValue placeholder="Funcionario" /></SelectTrigger>
+                  <SelectContent>
+                    {attendanceEmployees.map((employee) => (
+                      <SelectItem key={employee.id} value={String(employee.id)}>{employee.name || `Funcionario ${employee.id}`}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input type="number" min={0} max={180} value={applyToleranceMin} onChange={(event) => setApplyToleranceMin(event.target.value)} placeholder="Tolerancia (min)" />
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={replaceTemplateSchedules} onChange={(event) => setReplaceTemplateSchedules(event.target.checked)} />
+                  Substituir templates atuais
+                </label>
+                <Button onClick={applyTemplates} disabled={!isAdmin || !applyEmployeeId}>Aplicar selecionados</Button>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds(attendanceTemplates.map((item) => String(item.id)))}>Selecionar todos</Button>
+                <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds([])}>Limpar selecao</Button>
+              </div>
+              <div className="max-h-56 overflow-auto border rounded-md p-2 space-y-2">
+                {attendanceTemplates.length ? attendanceTemplates.map((template) => {
+                  const id = String(template.id);
+                  const checked = selectedTemplateIds.includes(id);
+                  return (
+                    <label key={id} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={checked} onChange={() => toggleTemplateSelection(id)} />
+                      <span>{template.activity_label || template.catalog_name || "Aula"} - {WEEKDAY_LABELS[Number(template.weekday) || 0]} {template.start_time} as {template.end_time}</span>
+                    </label>
+                  );
+                }) : (
+                  <div className="text-sm text-muted-foreground">Sem modelos para aplicar.</div>
+                )}
+              </div>
+            </CardContent>
+            </Card>
+          ) : null}
+
+          {isAdmin ? (
+            <Card>
+            <CardHeader>
               <CardTitle className="text-base">Nova escala</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -417,7 +819,19 @@ export default function PontoPage() {
                   </SelectContent>
                 </Select>
 
-                <Select value={scheduleType} onValueChange={(value: "function" | "class") => setScheduleType(value)}>
+                <Select
+                  value={scheduleType}
+                  onValueChange={(value: "function" | "class") => {
+                    const pool = value === "class" ? classActivities : functionActivities;
+                    const first = pool[0];
+                    setScheduleType(value);
+                    setNewSchedule((prev) => ({
+                      ...prev,
+                      activityId: first ? String(first.id) : "",
+                      valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
+                    }));
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Tipo" />
                   </SelectTrigger>
@@ -427,12 +841,22 @@ export default function PontoPage() {
                   </SelectContent>
                 </Select>
 
-                <Select value={newSchedule.activityId} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, activityId: value }))}>
+                <Select
+                  value={newSchedule.activityId}
+                  onValueChange={(value) => {
+                    const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
+                    setNewSchedule((prev) => ({
+                      ...prev,
+                      activityId: value,
+                      valuePerClass: scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
+                    }));
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Atividade" />
                   </SelectTrigger>
                   <SelectContent>
-                    {activityOptions.map((activity) => (
+                    {scheduleActivityOptions.map((activity) => (
                       <SelectItem key={activity.id} value={String(activity.id)}>
                         {activity.name}
                       </SelectItem>
@@ -478,7 +902,75 @@ export default function PontoPage() {
                 Criar escala
               </Button>
             </CardContent>
-          </Card>
+            </Card>
+          ) : null}
+
+          {isAdmin && editingSchedule ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Editar escala #{editingSchedule.id}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Select
+                    value={editingSchedule.scheduleType}
+                    onValueChange={(value: "function" | "class") => {
+                      const pool = value === "class" ? classActivities : functionActivities;
+                      const first = pool[0];
+                      setEditingSchedule((prev) => prev ? {
+                        ...prev,
+                        scheduleType: value,
+                        activityId: first ? String(first.id) : "",
+                        valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
+                      } : prev);
+                    }}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="function">Funcao</SelectItem>
+                      <SelectItem value="class">Aula</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={editingSchedule.activityId}
+                    onValueChange={(value) => {
+                      const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
+                      setEditingSchedule((prev) => prev ? {
+                        ...prev,
+                        activityId: value,
+                        valuePerClass: prev.scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
+                      } : prev);
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Atividade" /></SelectTrigger>
+                    <SelectContent>
+                      {(editingSchedule.scheduleType === "class" ? classActivities : functionActivities).map((activity) => (
+                        <SelectItem key={activity.id} value={String(activity.id)}>{activity.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={editingSchedule.weekday} onValueChange={(value) => setEditingSchedule((prev) => prev ? { ...prev, weekday: value } : prev)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {WEEKDAY_LABELS.map((label, idx) => (
+                        <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input type="time" value={editingSchedule.startTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} />
+                  <Input type="time" value={editingSchedule.endTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} />
+                  <Input type="number" min={0} max={180} value={editingSchedule.toleranceMin} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, toleranceMin: event.target.value } : prev)} placeholder="Tolerancia (min)" />
+                  {editingSchedule.scheduleType === "class" ? (
+                    <Input type="number" min={0} step="0.01" value={editingSchedule.valuePerClass} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, valuePerClass: event.target.value } : prev)} placeholder="Valor por aula" />
+                  ) : null}
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={saveScheduleEdit}>Salvar alteracoes</Button>
+                  <Button variant="ghost" onClick={() => setEditingSchedule(null)}>Cancelar</Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardContent className="p-0">
@@ -491,8 +983,9 @@ export default function PontoPage() {
                     <TableHead>Fim</TableHead>
                     <TableHead>Atividade</TableHead>
                     <TableHead>Tipo</TableHead>
+                    <TableHead>Valor aula</TableHead>
                     <TableHead>Tolerancia</TableHead>
-                    {user?.role === "admin" ? <TableHead>Acoes</TableHead> : null}
+                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -504,18 +997,24 @@ export default function PontoPage() {
                       <TableCell className="font-mono">{schedule.end_time || "--:--"}</TableCell>
                       <TableCell>{schedule.activity_label_resolved || schedule.class_name || "-"}</TableCell>
                       <TableCell>{scheduleTypeLabel(schedule.schedule_type)}</TableCell>
+                      <TableCell>{Number(schedule.value_per_class || 0).toFixed(2)}</TableCell>
                       <TableCell>{Number(schedule.tolerance_min || 0)} min</TableCell>
-                      {user?.role === "admin" ? (
+                      {isAdmin ? (
                         <TableCell>
-                          <Button variant="ghost" size="icon" onClick={() => deactivateSchedule(Number(schedule.id))}>
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button variant="ghost" size="icon" onClick={() => openScheduleEdit(schedule)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => deactivateSchedule(Number(schedule.id))}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
                         </TableCell>
                       ) : null}
                     </TableRow>
                   )) : (
                     <TableRow>
-                      <TableCell colSpan={user?.role === "admin" ? 8 : 7} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={isAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">
                         Nenhuma escala ativa para este filtro.
                       </TableCell>
                     </TableRow>

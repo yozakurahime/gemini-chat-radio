@@ -1592,21 +1592,36 @@ function parseHHMMToMinutes(raw) {
 }
 
 const ATTENDANCE_ACTIVITY_SEED = [
-    { type: 'class', name: 'Musculacao', default_value: 0, sort_order: 10 },
-    { type: 'class', name: 'Ergometria', default_value: 0, sort_order: 20 },
-    { type: 'class', name: 'Danca', default_value: 0, sort_order: 30 },
-    { type: 'class', name: 'Capoeira', default_value: 0, sort_order: 40 },
-    { type: 'class', name: 'Hidroginastica', default_value: 0, sort_order: 50 },
-    { type: 'class', name: 'Natacao Infantil', default_value: 0, sort_order: 60 },
-    { type: 'class', name: 'Natacao Baby', default_value: 0, sort_order: 70 },
-    { type: 'class', name: 'Natacao Adulto', default_value: 0, sort_order: 80 },
-    { type: 'class', name: 'Pilates', default_value: 0, sort_order: 90 },
+    { type: 'class', name: 'Musculacao', default_value: 20, sort_order: 10 },
+    { type: 'class', name: 'Ergometria', default_value: 20, sort_order: 20 },
+    { type: 'class', name: 'Danca', default_value: 20, sort_order: 30 },
+    { type: 'class', name: 'Capoeira', default_value: 20, sort_order: 40 },
+    { type: 'class', name: 'Hidroginastica', default_value: 20, sort_order: 50 },
+    { type: 'class', name: 'Natacao Infantil', default_value: 20, sort_order: 60 },
+    { type: 'class', name: 'Natacao Baby', default_value: 20, sort_order: 70 },
+    { type: 'class', name: 'Natacao Adulto', default_value: 20, sort_order: 80 },
+    { type: 'class', name: 'Pilates', default_value: 20, sort_order: 90 },
     { type: 'function', name: 'Recepcao', default_value: 0, sort_order: 100 },
     { type: 'function', name: 'Limpeza', default_value: 0, sort_order: 110 },
     { type: 'function', name: 'Gerencia', default_value: 0, sort_order: 120 },
     { type: 'function', name: 'Administrativo', default_value: 0, sort_order: 130 },
     { type: 'function', name: 'Professor', default_value: 0, sort_order: 140 },
     { type: 'function', name: 'Expediente', default_value: 0, sort_order: 150 }
+];
+
+const ATTENDANCE_TEMPLATE_SEED = [
+    { activity: 'Musculacao', weekday: 1, start_time: '06:00', end_time: '07:00' },
+    { activity: 'Musculacao', weekday: 2, start_time: '06:00', end_time: '07:00' },
+    { activity: 'Musculacao', weekday: 3, start_time: '06:00', end_time: '07:00' },
+    { activity: 'Musculacao', weekday: 4, start_time: '06:00', end_time: '07:00' },
+    { activity: 'Musculacao', weekday: 5, start_time: '06:00', end_time: '07:00' },
+    { activity: 'Pilates', weekday: 1, start_time: '07:00', end_time: '08:00' },
+    { activity: 'Pilates', weekday: 3, start_time: '07:00', end_time: '08:00' },
+    { activity: 'Pilates', weekday: 5, start_time: '07:00', end_time: '08:00' },
+    { activity: 'Natacao Infantil', weekday: 2, start_time: '16:00', end_time: '17:00' },
+    { activity: 'Natacao Infantil', weekday: 4, start_time: '16:00', end_time: '17:00' },
+    { activity: 'Natacao Adulto', weekday: 2, start_time: '19:00', end_time: '20:00' },
+    { activity: 'Natacao Adulto', weekday: 4, start_time: '19:00', end_time: '20:00' }
 ];
 
 function formatCurrencyBRL(value) {
@@ -1637,6 +1652,7 @@ function isAttendanceTeacherRole(role) {
 const ATTENDANCE_DEFAULT_EMPLOYEE_ROLE = 'Sem Função';
 const ATTENDANCE_TEMPLATE_DEFAULT_DURATION_MIN = 45;
 const ATTENDANCE_TEMPLATE_SOURCE_CONTEXT = 'context';
+const ATTENDANCE_TEMPLATE_SOURCE_MANUAL = 'manual';
 
 function normalizeAttendanceTemplateIds(raw) {
     const out = [];
@@ -1840,6 +1856,55 @@ function seedAttendanceCatalogDefaults() {
     return created;
 }
 
+function seedAttendanceTemplateDefaults() {
+    const now = Date.now();
+    let created = 0;
+    let skipped = 0;
+    for (const seed of ATTENDANCE_TEMPLATE_SEED) {
+        const startMin = parseHHMMToMinutes(seed.start_time);
+        const endMinRaw = parseHHMMToMinutes(seed.end_time);
+        if (startMin === null || endMinRaw === null) {
+            skipped += 1;
+            continue;
+        }
+        let endMin = endMinRaw;
+        if (endMin <= startMin) endMin += 24 * 60;
+        const durationMin = Math.max(1, endMin - startMin);
+
+        const activityItem = findAttendanceCatalogByName('class', seed.activity) || ensureAttendanceCatalogItem('class', seed.activity, 20, 900);
+        if (!activityItem) {
+            skipped += 1;
+            continue;
+        }
+        const activityLabel = sanitizePublicText(activityItem.name || seed.activity, 80) || 'Aula';
+        const sourceKey = `${activityItem.id}|${seed.weekday}|${seed.start_time}|${seed.end_time}|${ATTENDANCE_TEMPLATE_SOURCE_MANUAL}`;
+        const existing = db.prepare('SELECT id FROM attendance_class_templates WHERE source_key=?').get(sourceKey);
+        if (existing) {
+            skipped += 1;
+            continue;
+        }
+        db.prepare(`
+            INSERT INTO attendance_class_templates
+            (activity_id, activity_label, weekday, start_time, end_time, duration_min, source, source_key, active, created_at, updated_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        `).run(
+            Number(activityItem.id),
+            activityLabel,
+            Number(seed.weekday),
+            String(seed.start_time),
+            String(seed.end_time),
+            durationMin,
+            ATTENDANCE_TEMPLATE_SOURCE_MANUAL,
+            sourceKey,
+            now,
+            now,
+            now
+        );
+        created += 1;
+    }
+    return { created, skipped, reason: created > 0 ? 'seeded' : 'already_exists' };
+}
+
 function backfillAttendanceScheduleCatalog() {
     const rows = db.prepare('SELECT * FROM attendance_schedules ORDER BY id ASC').all();
     if (!rows.length) return { updated: 0, createdCatalog: 0 };
@@ -1907,16 +1972,24 @@ function backfillAttendanceScheduleCatalog() {
 function bootstrapAttendanceCatalog() {
     try {
         const seedCreated = seedAttendanceCatalogDefaults();
+        const templateSeed = seedAttendanceTemplateDefaults();
         const backfill = backfillAttendanceScheduleCatalog();
-        if (seedCreated || backfill.updated || backfill.createdCatalog) {
+        if (seedCreated || backfill.updated || backfill.createdCatalog || templateSeed.created) {
             logAdminAction(
                 'attendance.catalog.bootstrap',
                 'system',
                 'attendance_schedules',
-                { seedCreated, backfillUpdated: backfill.updated, createdCatalog: backfill.createdCatalog },
+                {
+                    seedCreated,
+                    templateSeedCreated: templateSeed.created,
+                    templateSeedSkipped: templateSeed.skipped,
+                    templateSeedReason: templateSeed.reason,
+                    backfillUpdated: backfill.updated,
+                    createdCatalog: backfill.createdCatalog
+                },
                 '127.0.0.1'
             );
-            console.log(`[attendance] catalog bootstrap seed=${seedCreated} schedules=${backfill.updated} catalogCreated=${backfill.createdCatalog}`);
+            console.log(`[attendance] catalog bootstrap seed=${seedCreated} templates=${templateSeed.created} schedules=${backfill.updated} catalogCreated=${backfill.createdCatalog}`);
         }
     } catch (e) {
         console.error('[attendance] catalog bootstrap error:', e?.message || e);
@@ -2129,24 +2202,32 @@ function applyAttendanceTemplatesToEmployee({ employeeId, templateIds = [], repl
 
     let inserted = 0;
     let skipped = 0;
+    const activityDefaultValueCache = new Map();
     for (const tpl of templates) {
         const tplId = Number(tpl.id);
         if (existingByTemplate.has(tplId)) {
             skipped += 1;
             continue;
         }
+        const activityId = Number(tpl.activity_id || 0);
+        if (!activityDefaultValueCache.has(activityId)) {
+            const activityRow = db.prepare('SELECT default_value FROM attendance_activity_catalog WHERE id=?').get(activityId);
+            activityDefaultValueCache.set(activityId, Math.max(0, Number(activityRow?.default_value || 0)));
+        }
+        const valuePerClass = Math.max(0, Number(activityDefaultValueCache.get(activityId) || 0));
         db.prepare(`
             INSERT INTO attendance_schedules
             (employee_id, weekday, start_time, end_time, class_name, schedule_type, activity_id, activity_label, value_per_class, tolerance_min, source_type, template_id, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'class', ?, ?, 0, ?, 'template', ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'class', ?, ?, ?, ?, 'template', ?, 1, ?, ?)
         `).run(
             Number(employeeId),
             Number(tpl.weekday),
             String(tpl.start_time),
             String(tpl.end_time),
             sanitizePublicText(tpl.activity_label || '', 80) || 'Aula',
-            Number(tpl.activity_id || 0),
+            activityId,
             sanitizePublicText(tpl.activity_label || '', 80) || 'Aula',
+            valuePerClass,
             tol,
             tplId,
             now,
@@ -5756,6 +5837,7 @@ registerAttendanceAdminRoutes({
     isKnownWhatsappForAttendance,
     applyAttendanceTemplatesToEmployee,
     ATTENDANCE_TEMPLATE_SOURCE_CONTEXT,
+    ATTENDANCE_TEMPLATE_SOURCE_MANUAL,
     listEmployeeVacations,
     createVacation,
     deactivateVacation,

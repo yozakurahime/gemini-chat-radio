@@ -43,6 +43,7 @@ function registerAttendanceAdminRoutes({
     isKnownWhatsappForAttendance,
     applyAttendanceTemplatesToEmployee,
     ATTENDANCE_TEMPLATE_SOURCE_CONTEXT,
+    ATTENDANCE_TEMPLATE_SOURCE_MANUAL,
     listEmployeeVacations,
     createVacation,
     deactivateVacation,
@@ -65,6 +66,43 @@ function formatLocalDateTime(value) {
     } catch (_) {
         return String(ts);
     }
+}
+
+function normalizeOptionalNumberInput(value) {
+    if (value === undefined || value === null) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+}
+
+function computeValuePerClass({ scheduleType, rawValue, fallbackValue = 0 }) {
+    if (scheduleType !== 'class') return 0;
+    if (rawValue === null) return Math.max(0, Number(fallbackValue || 0));
+    if (!Number.isFinite(rawValue) || rawValue < 0) return NaN;
+    return Number(rawValue);
+}
+
+function resolveTemplateDurationMin(startTime, endTime) {
+    const startMin = parseHHMMToMinutes(startTime);
+    const endMinRaw = parseHHMMToMinutes(endTime);
+    if (startMin === null || endMinRaw === null) return null;
+    let endMin = endMinRaw;
+    if (endMin <= startMin) endMin += (24 * 60);
+    return Math.max(1, endMin - startMin);
+}
+
+function loadTemplateById(id) {
+    return db.prepare(`
+        SELECT t.*,
+               c.type AS catalog_type,
+               c.name AS catalog_name,
+               c.default_value AS catalog_default_value,
+               c.active AS catalog_active
+        FROM attendance_class_templates t
+        LEFT JOIN attendance_activity_catalog c ON c.id=t.activity_id
+        WHERE t.id=?
+    `).get(id);
 }
 
 app.get('/admin/attendance/status', (req, res) => {
@@ -238,6 +276,102 @@ app.post('/admin/attendance/templates/sync-context', (req, res) => {
     res.json({ ok: true, summary });
 });
 
+app.post('/admin/attendance/templates', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const activityId = Number(req.body?.activityId || 0);
+    const weekday = Number(req.body?.weekday);
+    const startTime = String(req.body?.startTime || '');
+    const endTime = String(req.body?.endTime || '');
+    if (!Number.isFinite(activityId) || activityId <= 0) return res.status(400).json({ error: 'invalid_activity' });
+    if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: 'invalid_weekday' });
+    const durationMin = resolveTemplateDurationMin(startTime, endTime);
+    if (!durationMin) return res.status(400).json({ error: 'invalid_time' });
+
+    const activity = db.prepare('SELECT id, type, name, default_value, active FROM attendance_activity_catalog WHERE id=?').get(activityId);
+    if (!activity || !activity.active) return res.status(400).json({ error: 'invalid_activity' });
+    if (parseAttendanceActivityTypeStrict(activity.type) !== 'class') return res.status(400).json({ error: 'activity_type_mismatch' });
+
+    const now = Date.now();
+    const activityLabel = sanitizePublicText(activity.name || '', 80) || 'Aula';
+    const sourceKey = `${activityId}|${weekday}|${startTime}|${endTime}|${ATTENDANCE_TEMPLATE_SOURCE_MANUAL}`;
+    const existing = db.prepare('SELECT id, source FROM attendance_class_templates WHERE source_key=?').get(sourceKey);
+    let id = null;
+    if (existing?.id) {
+        if (String(existing.source || '') !== ATTENDANCE_TEMPLATE_SOURCE_MANUAL) {
+            return res.status(409).json({ error: 'template_conflict_source' });
+        }
+        db.prepare(`
+            UPDATE attendance_class_templates
+            SET activity_id=?, activity_label=?, weekday=?, start_time=?, end_time=?, duration_min=?, source=?, active=1, updated_at=?, last_seen_at=?
+            WHERE id=?
+        `).run(activityId, activityLabel, weekday, startTime, endTime, durationMin, ATTENDANCE_TEMPLATE_SOURCE_MANUAL, now, now, existing.id);
+        id = Number(existing.id);
+    } else {
+        const inserted = db.prepare(`
+            INSERT INTO attendance_class_templates
+            (activity_id, activity_label, weekday, start_time, end_time, duration_min, source, source_key, active, created_at, updated_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        `).run(activityId, activityLabel, weekday, startTime, endTime, durationMin, ATTENDANCE_TEMPLATE_SOURCE_MANUAL, sourceKey, now, now, now);
+        id = Number(inserted.lastInsertRowid || 0);
+    }
+    const item = loadTemplateById(id);
+    logAdminAction('attendance.template.create', user.username, String(id), { activityId, weekday, startTime, endTime, durationMin }, req.socket.remoteAddress);
+    try { broadcast({ type: 'attendance_templates_updated', updated_at: now }); } catch (e) {}
+    res.json({ ok: true, item });
+});
+
+app.put('/admin/attendance/templates/:id', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid_id' });
+    const row = db.prepare('SELECT * FROM attendance_class_templates WHERE id=?').get(id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    if (String(row.source || '') !== ATTENDANCE_TEMPLATE_SOURCE_MANUAL) return res.status(400).json({ error: 'template_source_readonly' });
+
+    const activityId = req.body?.activityId === undefined ? Number(row.activity_id || 0) : Number(req.body?.activityId || 0);
+    const weekday = req.body?.weekday === undefined ? Number(row.weekday) : Number(req.body?.weekday);
+    const startTime = req.body?.startTime === undefined ? String(row.start_time || '') : String(req.body?.startTime || '');
+    const endTime = req.body?.endTime === undefined ? String(row.end_time || '') : String(req.body?.endTime || '');
+    const active = req.body?.active === undefined ? Number(row.active || 0) : (req.body?.active ? 1 : 0);
+    if (!Number.isFinite(activityId) || activityId <= 0) return res.status(400).json({ error: 'invalid_activity' });
+    if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: 'invalid_weekday' });
+    const durationMin = resolveTemplateDurationMin(startTime, endTime);
+    if (!durationMin) return res.status(400).json({ error: 'invalid_time' });
+
+    const activity = db.prepare('SELECT id, type, name, default_value, active FROM attendance_activity_catalog WHERE id=?').get(activityId);
+    if (!activity || !activity.active) return res.status(400).json({ error: 'invalid_activity' });
+    if (parseAttendanceActivityTypeStrict(activity.type) !== 'class') return res.status(400).json({ error: 'activity_type_mismatch' });
+
+    const activityLabel = sanitizePublicText(activity.name || '', 80) || 'Aula';
+    const sourceKey = `${activityId}|${weekday}|${startTime}|${endTime}|${ATTENDANCE_TEMPLATE_SOURCE_MANUAL}`;
+    const conflict = db.prepare('SELECT id FROM attendance_class_templates WHERE source_key=? AND id<>?').get(sourceKey, id);
+    if (conflict?.id) return res.status(409).json({ error: 'template_conflict' });
+
+    const now = Date.now();
+    db.prepare(`
+        UPDATE attendance_class_templates
+        SET activity_id=?, activity_label=?, weekday=?, start_time=?, end_time=?, duration_min=?, source=?, source_key=?, active=?, updated_at=?, last_seen_at=?
+        WHERE id=?
+    `).run(activityId, activityLabel, weekday, startTime, endTime, durationMin, ATTENDANCE_TEMPLATE_SOURCE_MANUAL, sourceKey, active, now, now, id);
+    const item = loadTemplateById(id);
+    logAdminAction('attendance.template.update', user.username, String(id), { activityId, weekday, startTime, endTime, durationMin, active }, req.socket.remoteAddress);
+    try { broadcast({ type: 'attendance_templates_updated', updated_at: now }); } catch (e) {}
+    res.json({ ok: true, item });
+});
+
+app.delete('/admin/attendance/templates/:id', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid_id' });
+    const row = db.prepare('SELECT id, source FROM attendance_class_templates WHERE id=?').get(id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    if (String(row.source || '') !== ATTENDANCE_TEMPLATE_SOURCE_MANUAL) return res.status(400).json({ error: 'template_source_readonly' });
+    db.prepare('UPDATE attendance_class_templates SET active=0, updated_at=? WHERE id=?').run(Date.now(), id);
+    logAdminAction('attendance.template.deactivate', user.username, String(id), {}, req.socket.remoteAddress);
+    try { broadcast({ type: 'attendance_templates_updated', updated_at: Date.now() }); } catch (e) {}
+    res.json({ ok: true });
+});
+
 app.get('/admin/attendance/employees', (req, res) => {
     const user = requirePanelAuth(req, res); if (!user) return;
     const rows = db.prepare(`
@@ -397,7 +531,7 @@ app.get('/admin/attendance/employees/:id/templates', (req, res) => {
         WHERE employee_id=? AND active=1 AND source_type='template' AND template_id IS NOT NULL
         ORDER BY template_id ASC
     `).all(employeeId).map((r) => Number(r.template_id)).filter((n) => Number.isFinite(n) && n > 0);
-    const templates = getAttendanceClassTemplates({ activeOnly: true, source: ATTENDANCE_TEMPLATE_SOURCE_CONTEXT });
+    const templates = getAttendanceClassTemplates({ activeOnly: true });
     res.json({ employee, selectedTemplateIds, templates });
 });
 
@@ -585,11 +719,13 @@ app.post('/admin/attendance/schedules', (req, res) => {
         return res.status(400).json({ error: 'not_teacher_for_class' });
     }
     const activityLabel = sanitizePublicText(activity.name || '', 80) || 'Atividade';
-    const requestedValuePerClass = Number(req.body?.valuePerClass ?? 0);
-    if (scheduleType === 'class' && (!Number.isFinite(requestedValuePerClass) || requestedValuePerClass < 0)) {
-        return res.status(400).json({ error: 'invalid_value_per_class' });
-    }
-    const valuePerClass = scheduleType === 'class' ? requestedValuePerClass : 0;
+    const requestedValuePerClass = normalizeOptionalNumberInput(req.body?.valuePerClass);
+    const valuePerClass = computeValuePerClass({
+        scheduleType,
+        rawValue: requestedValuePerClass,
+        fallbackValue: activity.default_value
+    });
+    if (Number.isNaN(valuePerClass)) return res.status(400).json({ error: 'invalid_value_per_class' });
     const toleranceMin = Math.max(0, Math.min(180, Number(req.body?.toleranceMin || 5)));
     if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: 'invalid_weekday' });
     if (parseHHMMToMinutes(startTime) === null || parseHHMMToMinutes(endTime) === null) return res.status(400).json({ error: 'invalid_time' });
@@ -647,13 +783,15 @@ app.put('/admin/attendance/schedules/:id', (req, res) => {
     }
     const activityLabel = sanitizePublicText(activity.name || '', 80) || 'Atividade';
     const className = activityLabel;
-    const requestedValuePerClass = req.body?.valuePerClass === undefined
+    const rawValueInput = req.body?.valuePerClass === undefined
         ? Number(row.value_per_class || 0)
-        : Number(req.body?.valuePerClass);
-    if (scheduleType === 'class' && (!Number.isFinite(requestedValuePerClass) || requestedValuePerClass < 0)) {
-        return res.status(400).json({ error: 'invalid_value_per_class' });
-    }
-    const valuePerClass = scheduleType === 'class' ? requestedValuePerClass : 0;
+        : normalizeOptionalNumberInput(req.body?.valuePerClass);
+    const valuePerClass = computeValuePerClass({
+        scheduleType,
+        rawValue: rawValueInput,
+        fallbackValue: activity.default_value
+    });
+    if (Number.isNaN(valuePerClass)) return res.status(400).json({ error: 'invalid_value_per_class' });
     const toleranceMin = req.body?.toleranceMin === undefined ? Number(row.tolerance_min || 5) : Math.max(0, Math.min(180, Number(req.body?.toleranceMin || 5)));
     const active = req.body?.active === undefined ? row.active : (req.body?.active ? 1 : 0);
     if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: 'invalid_weekday' });
@@ -662,7 +800,7 @@ app.put('/admin/attendance/schedules/:id', (req, res) => {
         UPDATE attendance_schedules
         SET weekday=?, start_time=?, end_time=?, class_name=?, schedule_type=?, activity_id=?, activity_label=?, value_per_class=?, tolerance_min=?, active=?, updated_at=?
         WHERE id=?
-    `).run(weekday, startTime, endTime, className, scheduleType, activityId, activityLabel, scheduleType === 'class' ? valuePerClass : 0, toleranceMin, active, Date.now(), id);
+    `).run(weekday, startTime, endTime, className, scheduleType, activityId, activityLabel, valuePerClass, toleranceMin, active, Date.now(), id);
     logAdminAction('attendance.schedule.update', user.username, String(id), { weekday, startTime, endTime, className, scheduleType, activityId, activityLabel, valuePerClass, toleranceMin, active }, req.socket.remoteAddress);
     res.json({ ok: true });
 });

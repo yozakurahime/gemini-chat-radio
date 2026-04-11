@@ -158,6 +158,7 @@ type PanelDataContextValue = {
   updateAdPlaybackState: (next: Partial<AdPlaybackState>) => void;
   attendanceEmployees: any[];
   attendanceCatalog: any[];
+  attendanceTemplates: any[];
   attendanceSchedules: any[];
   attendanceRecords: any[];
   attendanceSummary: any[];
@@ -167,6 +168,16 @@ type PanelDataContextValue = {
   setAttendanceSelectedEmployee: (value: string) => void;
   setAttendanceFromDate: (value: string) => void;
   setAttendanceToDate: (value: string) => void;
+  refreshAttendanceCatalog: () => Promise<void>;
+  refreshAttendanceTemplates: () => Promise<void>;
+  createAttendanceCatalogItem: (payload: { type: "class" | "function"; name: string; defaultValue?: number; sortOrder?: number }) => Promise<boolean>;
+  updateAttendanceCatalogItem: (id: number, payload: { type?: "class" | "function"; name?: string; defaultValue?: number; sortOrder?: number; active?: boolean }) => Promise<boolean>;
+  deleteAttendanceCatalogItem: (id: number) => Promise<boolean>;
+  createAttendanceTemplate: (payload: { activityId: number; weekday: number; startTime: string; endTime: string }) => Promise<boolean>;
+  updateAttendanceTemplate: (id: number, payload: { activityId?: number; weekday?: number; startTime?: string; endTime?: string; active?: boolean }) => Promise<boolean>;
+  deleteAttendanceTemplate: (id: number) => Promise<boolean>;
+  applyEmployeeTemplates: (payload: { employeeId: number; templateIds: number[]; replace?: boolean; toleranceMin?: number }) => Promise<boolean>;
+  updateAttendanceSchedule: (id: number, payload: { weekday?: number; startTime?: string; endTime?: string; scheduleType?: "class" | "function"; activityId?: number; valuePerClass?: number | null; toleranceMin?: number; active?: boolean }) => Promise<boolean>;
   refreshAttendance: () => Promise<void>;
   knowledgeBase: string;
   saveKnowledgeBase: (value: string) => Promise<boolean>;
@@ -300,39 +311,67 @@ function toAdHistoryEntry(entry: any): AdHistoryEntry {
 
 function reportRowsFromPayload(data: any, employeeName = "", employeeId: string | number = "") {
   const rows = Array.isArray(data?.rows) ? data.rows : [];
-  return rows.map((row: any, index: number) => ({
-    // Prefer entrada geo; fallback para saida quando entrada nao existir.
-    lat: Number(
-      row.first_entry_geo_lat
-      ?? row.first_entry_lat
-      ?? row.entry_geo_lat
-      ?? row.entry_lat
-      ?? row.last_exit_geo_lat
-      ?? row.last_exit_lat
-      ?? row.exit_geo_lat
-      ?? row.exit_lat
-      ?? 0,
-    ),
-    lng: Number(
-      row.first_entry_geo_lng
-      ?? row.first_entry_lng
-      ?? row.entry_geo_lng
-      ?? row.entry_lng
-      ?? row.last_exit_geo_lng
-      ?? row.last_exit_lng
-      ?? row.exit_geo_lng
-      ?? row.exit_lng
-      ?? 0,
-    ),
-    id: `${employeeId || data?.employee?.id || "emp"}-${row.date || "dia"}-${index}`,
-    employee: employeeName || data?.employee?.name || "",
-    employeeId: String(employeeId || data?.employee?.id || ""),
-    type: row.exits_count > 0 ? "saida" : "entrada",
-    date: row.date || "",
-    time: row.last_exit_hhmm || row.first_entry_hhmm || "--:--",
-    withinRadius: String(row.first_entry_geo_status || row.last_exit_geo_status || "").toLowerCase() !== "outside",
-    raw: row,
-  }));
+  const out: any[] = [];
+  const hasClock = (value: any) => /^\d{2}:\d{2}$/.test(String(value || "").trim());
+
+  rows.forEach((row: any, index: number) => {
+    const base = {
+      employee: employeeName || data?.employee?.name || "",
+      employeeId: String(employeeId || data?.employee?.id || ""),
+      date: row.date || "",
+      raw: row,
+    };
+
+    if (hasClock(row.first_entry_hhmm)) {
+      out.push({
+        ...base,
+        id: `${employeeId || data?.employee?.id || "emp"}-${row.date || "dia"}-${index}-entry`,
+        type: "entrada",
+        time: row.first_entry_hhmm,
+        lat: Number(
+          row.first_entry_geo_lat
+          ?? row.first_entry_lat
+          ?? row.entry_geo_lat
+          ?? row.entry_lat
+          ?? 0,
+        ),
+        lng: Number(
+          row.first_entry_geo_lng
+          ?? row.first_entry_lng
+          ?? row.entry_geo_lng
+          ?? row.entry_lng
+          ?? 0,
+        ),
+        withinRadius: String(row.first_entry_geo_status || "").toLowerCase() !== "outside",
+      });
+    }
+
+    if (hasClock(row.last_exit_hhmm)) {
+      out.push({
+        ...base,
+        id: `${employeeId || data?.employee?.id || "emp"}-${row.date || "dia"}-${index}-exit`,
+        type: "saida",
+        time: row.last_exit_hhmm,
+        lat: Number(
+          row.last_exit_geo_lat
+          ?? row.last_exit_lat
+          ?? row.exit_geo_lat
+          ?? row.exit_lat
+          ?? 0,
+        ),
+        lng: Number(
+          row.last_exit_geo_lng
+          ?? row.last_exit_lng
+          ?? row.exit_geo_lng
+          ?? row.exit_lng
+          ?? 0,
+        ),
+        withinRadius: String(row.last_exit_geo_status || "").toLowerCase() !== "outside",
+      });
+    }
+  });
+
+  return out;
 }
 
 export function PanelDataProvider({ children }: { children: React.ReactNode }) {
@@ -371,6 +410,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   });
   const [attendanceEmployees, setAttendanceEmployees] = useState<any[]>([]);
   const [attendanceCatalog, setAttendanceCatalog] = useState<any[]>([]);
+  const [attendanceTemplates, setAttendanceTemplates] = useState<any[]>([]);
   const [attendanceSchedules, setAttendanceSchedules] = useState<any[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<any[]>([]);
   const [attendanceSummary, setAttendanceSummary] = useState<any[]>([]);
@@ -493,19 +533,33 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const refreshAttendanceCatalog = useCallback(async () => {
+    try {
+      const catalogRes = await apiFetch("/admin/attendance/catalog?active=1");
+      const catalogData = await catalogRes.json();
+      setAttendanceCatalog(Array.isArray(catalogData.items) ? catalogData.items : []);
+    } catch {
+      setAttendanceCatalog([]);
+    }
+  }, []);
+
+  const refreshAttendanceTemplates = useCallback(async () => {
+    try {
+      const templatesRes = await apiFetch("/admin/attendance/templates?active=1&source=manual");
+      const templatesData = await templatesRes.json();
+      setAttendanceTemplates(Array.isArray(templatesData.templates) ? templatesData.templates : []);
+    } catch {
+      setAttendanceTemplates([]);
+    }
+  }, []);
+
   const refreshAttendance = useCallback(async () => {
     try {
       const employeesRes = await apiFetch("/admin/attendance/employees");
       const employeesData = await employeesRes.json();
       const employees = Array.isArray(employeesData.employees) ? employeesData.employees : [];
       setAttendanceEmployees(employees);
-      try {
-        const catalogRes = await apiFetch("/admin/attendance/catalog?active=1");
-        const catalogData = await catalogRes.json();
-        setAttendanceCatalog(Array.isArray(catalogData.items) ? catalogData.items : []);
-      } catch {
-        setAttendanceCatalog([]);
-      }
+      await Promise.all([refreshAttendanceCatalog(), refreshAttendanceTemplates()]);
 
       const selectedEmployees = attendanceSelectedEmployee === "Todos"
         ? employees
@@ -571,11 +625,12 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       setAttendanceSummary(summaryRows);
     } catch {
       setAttendanceCatalog([]);
+      setAttendanceTemplates([]);
       setAttendanceSchedules([]);
       setAttendanceRecords([]);
       setAttendanceSummary([]);
     }
-  }, [attendanceFromDate, attendanceSelectedEmployee, attendanceToDate]);
+  }, [attendanceFromDate, attendanceSelectedEmployee, attendanceToDate, refreshAttendanceCatalog, refreshAttendanceTemplates]);
 
   const fetchKnowledge = useCallback(async () => {
     try {
@@ -1136,6 +1191,148 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const createAttendanceCatalogItem = useCallback(async (payload: { type: "class" | "function"; name: string; defaultValue?: number; sortOrder?: number }) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch("/admin/attendance/catalog", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendanceCatalog();
+      toast.success("Atividade cadastrada");
+      return true;
+    } catch {
+      toast.error("Falha ao cadastrar atividade");
+      return false;
+    }
+  }, [refreshAttendanceCatalog, user?.role]);
+
+  const updateAttendanceCatalogItem = useCallback(async (id: number, payload: { type?: "class" | "function"; name?: string; defaultValue?: number; sortOrder?: number; active?: boolean }) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/catalog/${id}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendanceCatalog();
+      toast.success("Atividade atualizada");
+      return true;
+    } catch {
+      toast.error("Falha ao atualizar atividade");
+      return false;
+    }
+  }, [refreshAttendanceCatalog, user?.role]);
+
+  const deleteAttendanceCatalogItem = useCallback(async (id: number) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/catalog/${id}`, { method: "DELETE" });
+      await refreshAttendanceCatalog();
+      toast.success("Atividade inativada");
+      return true;
+    } catch {
+      toast.error("Falha ao inativar atividade");
+      return false;
+    }
+  }, [refreshAttendanceCatalog, user?.role]);
+
+  const createAttendanceTemplate = useCallback(async (payload: { activityId: number; weekday: number; startTime: string; endTime: string }) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch("/admin/attendance/templates", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendanceTemplates();
+      toast.success("Modelo criado");
+      return true;
+    } catch {
+      toast.error("Falha ao criar modelo");
+      return false;
+    }
+  }, [refreshAttendanceTemplates, user?.role]);
+
+  const updateAttendanceTemplate = useCallback(async (id: number, payload: { activityId?: number; weekday?: number; startTime?: string; endTime?: string; active?: boolean }) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/templates/${id}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendanceTemplates();
+      toast.success("Modelo atualizado");
+      return true;
+    } catch {
+      toast.error("Falha ao atualizar modelo");
+      return false;
+    }
+  }, [refreshAttendanceTemplates, user?.role]);
+
+  const deleteAttendanceTemplate = useCallback(async (id: number) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/templates/${id}`, { method: "DELETE" });
+      await refreshAttendanceTemplates();
+      toast.success("Modelo removido");
+      return true;
+    } catch {
+      toast.error("Falha ao remover modelo");
+      return false;
+    }
+  }, [refreshAttendanceTemplates, user?.role]);
+
+  const applyEmployeeTemplates = useCallback(async (payload: { employeeId: number; templateIds: number[]; replace?: boolean; toleranceMin?: number }) => {
+    if (user?.role !== "admin" || !Number.isFinite(payload.employeeId)) return false;
+    try {
+      await apiFetch(`/admin/attendance/employees/${payload.employeeId}/templates/apply`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          templateIds: Array.isArray(payload.templateIds) ? payload.templateIds : [],
+          replace: !!payload.replace,
+          toleranceMin: Number.isFinite(Number(payload.toleranceMin)) ? Number(payload.toleranceMin) : 5,
+        }),
+      });
+      await refreshAttendance();
+      toast.success("Modelos aplicados ao funcionario");
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "not_teacher_for_class") {
+        toast.error("Esse funcionario nao pode receber aulas.");
+        return false;
+      }
+      toast.error("Falha ao aplicar modelos");
+      return false;
+    }
+  }, [refreshAttendance, user?.role]);
+
+  const updateAttendanceSchedule = useCallback(async (id: number, payload: { weekday?: number; startTime?: string; endTime?: string; scheduleType?: "class" | "function"; activityId?: number; valuePerClass?: number | null; toleranceMin?: number; active?: boolean }) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/schedules/${id}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendance();
+      toast.success("Escala atualizada");
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "not_teacher_for_class") {
+        toast.error("Funcionario nao pode receber escala de aula.");
+        return false;
+      }
+      toast.error("Falha ao atualizar escala");
+      return false;
+    }
+  }, [refreshAttendance, user?.role]);
+
   const value = useMemo<PanelDataContextValue>(() => ({
     authLoading,
     user,
@@ -1180,6 +1377,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     updateAdPlaybackState,
     attendanceEmployees,
     attendanceCatalog,
+    attendanceTemplates,
     attendanceSchedules,
     attendanceRecords,
     attendanceSummary,
@@ -1189,6 +1387,16 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setAttendanceSelectedEmployee,
     setAttendanceFromDate,
     setAttendanceToDate,
+    refreshAttendanceCatalog,
+    refreshAttendanceTemplates,
+    createAttendanceCatalogItem,
+    updateAttendanceCatalogItem,
+    deleteAttendanceCatalogItem,
+    createAttendanceTemplate,
+    updateAttendanceTemplate,
+    deleteAttendanceTemplate,
+    applyEmployeeTemplates,
+    updateAttendanceSchedule,
     refreshAttendance,
     knowledgeBase,
     saveKnowledgeBase,
@@ -1203,14 +1411,20 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     attendanceToDate,
     attendanceEmployees,
     attendanceCatalog,
+    attendanceTemplates,
     attendanceSchedules,
     attendanceRecords,
     attendanceSelectedEmployee,
     attendanceSummary,
+    applyEmployeeTemplates,
     authLoading,
     chats,
     connected,
+    createAttendanceCatalogItem,
+    createAttendanceTemplate,
     createAdCampaign,
+    deleteAttendanceCatalogItem,
+    deleteAttendanceTemplate,
     deleteAd,
     deleteAdCampaign,
     emitAdsEvent,
@@ -1229,6 +1443,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     refreshAdHistory,
     refreshAds,
     refreshNextAdState,
+    refreshAttendanceCatalog,
+    refreshAttendanceTemplates,
     refreshAttendance,
     saveKnowledgeBase,
     geoPolicy,
@@ -1244,6 +1460,9 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     removeTrack,
     toggleAdCampaign,
     updateRadioSettings,
+    updateAttendanceCatalogItem,
+    updateAttendanceTemplate,
+    updateAttendanceSchedule,
     trackAdCampaignRun,
     updateAdCampaign,
     updateAdPlaybackState,
