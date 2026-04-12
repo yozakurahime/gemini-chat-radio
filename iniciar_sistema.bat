@@ -6,10 +6,14 @@ color 0A
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
+if exist "%ROOT%tools\\bin\\tool-env.cmd" (
+  call "%ROOT%tools\\bin\\tool-env.cmd" --ensure
+  if errorlevel 1 goto :fail
+)
+
 set "HIME_TUNNEL_TOKEN=eyJhIjoiZDFhZWUxZWNhZDY2ZjI4ZjI1OTc2YjU1NWQ3NmE2ZGEiLCJ0IjoiZGU2Nzc4NGItMGNjNC00NTMwLWE3ZGQtZmRjZWI3ZjFiODFhIiwicyI6InJzSTk3UkJFRjJUYVppVmN0cDA0L2pwcHl3ekM2eU4wdy9xdmZBQ3lDR2s9In0="
 set "SITE_URL=https://www.academiaoxigenio.com"
 set "PANEL_URL=https://www.academiaoxigenio.com/painel"
-set "LEGACY_PANEL_URL=https://www.academiaoxigenio.com/painel-legado"
 set "RADIO_URL=https://radio.academiaoxigenio.com"
 set "SERVER_DIR=%ROOT%apps\\server"
 set "NODE_ENTRY=%SERVER_DIR%\\index.js"
@@ -23,6 +27,8 @@ set "CLOUDFLARED_ERR_LOG=%LOG_DIR%\\cloudflared.err.log"
 set "AUTO_CLOSE=0"
 set "HIMEFIT_DATA_ROOT=%ROOT%runtime"
 set "APP_PANEL_BASE_URL=%PANEL_URL%"
+set "HIME_NODE_EXECUTABLE=node"
+if exist "%ROOT%tools\\runtime\\node\\node.exe" set "HIME_NODE_EXECUTABLE=%ROOT%tools\\runtime\\node\\node.exe"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>nul
 
@@ -35,9 +41,9 @@ echo ==========================================
 echo Pasta: %ROOT%
 echo.
 
-where node.exe >nul 2>nul
+call node -v >nul 2>nul
 if errorlevel 1 (
-  echo [ERRO] Node.js nao encontrado no PATH.
+  echo [ERRO] Node.js nao encontrado. Rode tools\\bootstrap-tools.ps1.
   goto :fail
 )
 
@@ -120,14 +126,14 @@ echo [4/7] Verificando backend Node...
 powershell -NoProfile -Command "$p=Get-NetTCPConnection -State Listen -LocalPort 3001 -ErrorAction SilentlyContinue; if($p){exit 0}else{exit 1}" >nul 2>nul
 if errorlevel 1 (
   echo      Iniciando backend...
-  powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; Start-Process -FilePath 'node' -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
+  powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; $nodeExe=$env:HIME_NODE_EXECUTABLE; Start-Process -FilePath $nodeExe -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
 ) else (
   echo      Backend ja em execucao.
   powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/api/health -TimeoutSec 2; if($r.StatusCode -eq 200){exit 0}else{exit 1} } catch { exit 1 }" >nul 2>nul
   if errorlevel 1 (
     echo      Backend existente nao respondeu /api/health. Reiniciando...
     powershell -NoProfile -Command "$c=Get-NetTCPConnection -State Listen -LocalPort 3001 -ErrorAction SilentlyContinue | Select-Object -First 1; if($c){ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>nul
-    powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; Start-Process -FilePath 'node' -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
+    powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; $nodeExe=$env:HIME_NODE_EXECUTABLE; Start-Process -FilePath $nodeExe -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
   )
 )
 
@@ -147,7 +153,7 @@ set "FEATURE_CHECK=%errorlevel%"
 if "%FEATURE_CHECK%"=="2" (
   echo      Backend antigo detectado na porta 3001. Reiniciando com este projeto...
   powershell -NoProfile -Command "$c=Get-NetTCPConnection -State Listen -LocalPort 3001 -ErrorAction SilentlyContinue | Select-Object -First 1; if($c){ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>nul
-  powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; Start-Process -FilePath 'node' -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
+  powershell -NoProfile -Command "$root=$env:SERVER_DIR; $out=$env:BACKEND_OUT_LOG; $err=$env:BACKEND_ERR_LOG; $nodeExe=$env:HIME_NODE_EXECUTABLE; Start-Process -FilePath $nodeExe -ArgumentList 'index.js' -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err" >nul 2>nul
   powershell -NoProfile -Command "$ok=$false; 1..60 | ForEach-Object { try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/api/health -TimeoutSec 1; if($r.StatusCode -eq 200){$ok=$true; break} } catch {}; Start-Sleep -Milliseconds 500 }; if($ok){exit 0}else{exit 1}" >nul 2>nul
   if errorlevel 1 (
     echo [AVISO] Reinicio do backend falhou.
@@ -172,7 +178,7 @@ if "%FEATURE_CHECK%"=="2" (
 )
 
 echo [7/7] Validando roteamento por host (site/painel/radio)...
-powershell -NoProfile -Command "$ok=$true; try { $site=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($site.StatusCode -ne 200){$ok=$false}; $app=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($app.StatusCode -ne 200){$ok=$false}; $legacy=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel-legado -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($legacy.StatusCode -ne 200){$ok=$false}; $radio=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='radio.academiaoxigenio.com' } -TimeoutSec 3; if($radio.StatusCode -ne 200){$ok=$false} } catch { $ok=$false }; if($ok){exit 0}else{exit 1}" >nul 2>nul
+powershell -NoProfile -Command "$ok=$true; try { $site=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($site.StatusCode -ne 200){$ok=$false}; $app=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($app.StatusCode -ne 200){$ok=$false}; $legacy=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel-legado -Headers @{ Host='www.academiaoxigenio.com' } -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction SilentlyContinue; if($legacy -and $legacy.StatusCode -ne 302){$ok=$false}; $radio=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='radio.academiaoxigenio.com' } -TimeoutSec 3; if($radio.StatusCode -ne 200){$ok=$false} } catch { $ok=$false }; if($ok){exit 0}else{exit 1}" >nul 2>nul
 if errorlevel 1 (
   echo [AVISO] Falha ao validar roteamento por host neste momento.
 ) else (
@@ -186,10 +192,8 @@ echo   HIME FIT ONLINE (CANARY COM FALLBACK)
 echo ==========================================
 echo Site publico : %SITE_URL%
 echo Painel novo  : %PANEL_URL%
-echo Painel legado: %LEGACY_PANEL_URL%
 echo Radio publico: %RADIO_URL%
 echo.
-echo Dica: se precisar voltar imediato, use /painel-legado
 echo ==========================================
 if "%AUTO_CLOSE%"=="1" (
   timeout /t 5 >nul 2>nul

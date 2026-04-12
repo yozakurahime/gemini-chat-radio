@@ -88,10 +88,11 @@ const { registerCoreSecurityRoutes } = require('./routes/core_security_routes');
 const { registerKnowledgeAdminRoutes } = require('./routes/knowledge_admin_routes');
 const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
-const { registerPanelHostRoutes } = require('./routes/panel_host_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
 const { registerRadioAdminRoutes } = require('./routes/radio_admin_routes');
 const { registerRadioCommercialRoutes } = require('./routes/radio_commercial_routes');
+const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
+const { startRuntimeServices } = require('./bootstrap/runtime_startup');
 const {
     ensureDir,
     isPathInside,
@@ -5644,30 +5645,12 @@ registerSystemAdminRoutes({
     ensureDir
 });
 
-const APPS_DIR = path.resolve(__dirname, '..');
-const PANEL_DIST = path.join(APPS_DIR, 'panel-legacy', 'dist');
-const PANEL_V2_DIST = path.join(APPS_DIR, 'panel-v2', 'dist');
-const LANDING_DIST = path.join(APPS_DIR, 'landing', 'dist');
-const PANEL_V2_ENABLED = process.env.PANEL_V2 !== '0';
-const RADIO_PAGE_FILE = path.join(__dirname, 'radio.html');
-const LANDING_HOSTS = new Set([
-    'www.academiaoxigenio.com',
-    'academiaoxigenio.com',
-    'www.academiaoxigenio.com.br',
-    'academiaoxigenio.com.br'
-]);
 const APP_PANEL_BASE_URL = String(process.env.APP_PANEL_BASE_URL || '').trim();
-registerPanelHostRoutes({
+registerPanelHostSetup({
     app,
     express,
     fs,
     rootDir: __dirname,
-    panelDist: PANEL_DIST,
-    panelV2Dist: PANEL_V2_DIST,
-    landingDist: LANDING_DIST,
-    panelV2Enabled: PANEL_V2_ENABLED,
-    radioPageFile: RADIO_PAGE_FILE,
-    landingHosts: LANDING_HOSTS,
     appPanelBaseUrl: APP_PANEL_BASE_URL
 });
 function probeAudioDurationSec(filePath) {
@@ -7170,15 +7153,12 @@ async function startBot() {
         }, 10000);
     });
 }
-startChatMediaCleanupLoop();
-if (DISABLE_WHATSAPP) {
-    if (!server.listening) {
-        server.listen(PORT, () => {
-            console.log(`[start] HimeFit Ultimate 6.5: ${PORT} (whatsapp desativado)`);
-            auditListRoutes();
-        });
-    }
-} else {
-    startBot();
-}
+startRuntimeServices({
+    startChatMediaCleanupLoop,
+    disableWhatsapp: DISABLE_WHATSAPP,
+    server,
+    port: PORT,
+    auditListRoutes,
+    startBot
+});
 

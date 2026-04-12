@@ -1,4 +1,6 @@
 .env
+tools/runtime/
+tools/cache/
 node_modules/
 logs/
 *.log

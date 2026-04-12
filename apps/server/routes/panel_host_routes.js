@@ -5,14 +5,14 @@ function registerPanelHostRoutes({
     express,
     fs,
     rootDir,
-    panelDist,
     panelV2Dist,
     landingDist,
-    panelV2Enabled,
     radioPageFile,
     landingHosts,
     appPanelBaseUrl
 }) {
+    const panelV2Exists = fs.existsSync(panelV2Dist);
+
     function getRequestHost(req) {
         const forwardedHostRaw = String(req.get('x-forwarded-host') || '').trim();
         const forwardedHost = forwardedHostRaw
@@ -54,28 +54,17 @@ function registerPanelHostRoutes({
         return res.redirect(getPanelBaseUrl(host));
     }
 
-    function redirectToLegacyPanel(req, res) {
-        const host = getRequestHost(req);
-        return res.redirect(`${getPublicOrigin(host)}/painel-legado`);
-    }
-
     function sendPanelIndex(res) {
-        const panelIndex = panelV2Enabled
-            ? path.join(panelV2Dist, 'index.html')
-            : path.join(panelDist, 'index.html');
-        if (fs.existsSync(panelIndex)) return res.sendFile(panelIndex);
+        if (panelV2Exists) {
+            const panelIndex = path.join(panelV2Dist, 'index.html');
+            if (fs.existsSync(panelIndex)) return res.sendFile(panelIndex);
+        }
         return res.sendFile(path.join(rootDir, 'atendimento.html'));
     }
 
     function sendLandingIndex(res) {
         const landingIndex = path.join(landingDist, 'index.html');
         if (fs.existsSync(landingIndex)) return res.sendFile(landingIndex);
-        return sendPanelIndex(res);
-    }
-
-    function sendLegacyPanelIndex(res) {
-        const legacyIndex = path.join(panelDist, 'index.html');
-        if (fs.existsSync(legacyIndex)) return res.sendFile(legacyIndex);
         return sendPanelIndex(res);
     }
 
@@ -91,41 +80,22 @@ function registerPanelHostRoutes({
         app.use('/landing-assets', express.static(landingDist));
     }
 
-    if (panelV2Enabled && fs.existsSync(panelV2Dist)) {
+    if (panelV2Exists) {
         const panelV2Static = express.static(panelV2Dist, { index: false, redirect: false });
-        app.use('/panel_v2', express.static(panelV2Dist));
+        app.use('/panel_v2', panelV2Static);
         app.use('/painel', panelV2Static);
         app.use('/panel', (req, res) => {
             const host = getRequestHost(req);
             if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
             return res.redirect('/painel');
         });
+        app.use('/painel-legado', (req, res) => redirectToPanel(req, res));
+        app.use('/panel_legacy', (req, res) => redirectToPanel(req, res));
+
         app.use((req, res, next) => {
             const host = getRequestHost(req);
             if (isRadioHost(host) || isLandingHost(host)) return next();
             return panelV2Static(req, res, next);
-        });
-
-        if (fs.existsSync(panelDist)) {
-            app.use('/painel-legado', express.static(panelDist, { index: false, redirect: false }));
-            app.use('/panel_legacy', (req, res) => {
-                const host = getRequestHost(req);
-                if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToLegacyPanel(req, res);
-                return res.redirect('/painel-legado');
-            });
-        }
-    } else if (fs.existsSync(panelDist)) {
-        const panelLegacyStatic = express.static(panelDist, { index: false, redirect: false });
-        app.use('/painel', panelLegacyStatic);
-        app.use('/panel', (req, res) => {
-            const host = getRequestHost(req);
-            if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
-            return res.redirect('/painel');
-        });
-        app.use((req, res, next) => {
-            const host = getRequestHost(req);
-            if (isRadioHost(host) || isLandingHost(host)) return next();
-            return panelLegacyStatic(req, res, next);
         });
     }
 
@@ -136,66 +106,69 @@ function registerPanelHostRoutes({
         if (isLandingHost(host)) return sendLandingIndex(res);
         return sendPanelIndex(res);
     });
+
     app.get('/painel', (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get(/^\/painel\/.+$/, (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get('/panel', (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get(/^\/panel\/.+$/, (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get('/painel-legado', (req, res) => {
-        const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
-        if (isLegacyAppPanelHost(host)) return redirectToLegacyPanel(req, res);
-        return sendLegacyPanelIndex(res);
+        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
+        return redirectToPanel(req, res);
     });
+
     app.get(/^\/painel-legado\/.+$/, (req, res) => {
-        const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
-        if (isLegacyAppPanelHost(host)) return redirectToLegacyPanel(req, res);
-        return sendLegacyPanelIndex(res);
+        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
+        return redirectToPanel(req, res);
     });
+
     app.get('/panel_legacy', (req, res) => {
-        const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
-        if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToLegacyPanel(req, res);
-        return sendLegacyPanelIndex(res);
+        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
+        return redirectToPanel(req, res);
     });
+
     app.get(/^\/panel_legacy\/.+$/, (req, res) => {
-        const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
-        if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToLegacyPanel(req, res);
-        return sendLegacyPanelIndex(res);
+        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
+        return redirectToPanel(req, res);
     });
+
     app.get('/ponto', (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get(/^\/ponto\/.+$/, (req, res) => {
         const host = getRequestHost(req);
         if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
+
     app.get('/radio', (req, res) => res.sendFile(radioPageFile));
 }
 
