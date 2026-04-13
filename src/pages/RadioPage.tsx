@@ -8,7 +8,7 @@ import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus, Trash2, Play, Pause, SkipForward, SkipBack,
-  Volume2, VolumeX, Radio, Music, Megaphone, GripVertical,
+  Volume2, VolumeX, Radio, Megaphone, GripVertical,
   ListMusic, Clock, Building2, FileText, BarChart3, Settings,
 } from "lucide-react";
 import YouTubePlayer from "@/components/radio/YouTubePlayer";
@@ -21,26 +21,17 @@ import AdScheduleView from "@/components/radio/AdScheduleView";
 import AdLogs from "@/components/radio/AdLogs";
 import RadioReports from "@/components/radio/RadioReports";
 import RadioSettingsPanel from "@/components/radio/RadioSettingsPanel";
-
-interface Track {
-  id: string;
-  title: string;
-  url: string;
-  duration?: string;
-}
-
-const mockPlaylist: Track[] = [
-  { id: "1", title: "Motivação Total - Mix Treino", url: "https://youtube.com/watch?v=abc123", duration: "4:32" },
-  { id: "2", title: "Rock Pesado Academia", url: "https://youtube.com/watch?v=def456", duration: "3:45" },
-  { id: "3", title: "EDM Workout 2024", url: "https://youtube.com/watch?v=ghi789", duration: "5:10" },
-  { id: "4", title: "Pop Hits - Cardio", url: "https://youtube.com/watch?v=jkl012", duration: "3:58" },
-];
+import { usePlaylist, useAddTrack, useRemoveTrack, useUpdateTrack } from "@/hooks/usePlaylistData";
 
 export default function RadioPage() {
+  const { data: playlist = [], isLoading: playlistLoading } = usePlaylist();
+  const addTrackMut = useAddTrack();
+  const removeTrackMut = useRemoveTrack();
+  const updateTrackMut = useUpdateTrack();
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState([75]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
-  const [playlist, setPlaylist] = useState(mockPlaylist);
   const [newUrl, setNewUrl] = useState("");
   const [duckingLevel, setDuckingLevel] = useState([20]);
   const [isDucked, setIsDucked] = useState(false);
@@ -56,19 +47,26 @@ export default function RadioPage() {
   }, []);
 
   const handleTrackTitleUpdate = useCallback((index: number, title: string) => {
-    setPlaylist((prev) => prev.map((t, i) => (i === index ? { ...t, title } : t)));
-  }, []);
+    const track = playlist[index];
+    if (track) {
+      updateTrackMut.mutate({ id: track.id, title });
+    }
+  }, [playlist, updateTrackMut]);
 
   const currentTrack = playlist[currentTrackIndex];
 
+  // Map playlist to format expected by YouTubePlayer
+  const playerPlaylist = playlist.map((t) => ({
+    id: t.id,
+    title: t.title,
+    url: t.url,
+  }));
+
   const addTrack = () => {
     if (!newUrl.trim()) return;
-    const newTrack: Track = { id: Date.now().toString(), title: `Nova música (${newUrl.substring(0, 30)}...)`, url: newUrl };
-    setPlaylist([...playlist, newTrack]);
+    addTrackMut.mutate(newUrl);
     setNewUrl("");
   };
-
-  const removeTrack = (id: string) => setPlaylist(playlist.filter((t) => t.id !== id));
 
   return (
     <div className="p-4 md:p-6 space-y-4">
@@ -98,7 +96,7 @@ export default function RadioPage() {
 
             <div className="flex-1 min-w-0">
               <p className="font-medium truncate">{currentTrack?.title || "Nenhuma música"}</p>
-              <p className="text-sm text-muted-foreground">{currentTrack?.duration || "--:--"}</p>
+              <p className="text-sm text-muted-foreground truncate">{currentTrack?.url || "Adicione músicas à playlist"}</p>
             </div>
 
             <div className="flex items-center gap-2 w-36">
@@ -109,7 +107,7 @@ export default function RadioPage() {
           </div>
 
           <YouTubePlayer
-            playlist={playlist}
+            playlist={playerPlaylist}
             currentTrackIndex={currentTrackIndex}
             isPlaying={isPlaying}
             volume={effectiveVolume}
@@ -147,8 +145,16 @@ export default function RadioPage() {
           <Card>
             <CardContent className="p-4">
               <div className="flex gap-2 mb-4">
-                <Input placeholder="Cole o link do YouTube..." value={newUrl} onChange={(e) => setNewUrl(e.target.value)} className="flex-1" />
-                <Button onClick={addTrack}><Plus className="h-4 w-4 mr-1" /> Adicionar</Button>
+                <Input
+                  placeholder="Cole o link do YouTube..."
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  className="flex-1"
+                  onKeyDown={(e) => e.key === "Enter" && addTrack()}
+                />
+                <Button onClick={addTrack} disabled={addTrackMut.isPending}>
+                  <Plus className="h-4 w-4 mr-1" /> Adicionar
+                </Button>
               </div>
               <div className="flex items-center gap-4 mb-3">
                 <span className="text-sm text-muted-foreground">Audio Ducking:</span>
@@ -157,35 +163,47 @@ export default function RadioPage() {
               </div>
               <ScrollArea className="max-h-80">
                 <div className="space-y-1">
-                  {playlist.map((track, index) => (
-                    <div
-                      key={track.id}
-                      className={`flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 group ${
-                        index === currentTrackIndex ? "bg-primary/5 border border-primary/20" : ""
-                      }`}
-                      onClick={() => setCurrentTrackIndex(index)}
-                    >
-                      <GripVertical className="h-4 w-4 text-muted-foreground cursor-grab" />
-                      <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
-                      {index === currentTrackIndex && isPlaying ? (
-                        <div className="flex gap-0.5 items-end h-4">
-                          <div className="w-0.5 bg-primary animate-pulse h-2" />
-                          <div className="w-0.5 bg-primary animate-pulse h-4" style={{ animationDelay: "0.2s" }} />
-                          <div className="w-0.5 bg-primary animate-pulse h-3" style={{ animationDelay: "0.4s" }} />
-                        </div>
-                      ) : (
-                        <Play className="h-3 w-3 text-muted-foreground" />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm truncate">{track.title}</p>
-                        <p className="text-[10px] text-muted-foreground truncate">{track.url}</p>
-                      </div>
-                      <span className="text-xs text-muted-foreground">{track.duration || "--:--"}</span>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); removeTrack(track.id); }}>
-                        <Trash2 className="h-3 w-3 text-destructive" />
-                      </Button>
+                  {playlistLoading ? (
+                    <p className="text-sm text-muted-foreground p-4">Carregando playlist...</p>
+                  ) : playlist.length === 0 ? (
+                    <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground text-center">
+                      Nenhuma faixa cadastrada. Adicione um link do YouTube acima.
                     </div>
-                  ))}
+                  ) : (
+                    playlist.map((track, index) => (
+                      <div
+                        key={track.id}
+                        className={`flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 group cursor-pointer ${
+                          index === currentTrackIndex ? "bg-primary/5 border border-primary/20" : ""
+                        }`}
+                        onClick={() => setCurrentTrackIndex(index)}
+                      >
+                        <GripVertical className="h-4 w-4 text-muted-foreground cursor-grab" />
+                        <span className="text-xs text-muted-foreground w-6">{index + 1}</span>
+                        {index === currentTrackIndex && isPlaying ? (
+                          <div className="flex gap-0.5 items-end h-4">
+                            <div className="w-0.5 bg-primary animate-pulse h-2" />
+                            <div className="w-0.5 bg-primary animate-pulse h-4" style={{ animationDelay: "0.2s" }} />
+                            <div className="w-0.5 bg-primary animate-pulse h-3" style={{ animationDelay: "0.4s" }} />
+                          </div>
+                        ) : (
+                          <Play className="h-3 w-3 text-muted-foreground" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate">{track.title}</p>
+                          <p className="text-[10px] text-muted-foreground truncate">{track.url}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 opacity-0 group-hover:opacity-100"
+                          onClick={(e) => { e.stopPropagation(); removeTrackMut.mutate(track.id); }}
+                        >
+                          <Trash2 className="h-3 w-3 text-destructive" />
+                        </Button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </ScrollArea>
             </CardContent>
