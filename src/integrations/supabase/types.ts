@@ -485,6 +485,36 @@ export type Database = {
           },
         ]
       }
+      radio_playlist: {
+        Row: {
+          added_by: string | null
+          created_at: string
+          id: string
+          position: number
+          title: string
+          updated_at: string
+          url: string
+        }
+        Insert: {
+          added_by?: string | null
+          created_at?: string
+          id?: string
+          position?: number
+          title?: string
+          updated_at?: string
+          url: string
+        }
+        Update: {
+          added_by?: string | null
+          created_at?: string
+          id?: string
+          position?: number
+          title?: string
+          updated_at?: string
+          url?: string
+        }
+        Relationships: []
+      }
       radio_settings: {
         Row: {
           created_at: string
