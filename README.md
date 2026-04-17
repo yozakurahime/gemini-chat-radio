@@ -88,4 +88,17 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
 - Scripts de deploy: `tools/deploy/`
   - `install-server.sh` (primeira instalacao no servidor)
   - `update-server.sh` (atualizacao de producao)
+  - `deploy-now.sh` (deploy de 1 comando, com backup antes)
+  - `backup-db.sh` (backup do SQLite com retencao)
+  - `install-backup-cron.sh` (agenda backup diario no cron)
   - `deploy_oracle_manual.ps1` (disparo manual via Windows + SSH)
+
+### Fluxo recomendado no servidor Linux (GitHub + deploy)
+
+1. Configurar token GitHub (PAT fine-grained) para `git pull`:
+   - `git config --global credential.helper store`
+   - `git -C /opt/himefit pull origin main` (na primeira vez, informar usuario + token)
+2. Deploy em um comando:
+   - `cd /opt/himefit && bash tools/deploy/deploy-now.sh`
+3. Agendar backup diario do banco:
+   - `cd /opt/himefit && bash tools/deploy/install-backup-cron.sh`
