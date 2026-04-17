@@ -93,13 +93,17 @@ function ChatMessageBubble({ message }: { message: RenderMessage }) {
               {message.mediaKind === "sticker" ? "figurinha" : "imagem"}
             </Badge>
           ) : null}
-          <span className="text-[10px] text-muted-foreground">{message.timestamp}</span>
         </div>
         {message.mediaKind ? (
           <ChatMediaBubble message={message} />
         ) : (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         )}
+        {message.timestamp ? (
+          <div className="mt-1 flex justify-end">
+            <span className="text-[10px] text-muted-foreground">{message.timestamp}</span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -113,18 +117,31 @@ export default function AtendimentoPage() {
     messages,
     selectChat,
     sendText,
+    setChatIAEnabled,
     hasMoreMessages,
     loadingMessages,
     loadMoreMessages,
   } = usePanelData();
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
+  const [iaSwitchLoading, setIaSwitchLoading] = useState(false);
 
   const filteredConversations = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return chats.filter((chat) => {
+    const filtered = chats.filter((chat) => {
       if (!query) return chat.status !== "archived";
       return `${chat.name || ""} ${chat.id || ""} ${chat.lastMessage || ""}`.toLowerCase().includes(query);
+    });
+    return filtered.sort((left, right) => {
+      const leftAttention = !!left.attentionActive;
+      const rightAttention = !!right.attentionActive;
+      if (leftAttention !== rightAttention) return leftAttention ? -1 : 1;
+      if (leftAttention && rightAttention) {
+        const leftSince = Number(left.attentionSince || left.timestamp || 0);
+        const rightSince = Number(right.attentionSince || right.timestamp || 0);
+        if (leftSince !== rightSince) return rightSince - leftSince;
+      }
+      return Number(right.timestamp || 0) - Number(left.timestamp || 0);
     });
   }, [chats, searchQuery]);
 
@@ -164,14 +181,20 @@ export default function AtendimentoPage() {
             <div
               key={conv.id}
               onClick={() => selectChat(conv.id)}
-              className={`p-3 border-b cursor-pointer hover:bg-muted/50 transition-colors ${
+              className={`relative p-3 border-b cursor-pointer transition-colors ${
+                conv.attentionActive
+                  ? "bg-amber-100/80 border-l-4 border-l-amber-500 ring-1 ring-amber-300/80 hover:bg-amber-100 dark:bg-amber-500/10 dark:border-l-amber-300 dark:ring-amber-400/40 motion-safe:animate-pulse motion-reduce:animate-none"
+                  : "hover:bg-muted/50"
+              } ${
                 selectedChatId === conv.id ? "bg-accent/30" : ""
               }`}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm truncate">{conv.name || phoneFromJid(conv.id)}</span>
+                    <span className={`font-medium text-sm truncate ${conv.attentionActive ? "text-amber-900 dark:text-amber-100 font-semibold" : ""}`}>
+                      {conv.attentionActive ? `NOVA • ${conv.name || phoneFromJid(conv.id)}` : (conv.name || phoneFromJid(conv.id))}
+                    </span>
                     {!conv.pausedByHuman && (
                       <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-primary/10 text-primary">
                         <Bot className="h-3 w-3 mr-0.5" /> IA
@@ -194,7 +217,11 @@ export default function AtendimentoPage() {
                 <div className="flex flex-col items-end gap-1 ml-2">
                   <span className="text-[10px] text-muted-foreground">{formatTime(conv.timestamp)}</span>
                   {(conv.unreadCount || 0) > 0 && (
-                    <span className="bg-primary text-primary-foreground text-[10px] rounded-full h-5 w-5 flex items-center justify-center">
+                    <span className={`rounded-full flex items-center justify-center font-semibold ${
+                      conv.attentionActive
+                        ? "bg-amber-500 text-white text-[11px] h-6 min-w-6 px-1.5 shadow-sm ring-2 ring-amber-300/80 motion-safe:animate-pulse motion-reduce:animate-none"
+                        : "bg-primary text-primary-foreground text-[10px] h-5 min-w-5 px-1"
+                    }`}>
                       {conv.unreadCount}
                     </span>
                   )}
@@ -215,7 +242,18 @@ export default function AtendimentoPage() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Resposta IA</span>
-                <Switch checked={!selectedChat.pausedByHuman} disabled />
+                <Switch
+                  checked={!selectedChat.pausedByHuman}
+                  disabled={iaSwitchLoading}
+                  onCheckedChange={async (checked) => {
+                    setIaSwitchLoading(true);
+                    try {
+                      await setChatIAEnabled(checked);
+                    } finally {
+                      setIaSwitchLoading(false);
+                    }
+                  }}
+                />
               </div>
             </div>
 

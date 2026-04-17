@@ -13,6 +13,7 @@ function registerChatAdminRoutes({
     getSendTarget,
     clearPendingHumanHandoff,
     broadcastHumanHandoffStatus,
+    appendHistoryEntry,
     saveChat,
     broadcast,
     scheduleBotResume,
@@ -77,15 +78,17 @@ function registerChatAdminRoutes({
             }
             convo.pausedByHuman = true;
             convo.status = 'active';
-            convo.lastActivityTimestamp = Date.now();
-            convo.history.push(`${senderName}: ${text}`);
+            const now = Date.now();
+            convo.lastActivityTimestamp = now;
+            appendHistoryEntry(convo.history, senderName, text, now);
             saveChat(contactId);
             broadcast({
                 type: 'admin_reply_success',
                 from: contactId,
                 text,
                 senderName,
-                isPaused: true
+                isPaused: true,
+                timestamp: now
             });
             scheduleBotResume(contactId);
             return res.json({ ok: true, previewText: text });
@@ -93,6 +96,48 @@ function registerChatAdminRoutes({
             console.error('[chat-text] send error:', error?.message || error);
             return res.status(500).json({ error: 'send_failed' });
         }
+    });
+
+    app.post('/admin/conversations/:id/ia-state', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        if (!contactId) return res.status(400).json({ error: 'conversation_not_found' });
+        const convo = conversationState[contactId];
+        if (!convo) return res.status(404).json({ error: 'conversation_not_found' });
+
+        const enabled = req.body?.enabled !== false;
+        if (enabled) {
+            convo.pausedByHuman = false;
+            if (convo.inactivityTimer) {
+                try { clearTimeout(convo.inactivityTimer); } catch (_) {}
+                convo.inactivityTimer = null;
+            }
+        } else {
+            convo.pausedByHuman = true;
+            scheduleBotResume(contactId);
+        }
+
+        if (convo.pendingHumanHandoff) {
+            clearPendingHumanHandoff(convo);
+            broadcastHumanHandoffStatus({ sender: contactId, user: convo, pending: false, reason: 'cancelled' });
+        }
+
+        convo.status = 'active';
+        convo.lastActivityTimestamp = Date.now();
+        saveChat(contactId);
+
+        broadcast({
+            type: 'chat_ia_state_updated',
+            from: contactId,
+            isPaused: !!convo.pausedByHuman
+        });
+
+        return res.json({
+            ok: true,
+            contactId,
+            enabled: !convo.pausedByHuman,
+            isPaused: !!convo.pausedByHuman
+        });
     });
 
     app.post('/admin/conversations/:id/send-image', (req, res) => {
@@ -146,7 +191,7 @@ function registerChatAdminRoutes({
                 convo.pausedByHuman = true;
                 convo.status = 'active';
                 convo.lastActivityTimestamp = now;
-                convo.history.push(`${senderName}: ${marker}`);
+                appendHistoryEntry(convo.history, senderName, marker, now);
                 saveChat(contactId);
                 broadcast({
                     type: 'admin_reply_success',
@@ -154,6 +199,7 @@ function registerChatAdminRoutes({
                     text: marker,
                     senderName,
                     isPaused: true,
+                    timestamp: now,
                     kind: 'image',
                     media
                 });
@@ -219,7 +265,7 @@ function registerChatAdminRoutes({
                 convo.pausedByHuman = true;
                 convo.status = 'active';
                 convo.lastActivityTimestamp = now;
-                convo.history.push(`${senderName}: ${marker}`);
+                appendHistoryEntry(convo.history, senderName, marker, now);
                 saveChat(contactId);
                 broadcast({
                     type: 'admin_reply_success',
@@ -227,6 +273,7 @@ function registerChatAdminRoutes({
                     text: marker,
                     senderName,
                     isPaused: true,
+                    timestamp: now,
                     kind: 'sticker',
                     media
                 });

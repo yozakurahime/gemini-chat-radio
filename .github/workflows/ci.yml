@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "sync-origin-main"]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install workspace dependencies
+        run: |
+          npm --prefix apps/panel-v2 ci
+          npm --prefix apps/landing ci
+          npm --prefix apps/server ci
+
+      - name: Run panel tests
+        run: npm --prefix apps/panel-v2 run test
+
+      - name: Run server tests
+        run: node --test apps/server/tests/security.test.js apps/server/tests/admin_flows.test.js
+
+      - name: Build panel
+        run: npm --prefix apps/panel-v2 run build
+
+      - name: Build landing
+        run: npm --prefix apps/landing run build

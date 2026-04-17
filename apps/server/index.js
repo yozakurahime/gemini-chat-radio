@@ -5,6 +5,7 @@
 // - Mantem: Sincronizacao e funcionalidades anteriores
 // ============================================================
 
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 require('dotenv').config();
 
 // IMPORTACAO IA
@@ -13,6 +14,12 @@ let transcreverAudioIA = async () => "[Erro Audio]";
 let generateSeedAdDrafts = async () => { throw new Error('ads_ai_unavailable'); };
 let generateCustomAdDraft = async () => { throw new Error('ads_ai_unavailable'); };
 let synthesizeAdSpeech = async () => { throw new Error('ads_ai_unavailable'); };
+let getAIContextSnapshot = () => ({
+    contexto_length: 0,
+    avisos_length: 0,
+    contexto_mtime_ms: 0,
+    avisos_mtime_ms: 0
+});
 let getAdsAICapabilities = () => ({
     enabled: false,
     can_generate_scripts: false,
@@ -30,6 +37,7 @@ try {
     generateSeedAdDrafts = ai.generateSeedAdDrafts || generateSeedAdDrafts;
     generateCustomAdDraft = ai.generateCustomAdDraft || generateCustomAdDraft;
     synthesizeAdSpeech = ai.synthesizeAdSpeech || synthesizeAdSpeech;
+    getAIContextSnapshot = ai.getCurrentContextSnapshot || getAIContextSnapshot;
     getAdsAICapabilities = ai.getAdsAICapabilities || getAdsAICapabilities;
     console.log("[ok] IA Conectada.");
 } catch (e) { console.error("[warn] Crie 'ai_service.js'!"); }
@@ -271,6 +279,8 @@ const ATTENDANCE_ENTRY_WINDOW_BEFORE_BLOCK_END_MIN = 30;
 const ATTENDANCE_EXIT_MANUAL_GRACE_AFTER_END_MIN = 0;
 const ATTENDANCE_EXIT_AUTO_CLOSE_ENABLED = true;
 const ATTENDANCE_ENTRY_WINDOW_AFTER_MIN = -ATTENDANCE_ENTRY_WINDOW_BEFORE_BLOCK_END_MIN;
+const SCA_SYNC_ENABLED = process.env.SCA_SYNC_ENABLED === '1';
+const SCA_SYNC_TOKEN = String(process.env.SCA_SYNC_TOKEN || '').trim();
 const ATTENDANCE_GEO_DEFAULTS = {
     enabled: true,
     require_entry_location: true,
@@ -1232,6 +1242,56 @@ db.prepare(`CREATE TABLE IF NOT EXISTS attendance_vacations (
     created_at INTEGER,
     updated_at INTEGER
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS sca_people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id TEXT DEFAULT '',
+    name TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    plan TEXT DEFAULT '',
+    last_access_at INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS sca_access_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_event_id TEXT NOT NULL,
+    source TEXT DEFAULT 'sca_csv',
+    external_id TEXT DEFAULT '',
+    name TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    event_type TEXT NOT NULL,
+    event_at INTEGER NOT NULL,
+    status TEXT DEFAULT '',
+    plan TEXT DEFAULT '',
+    gate TEXT DEFAULT '',
+    raw_json TEXT DEFAULT '{}',
+    created_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS sca_sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT DEFAULT 'sca_csv',
+    actor TEXT DEFAULT '',
+    started_at INTEGER,
+    finished_at INTEGER,
+    received_count INTEGER DEFAULT 0,
+    inserted_count INTEGER DEFAULT 0,
+    duplicated_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    message TEXT DEFAULT '',
+    created_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS sca_sync_connector_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT DEFAULT 'sca_db',
+    engine_detected TEXT DEFAULT '',
+    db_file TEXT DEFAULT '',
+    last_scan_at INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    lag_sec INTEGER DEFAULT 0,
+    meta_json TEXT DEFAULT '{}',
+    updated_at INTEGER
+)`).run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_events_employee_at ON attendance_events(employee_id, event_at)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_schedules_employee_weekday ON attendance_schedules(employee_id, weekday)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_catalog_type_active ON attendance_activity_catalog(type, active, sort_order)').run();
@@ -1243,6 +1303,14 @@ db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_just_emp_date ON attendanc
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_just_status ON attendance_absence_justifications(status)').run();
 db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_attendance_just_emp_date ON attendance_absence_justifications(employee_id, date_key)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_vac_emp_range ON attendance_vacations(employee_id, start_date, end_date, active)').run();
+db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_access_source_event ON sca_access_events(source_event_id)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_access_phone_at ON sca_access_events(phone, event_at)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_access_external_at ON sca_access_events(external_id, event_at)').run();
+db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_people_external ON sca_people(external_id) WHERE external_id <> ''").run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_phone ON sca_people(phone)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_runs_finished ON sca_sync_runs(finished_at)').run();
+db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_connector_source ON sca_sync_connector_status(source)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_updated ON sca_sync_connector_status(updated_at)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_advertisers_segment_status ON advertisers(segment_id, status)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ad_contracts_advertiser_status ON ad_contracts(advertiser_id, contract_status, payment_status)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_radio_ads_contract_status ON radio_ads(contract_id, status)').run();
@@ -1533,6 +1601,353 @@ function extractPhoneDigitsFromJid(jid) {
 
 function phoneFromJid(jid) {
     return extractPhoneDigitsFromJid(jid);
+}
+
+function formatDateTimeBR(ts) {
+    const value = Number(ts || 0);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    try {
+        return new Date(value).toLocaleString('pt-BR');
+    } catch (_) {
+        return String(value);
+    }
+}
+
+function formatDaysWithoutAccess(ts) {
+    const value = Number(ts || 0);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const diff = Date.now() - value;
+    if (diff < 0) return 0;
+    return Math.floor(diff / (24 * 60 * 60 * 1000));
+}
+
+function upsertScaPersonSnapshot(event) {
+    const externalId = sanitizePublicText(event.external_id || '', 120);
+    const name = sanitizePublicText(event.name || '', 120);
+    const phone = normalizePhoneDigits(event.phone || '');
+    const status = sanitizePublicText(event.status || '', 40);
+    const plan = sanitizePublicText(event.plan || '', 80);
+    const eventAt = Number(event.event_at || 0);
+    let row = null;
+    if (externalId) {
+        row = db.prepare('SELECT * FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
+    }
+    if (!row && phone) {
+        row = db.prepare('SELECT * FROM sca_people WHERE phone=? ORDER BY updated_at DESC LIMIT 1').get(phone);
+    }
+    const now = Date.now();
+    if (!row) {
+        db.prepare(`
+            INSERT INTO sca_people (external_id, name, phone, status, plan, last_access_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(externalId, name, phone, status, plan, eventAt || 0, now, now);
+        return;
+    }
+    const nextExternalId = externalId || String(row.external_id || '');
+    const nextName = name || String(row.name || '');
+    const nextPhone = phone || String(row.phone || '');
+    const nextStatus = status || String(row.status || '');
+    const nextPlan = plan || String(row.plan || '');
+    const nextLastAccessAt = Math.max(Number(row.last_access_at || 0), Number(eventAt || 0));
+    db.prepare(`
+        UPDATE sca_people
+        SET external_id=?, name=?, phone=?, status=?, plan=?, last_access_at=?, updated_at=?
+        WHERE id=?
+    `).run(nextExternalId, nextName, nextPhone, nextStatus, nextPlan, nextLastAccessAt, now, row.id);
+}
+
+function safeJsonStringify(value, fallback = '{}') {
+    try {
+        return JSON.stringify(value);
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function normalizeScaConnectorPayload(connector = null, fallbackSource = 'sca_db') {
+    if (!connector || typeof connector !== 'object') return null;
+    const source = sanitizePublicText(connector.source || fallbackSource || 'sca_db', 60) || 'sca_db';
+    const engineDetected = sanitizePublicText(connector.engine_detected || connector.engine || '', 40);
+    const dbFile = sanitizePublicText(connector.db_file || connector.dbFile || '', 320);
+    const lastScanRaw = Number(connector.last_scan_at ?? connector.lastScanAt ?? 0);
+    const lagRaw = Number(connector.lag_sec ?? connector.lagSec ?? 0);
+    const meta =
+        connector.meta && typeof connector.meta === 'object'
+            ? connector.meta
+            : {};
+    const metaJsonFromPayload = typeof connector.meta_json === 'string' ? connector.meta_json : '';
+    return {
+        source,
+        engine_detected: engineDetected,
+        db_file: dbFile,
+        last_scan_at: Number.isFinite(lastScanRaw) && lastScanRaw > 0 ? Math.floor(lastScanRaw) : 0,
+        last_error: sanitizePublicText(connector.last_error || connector.lastError || '', 240),
+        lag_sec: Number.isFinite(lagRaw) && lagRaw >= 0 ? Math.floor(lagRaw) : 0,
+        meta_json: metaJsonFromPayload || safeJsonStringify(meta, '{}')
+    };
+}
+
+function upsertScaConnectorStatus(connector = null) {
+    const payload = normalizeScaConnectorPayload(connector);
+    if (!payload) return null;
+    const now = Date.now();
+    db.prepare(`
+        INSERT INTO sca_sync_connector_status (
+            source, engine_detected, db_file, last_scan_at, last_error, lag_sec, meta_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source) DO UPDATE SET
+            engine_detected=excluded.engine_detected,
+            db_file=excluded.db_file,
+            last_scan_at=excluded.last_scan_at,
+            last_error=excluded.last_error,
+            lag_sec=excluded.lag_sec,
+            meta_json=excluded.meta_json,
+            updated_at=excluded.updated_at
+    `).run(
+        payload.source,
+        payload.engine_detected,
+        payload.db_file,
+        payload.last_scan_at,
+        payload.last_error,
+        payload.lag_sec,
+        payload.meta_json,
+        now
+    );
+    return {
+        source: payload.source,
+        engine_detected: payload.engine_detected,
+        db_file: payload.db_file,
+        last_scan_at: payload.last_scan_at,
+        last_error: payload.last_error,
+        lag_sec: payload.lag_sec
+    };
+}
+
+function upsertScaAccessBatch({ source = 'sca_csv', actor = 'system', events = [], connector = null } = {}) {
+    const rows = Array.isArray(events) ? events : [];
+    const startedAt = Date.now();
+    const cleanSource = sanitizePublicText(source || 'sca_csv', 60) || 'sca_csv';
+    const cleanActor = sanitizePublicText(actor || 'system', 80) || 'system';
+    const connectorPayload = normalizeScaConnectorPayload(connector, cleanSource);
+    let insertedCount = 0;
+    let duplicatedCount = 0;
+    let failedCount = 0;
+    let lastError = '';
+    const tx = db.transaction((list) => {
+        for (const event of list) {
+            const sourceEventId = sanitizePublicText(event?.source_event_id || '', 180);
+            const externalId = sanitizePublicText(event?.external_id || '', 120);
+            const name = sanitizePublicText(event?.name || '', 120);
+            const phone = normalizePhoneDigits(event?.phone || '');
+            const eventType = sanitizePublicText(event?.event_type || '', 20).toLowerCase();
+            const eventAt = Number(event?.event_at || 0);
+            const status = sanitizePublicText(event?.status || '', 40);
+            const plan = sanitizePublicText(event?.plan || '', 80);
+            const gate = sanitizePublicText(event?.gate || '', 80);
+            const rawJson = JSON.stringify(event?.raw || event || {});
+            if (!sourceEventId || !eventType || !Number.isFinite(eventAt) || eventAt <= 0 || (!externalId && !phone)) {
+                failedCount += 1;
+                lastError = 'invalid_event_payload';
+                continue;
+            }
+            try {
+                db.prepare(`
+                    INSERT INTO sca_access_events (
+                        source_event_id, source, external_id, name, phone, event_type, event_at, status, plan, gate, raw_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                    sourceEventId,
+                    cleanSource,
+                    externalId,
+                    name,
+                    phone,
+                    eventType,
+                    eventAt,
+                    status,
+                    plan,
+                    gate,
+                    rawJson,
+                    Date.now()
+                );
+                insertedCount += 1;
+                upsertScaPersonSnapshot({
+                    external_id: externalId,
+                    name,
+                    phone,
+                    status,
+                    plan,
+                    event_at: eventAt
+                });
+            } catch (error) {
+                const msg = String(error?.message || '');
+                if (msg.includes('UNIQUE') || msg.includes('uniq_sca_access_source_event')) {
+                    duplicatedCount += 1;
+                } else {
+                    failedCount += 1;
+                    lastError = msg || 'insert_failed';
+                }
+            }
+        }
+    });
+    tx(rows);
+    const finishedAt = Date.now();
+    const message = lastError || 'ok';
+    db.prepare(`
+        INSERT INTO sca_sync_runs (
+            source, actor, started_at, finished_at, received_count, inserted_count, duplicated_count, failed_count, message, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        cleanSource,
+        cleanActor,
+        startedAt,
+        finishedAt,
+        rows.length,
+        insertedCount,
+        duplicatedCount,
+        failedCount,
+        sanitizePublicText(message, 240),
+        Date.now()
+    );
+    if (connectorPayload) upsertScaConnectorStatus(connectorPayload);
+    return {
+        source: cleanSource,
+        received_count: rows.length,
+        inserted_count: insertedCount,
+        duplicated_count: duplicatedCount,
+        failed_count: failedCount,
+        started_at: startedAt,
+        finished_at: finishedAt,
+        message
+    };
+}
+
+function getScaSyncStatus() {
+    const lastRun = db.prepare(`
+        SELECT id, source, actor, started_at, finished_at, received_count, inserted_count, duplicated_count, failed_count, message
+        FROM sca_sync_runs
+        ORDER BY id DESC
+        LIMIT 1
+    `).get() || null;
+    const lastSuccess = db.prepare(`
+        SELECT finished_at
+        FROM sca_sync_runs
+        WHERE failed_count=0
+        ORDER BY id DESC
+        LIMIT 1
+    `).get() || null;
+    const lastError = db.prepare(`
+        SELECT finished_at, message
+        FROM sca_sync_runs
+        WHERE failed_count>0
+        ORDER BY id DESC
+        LIMIT 1
+    `).get() || null;
+    const eventsTotal = Number(db.prepare('SELECT COUNT(1) AS total FROM sca_access_events').get()?.total || 0);
+    const peopleTotal = Number(db.prepare('SELECT COUNT(1) AS total FROM sca_people').get()?.total || 0);
+    const latestEvent = db.prepare('SELECT event_at FROM sca_access_events ORDER BY event_at DESC, id DESC LIMIT 1').get() || null;
+    const latestEventAt = Number(latestEvent?.event_at || 0);
+    const lagSec = latestEventAt > 0 ? Math.max(0, Math.floor((Date.now() - latestEventAt) / 1000)) : null;
+    const connectorRaw = db.prepare(`
+        SELECT source, engine_detected, db_file, last_scan_at, last_error, lag_sec, meta_json, updated_at
+        FROM sca_sync_connector_status
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    `).get() || null;
+    let connectorMeta = {};
+    try {
+        connectorMeta = connectorRaw?.meta_json ? JSON.parse(connectorRaw.meta_json) : {};
+    } catch (_) {
+        connectorMeta = {};
+    }
+    const connectorLagSec = Number(connectorRaw?.lag_sec || 0);
+    return {
+        runs: {
+            total: Number(db.prepare('SELECT COUNT(1) AS total FROM sca_sync_runs').get()?.total || 0),
+            last: lastRun,
+            last_success_at: Number(lastSuccess?.finished_at || 0),
+            last_error_at: Number(lastError?.finished_at || 0),
+            last_error_message: String(lastError?.message || '')
+        },
+        events: {
+            total: eventsTotal,
+            latest_event_at: latestEventAt,
+            lag_sec: lagSec
+        },
+        people: {
+            total: peopleTotal
+        },
+        connector: {
+            source: String(connectorRaw?.source || 'sca_db'),
+            engine_detected: sanitizePublicText(connectorRaw?.engine_detected || '', 40),
+            db_file: sanitizePublicText(connectorRaw?.db_file || '', 320),
+            last_scan_at: Number(connectorRaw?.last_scan_at || 0),
+            last_error: sanitizePublicText(connectorRaw?.last_error || '', 240),
+            lag_sec: Number.isFinite(connectorLagSec) && connectorLagSec >= 0 ? connectorLagSec : lagSec,
+            updated_at: Number(connectorRaw?.updated_at || 0),
+            meta: connectorMeta
+        }
+    };
+}
+
+function buildScaContextSnippetForSender(senderJid, senderRawJid = '') {
+    if (!SCA_SYNC_ENABLED) return '';
+    const variants = new Set();
+    const candidates = [senderJid, senderRawJid].filter(Boolean);
+    for (const jid of candidates) {
+        const phone = normalizePhoneDigits(extractPhoneDigitsFromJid(jid));
+        if (!phone) continue;
+        for (const variant of brPhoneVariants(phone)) {
+            variants.add(variant);
+        }
+    }
+    if (!variants.size) return '';
+    const phones = [...variants];
+    const placeholders = phones.map(() => '?').join(', ');
+    const person = db.prepare(`
+        SELECT *
+        FROM sca_people
+        WHERE phone IN (${placeholders})
+        ORDER BY updated_at DESC
+        LIMIT 1
+    `).get(...phones) || null;
+    const cutoff30 = Date.now() - (30 * 24 * 60 * 60 * 1000);
+    const recent = db.prepare(`
+        SELECT COUNT(1) AS total
+        FROM sca_access_events
+        WHERE phone IN (${placeholders}) AND event_at >= ?
+    `).get(...phones, cutoff30);
+    const lastEvent = db.prepare(`
+        SELECT event_type, event_at, status, plan, gate
+        FROM sca_access_events
+        WHERE phone IN (${placeholders})
+        ORDER BY event_at DESC, id DESC
+        LIMIT 1
+    `).get(...phones) || null;
+
+    if (!person && !lastEvent) return '';
+    const lines = [];
+    if (person) {
+        const displayName = sanitizePublicText(person.name || '', 120) || 'Aluno';
+        const displayExternalId = sanitizePublicText(person.external_id || '', 120);
+        lines.push(displayExternalId ? `Aluno SCA: ${displayName} (ID ${displayExternalId})` : `Aluno SCA: ${displayName}`);
+        if (person.status) lines.push(`Status no SCA: ${person.status}`);
+        if (person.plan) lines.push(`Plano: ${person.plan}`);
+    }
+    if (lastEvent) {
+        const eventTypeLabel = lastEvent.event_type === 'entry'
+            ? 'entrada'
+            : lastEvent.event_type === 'exit'
+                ? 'saida'
+                : String(lastEvent.event_type || 'acesso');
+        lines.push(`Ultimo acesso: ${formatDateTimeBR(lastEvent.event_at)} (${eventTypeLabel})`);
+    }
+    lines.push(`Acessos ultimos 30 dias: ${Number(recent?.total || 0)}`);
+    const referenceTs = Number(lastEvent?.event_at || person?.last_access_at || 0);
+    const daysWithout = formatDaysWithoutAccess(referenceTs);
+    if (Number.isFinite(daysWithout) && daysWithout >= 7) {
+        lines.push(`Alerta: sem acesso ha ${daysWithout} dias.`);
+    }
+    return lines.join('\n');
 }
 
 function dateKeyFromTs(ts) {
@@ -2857,21 +3272,24 @@ function shouldReuseHumanOriginalText(text) {
     return true;
 }
 
-async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit', matchedRule = '' }) {
+async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit', matchedRule = '', eventTimestamp = Date.now() }) {
     if (!user || user.pausedByHuman) return false;
     user.pausedByHuman = true;
     if (!user.tags.includes('Ajuda')) user.tags.push('Ajuda');
     clearPendingHumanHandoff(user);
     const reply = "Entendido! Estou pausando meu sistema e chamando um atendente humano para falar com voce. Aguarde um momento!";
+    const userTs = Number(eventTimestamp) > 0 ? Number(eventTimestamp) : Date.now();
+    const replyTs = Date.now();
     if (sock) await sock.sendMessage(getSendTarget(sender), { text: reply });
-    user.history.push(`Usuario: ${text}`);
-    user.history.push(`Hime: ${reply}`);
+    appendHistoryEntry(user.history, 'Usuario', text, userTs);
+    appendHistoryEntry(user.history, 'Hime', reply, replyTs);
     saveChat(sender);
     broadcast({
         type: 'help_alert',
         from: sender,
         name: user.name,
         text,
+        timestamp: userTs,
         tags: user.tags,
         triggerMode,
         matchedRule
@@ -4832,6 +5250,15 @@ function saveChat(id) {
     try { saveStmt.run({ id: id, name: u.name, history: JSON.stringify(u.history), tags: JSON.stringify(u.tags), notes: u.notes, last_activity: u.lastActivityTimestamp, paused_by_human: u.pausedByHuman ? 1 : 0, status: u.status, route_jid: u.routeJid || id }); } catch (e) {}
 }
 
+function appendHistoryEntry(history, sender, text, timestamp = Date.now()) {
+    if (!Array.isArray(history)) return;
+    const senderLabel = String(sender || 'Sistema').replace(/\s+/g, ' ').trim() || 'Sistema';
+    const content = String(text ?? '');
+    const ts = Number(timestamp);
+    const safeTs = Number.isFinite(ts) && ts > 0 ? Math.floor(ts) : Date.now();
+    history.push(`[ts=${safeTs}] ${senderLabel}: ${content}`);
+}
+
 function isPhoneJid(jid) {
     return typeof jid === 'string' && /^\d{10,13}(?::\d+)?@(s\.whatsapp\.net|c\.us)$/.test(jid);
 }
@@ -5658,6 +6085,7 @@ registerPanelHostSetup({
     express,
     fs,
     rootDir: __dirname,
+    updatesDir: UPDATES_DIR,
     appPanelBaseUrl: APP_PANEL_BASE_URL
 });
 function probeAudioDurationSec(filePath) {
@@ -5752,6 +6180,7 @@ registerChatAdminRoutes({
     getSendTarget,
     clearPendingHumanHandoff,
     broadcastHumanHandoffStatus,
+    appendHistoryEntry,
     saveChat,
     broadcast,
     scheduleBotResume,
@@ -5787,6 +6216,8 @@ registerAttendanceAdminRoutes({
     db,
     requirePanelAuth,
     requireAdmin,
+    SCA_SYNC_ENABLED,
+    SCA_SYNC_TOKEN,
     ATTENDANCE_ENABLED,
     getAttendanceGeoPolicy,
     getBotPhoneDigits,
@@ -5840,7 +6271,9 @@ registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS
+    WEEKDAY_LABELS,
+    upsertScaAccessBatch,
+    getScaSyncStatus
 });
 
 function parseTimeInputMs(v, fallback = null) {
@@ -6262,6 +6695,7 @@ registerKnowledgeAdminRoutes({
     getKnowledgePublished,
     setKnowledgePublished,
     getBaseContext: () => baseContextCache,
+    getAIContextSnapshot,
     setBaseContext: (nextValue) => { baseContextCache = nextValue; },
     syncAttendanceClassTemplatesFromContext,
     broadcast
@@ -6564,7 +6998,25 @@ wss.on('connection', (ws, req) => {
             if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u) ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff })); }
             if (data.type === 'request_chat_meta') { const u = conversationState[data.contactId]; if (u) ws.send(JSON.stringify({ type: 'chat_meta_response', from: data.contactId, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff })); }
             if (data.type === 'update_contact_data') { const u=conversationState[data.contactId]; if(u){ u.tags=data.tags; u.notes=data.notes; saveChat(data.contactId); broadcast({type:'contact_data_updated', contactId:data.contactId, tags:u.tags, notes:u.notes}); } }
-            if (data.type === 'admin_reply') { const u=conversationState[data.to]; if(u){ if (u.pendingHumanHandoff) { clearPendingHumanHandoff(u); broadcastHumanHandoffStatus({ sender: data.to, user: u, pending: false, reason: 'cancelled' }); } u.pausedByHuman=true; u.status='active'; const sn=ws.fullname||ws.username; const txt = `*${sn}:* ${data.text}`; await sock.sendMessage(getSendTarget(data.to), {text:txt}); u.history.push(`${sn}: ${data.text}`); saveChat(data.to); broadcast({type:'admin_reply_success', from:data.to, text:data.text, senderName:sn, isPaused:true}); scheduleBotResume(data.to); } }
+            if (data.type === 'admin_reply') {
+                const u = conversationState[data.to];
+                if (u) {
+                    if (u.pendingHumanHandoff) {
+                        clearPendingHumanHandoff(u);
+                        broadcastHumanHandoffStatus({ sender: data.to, user: u, pending: false, reason: 'cancelled' });
+                    }
+                    u.pausedByHuman = true;
+                    u.status = 'active';
+                    const sn = ws.fullname || ws.username;
+                    const txt = `*${sn}:* ${data.text}`;
+                    const now = Date.now();
+                    await sock.sendMessage(getSendTarget(data.to), { text: txt });
+                    appendHistoryEntry(u.history, sn, data.text, now);
+                    saveChat(data.to);
+                    broadcast({ type: 'admin_reply_success', from: data.to, text: data.text, senderName: sn, isPaused: true, timestamp: now });
+                    scheduleBotResume(data.to);
+                }
+            }
             if (data.type === 'resume_bot') { const u=conversationState[data.to]; if(u){ u.pausedByHuman=false; saveChat(data.to); broadcast({type:'bot_resumed', from:data.to}); } }
             if (data.type === 'end_chat') { 
                 const u = conversationState[data.to]; if (u) { u.status = 'archived'; saveChat(data.to); broadcast({ type: 'chat_archived_update', id: data.to }); }
@@ -6669,7 +7121,25 @@ fs.watchFile(BASE_CONTEXT_FILE, { interval: 1000 }, () => {
         }
     }, 200);
 });
-function scheduleBotResume(contactId) { const u = conversationState[contactId]; if(!u) return; if(u.inactivityTimer) clearTimeout(u.inactivityTimer); u.inactivityTimer = setTimeout(async () => { if(u.pausedByHuman) { u.pausedByHuman = false; const m = "Hime de volta! Posso ajudar em algo mais?"; if(sock) await sock.sendMessage(getSendTarget(contactId), {text:m}); u.history.push(`Hime: ${m}`); saveChat(contactId); broadcast({type:'bot_resumed', from:contactId}); } }, 30 * 60000); }
+function scheduleBotResume(contactId) {
+    const u = conversationState[contactId];
+    if (!u) return;
+    if (u.inactivityTimer) clearTimeout(u.inactivityTimer);
+    u.inactivityTimer = setTimeout(async () => {
+        try {
+            if (!u.pausedByHuman) return;
+            u.pausedByHuman = false;
+            const m = "Hime de volta! Posso ajudar em algo mais?";
+            const now = Date.now();
+            if (sock) await sock.sendMessage(getSendTarget(contactId), { text: m });
+            appendHistoryEntry(u.history, 'Hime', m, now);
+            saveChat(contactId);
+            broadcast({ type: 'bot_resumed', from: contactId, timestamp: now });
+        } catch (resumeErr) {
+            console.error('[chat] erro ao retomar bot automaticamente:', resumeErr?.message || resumeErr);
+        }
+    }, 30 * 60000);
+}
 
 // --- 8. BAILEYS ---
 let sock;
@@ -6882,7 +7352,7 @@ async function startBot() {
                     || (attendance.command === 'entry' ? 'entrada registrada' : attendance.command === 'exit' ? 'saida registrada' : 'acao processada')
                 ).trim();
                 if (panelText) {
-                    user.history.push(`Sistema Ponto: ${panelText}.`);
+                    appendHistoryEntry(user.history, 'Sistema Ponto', `${panelText}.`, msgTimestampMs);
                     saveChat(sender);
                     broadcast({
                         type: 'user_reply',
@@ -6890,7 +7360,8 @@ async function startBot() {
                         text: `[PONTO] ${panelText}`,
                         name: user.name,
                         status: 'active',
-                        pausedByHuman: user.pausedByHuman
+                        pausedByHuman: user.pausedByHuman,
+                        timestamp: msgTimestampMs
                     });
                 }
                 return;
@@ -6913,7 +7384,7 @@ async function startBot() {
                     height: incomingImage.height || undefined
                 };
                 const marker = buildChatImageHistoryMarker(media);
-                user.history.push(`Usuario: ${marker}`);
+                appendHistoryEntry(user.history, 'Usuario', marker, now);
                 saveChat(sender);
                 broadcast({
                     type: 'user_reply',
@@ -6922,6 +7393,7 @@ async function startBot() {
                     name: user.name,
                     status: 'active',
                     pausedByHuman: user.pausedByHuman,
+                    timestamp: now,
                     kind: 'image',
                     media
                 });
@@ -6929,7 +7401,8 @@ async function startBot() {
             } catch (imgErr) {
                 console.error('[chat-image] incoming image error:', imgErr?.message || imgErr);
                 const placeholder = '[Imagem recebida, mas nao foi possivel processar no painel]';
-                user.history.push(`Usuario: ${placeholder}`);
+                const now = Date.now();
+                appendHistoryEntry(user.history, 'Usuario', placeholder, now);
                 saveChat(sender);
                 broadcast({
                     type: 'user_reply',
@@ -6937,7 +7410,8 @@ async function startBot() {
                     text: placeholder,
                     name: user.name,
                     status: 'active',
-                    pausedByHuman: user.pausedByHuman
+                    pausedByHuman: user.pausedByHuman,
+                    timestamp: now
                 });
             }
 
@@ -6959,7 +7433,7 @@ async function startBot() {
                     ts: now
                 };
                 const marker = buildChatStickerHistoryMarker(media);
-                user.history.push(`Usuario: ${marker}`);
+                appendHistoryEntry(user.history, 'Usuario', marker, now);
                 saveChat(sender);
                 broadcast({
                     type: 'user_reply',
@@ -6968,13 +7442,15 @@ async function startBot() {
                     name: user.name,
                     status: 'active',
                     pausedByHuman: user.pausedByHuman,
+                    timestamp: now,
                     kind: 'sticker',
                     media
                 });
             } catch (stkErr) {
                 console.error('[chat-sticker] incoming sticker error:', stkErr?.message || stkErr);
                 const placeholder = '[Figurinha recebida, mas nao foi possivel processar no painel]';
-                user.history.push(`Usuario: ${placeholder}`);
+                const now = Date.now();
+                appendHistoryEntry(user.history, 'Usuario', placeholder, now);
                 saveChat(sender);
                 broadcast({
                     type: 'user_reply',
@@ -6982,7 +7458,8 @@ async function startBot() {
                     text: placeholder,
                     name: user.name,
                     status: 'active',
-                    pausedByHuman: user.pausedByHuman
+                    pausedByHuman: user.pausedByHuman,
+                    timestamp: now
                 });
             }
             return;
@@ -7018,7 +7495,8 @@ async function startBot() {
                         user,
                         text: pendingHuman.originalText || text,
                         triggerMode: 'confirmed',
-                        matchedRule: pendingHuman.matchedRule || ''
+                        matchedRule: pendingHuman.matchedRule || '',
+                        eventTimestamp: msgTimestampMs
                     });
                     broadcastHumanHandoffStatus({
                         sender,
@@ -7047,11 +7525,12 @@ async function startBot() {
                         skipStandardUserEcho = true;
                     } else {
                         const declineReply = 'Certo, sigo por aqui. Me diga como posso te ajudar.';
-                        user.history.push(`Usuario: ${text}`);
-                        user.history.push(`Hime: ${declineReply}`);
+                        const replyTs = Date.now();
+                        appendHistoryEntry(user.history, 'Usuario', text, msgTimestampMs);
+                        appendHistoryEntry(user.history, 'Hime', declineReply, replyTs);
                         saveChat(sender);
-                        broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman });
-                        broadcast({ type: 'bot_reply', from: sender, text: declineReply });
+                        broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
+                        broadcast({ type: 'bot_reply', from: sender, text: declineReply, timestamp: replyTs });
                         if (sock) await sock.sendMessage(getSendTarget(sender), { text: declineReply });
                         return;
                     }
@@ -7079,7 +7558,8 @@ async function startBot() {
                         user,
                         text,
                         triggerMode: 'explicit',
-                        matchedRule: humanIntent.matchedRule || ''
+                        matchedRule: humanIntent.matchedRule || '',
+                        eventTimestamp: msgTimestampMs
                     });
                     return;
                 }
@@ -7098,11 +7578,12 @@ async function startBot() {
                         expiresAt: user.pendingHumanHandoff?.expiresAt || 0
                     });
                     const confirmReply = 'Se voce quiser falar com um atendente humano, responda SIM. Se preferir continuar comigo, responda NAO.';
-                    user.history.push(`Usuario: ${text}`);
-                    user.history.push(`Hime: ${confirmReply}`);
+                    const replyTs = Date.now();
+                    appendHistoryEntry(user.history, 'Usuario', text, msgTimestampMs);
+                    appendHistoryEntry(user.history, 'Hime', confirmReply, replyTs);
                     saveChat(sender);
-                    broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman });
-                    broadcast({ type: 'bot_reply', from: sender, text: confirmReply });
+                    broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
+                    broadcast({ type: 'bot_reply', from: sender, text: confirmReply, timestamp: replyTs });
                     if (sock) await sock.sendMessage(getSendTarget(sender), { text: confirmReply });
                     return;
                 }
@@ -7111,17 +7592,17 @@ async function startBot() {
 
         if (!isAudio) {
             if (!skipStandardUserEcho) {
-                user.history.push(`Usuario: ${text}`);
+                appendHistoryEntry(user.history, 'Usuario', text, msgTimestampMs);
                 saveChat(sender);
-                broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman });
+                broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
             }
             if (user.pausedByHuman || isAttendanceContact) return;
         } else {
             if (isAttendanceContact) {
                 const placeholder = '[Audio recebido - colaborador]';
-                user.history.push(`Usuario: ${placeholder}`);
+                appendHistoryEntry(user.history, 'Usuario', placeholder, msgTimestampMs);
                 saveChat(sender);
-                broadcast({ type: 'user_reply', from: sender, text: placeholder, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman });
+                broadcast({ type: 'user_reply', from: sender, text: placeholder, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
                 return;
             }
             user.messageBuffer.push({type:'audio', msg});
@@ -7129,33 +7610,55 @@ async function startBot() {
 
         if (user.typingTimer) clearTimeout(user.typingTimer);
         user.typingTimer = setTimeout(async () => {
-            let input = text;
-            if(user.messageBuffer.length > 0) {
-                try {
-                    const buf = await timeoutPromise(downloadMediaMessage(user.messageBuffer[0].msg, 'buffer', {}), 10000, "Timeout");
-                    const p = await convertAndSaveAudio(buf);
-                    input = await transcreverAudioIA(p);
-                    try { await unlink(p); } catch(e){}
-                    const msgText = `[Audio Transcrito]: ${input}`;
-                    user.history.push(`Usuario: ${msgText}`); saveChat(sender); broadcast({type:'user_reply', from:sender, text:msgText, name:user.name, status: 'active', pausedByHuman: user.pausedByHuman});
-                } catch(e){ console.error("Erro audio:", e); } user.messageBuffer=[];
-            }
-            if(input && GATILHOS_AULA_EXPERIMENTAL.some(g=>input.toLowerCase().includes(g))) { if(!user.tags.includes('Aula Exp.')) { user.tags.push('Aula Exp.'); saveChat(sender); broadcast({type:'request_initial_lists'}); } }
-            if (user.pausedByHuman) return;
-            const respRaw = await gerarRespostaIA(input||"...", user.history);
-            const resp = sanitizeAssistantReply(respRaw);
-            if (resp) {
+            try {
+                let input = text;
+                if (user.messageBuffer.length > 0) {
+                    try {
+                        const buf = await timeoutPromise(downloadMediaMessage(user.messageBuffer[0].msg, 'buffer', {}), 10000, "Timeout");
+                        const p = await convertAndSaveAudio(buf);
+                        input = await transcreverAudioIA(p);
+                        try { await unlink(p); } catch (e) {}
+                        const msgText = `[Audio Transcrito]: ${input}`;
+                        appendHistoryEntry(user.history, 'Usuario', msgText, msgTimestampMs);
+                        saveChat(sender);
+                        broadcast({ type: 'user_reply', from: sender, text: msgText, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
+                    } catch (e) {
+                        console.error("Erro audio:", e);
+                    }
+                    user.messageBuffer = [];
+                }
+                if (input && GATILHOS_AULA_EXPERIMENTAL.some(g => input.toLowerCase().includes(g))) {
+                    if (!user.tags.includes('Aula Exp.')) {
+                        user.tags.push('Aula Exp.');
+                        saveChat(sender);
+                        broadcast({ type: 'request_initial_lists' });
+                    }
+                }
+                if (user.pausedByHuman) return;
+                const scaContextSnippet = buildScaContextSnippetForSender(sender, user.routeJid || senderRaw || '');
+                const respRaw = await gerarRespostaIA(
+                    input || "...",
+                    user.history,
+                    scaContextSnippet ? { sca: scaContextSnippet } : null
+                );
+                const resp = sanitizeAssistantReply(respRaw);
+                if (resp) {
+                    const replyTs = Date.now();
                     await sock.sendMessage(getSendTarget(sender), { text: resp });
-                    user.history.push(`Hime: ${resp}`);
+                    appendHistoryEntry(user.history, 'Hime', resp, replyTs);
                     saveChat(sender);
-                    broadcast({ type: 'bot_reply', from: sender, text: resp });
+                    broadcast({ type: 'bot_reply', from: sender, text: resp, timestamp: replyTs });
                 } else if (respRaw) {
                     const fallback = "Perfeito. Posso te ajudar com planos, horarios, aula experimental ou matricula.";
+                    const replyTs = Date.now();
                     console.warn('[ia] blocked leaked assistant reply');
                     await sock.sendMessage(getSendTarget(sender), { text: fallback });
-                    user.history.push(`Hime: ${fallback}`);
+                    appendHistoryEntry(user.history, 'Hime', fallback, replyTs);
                     saveChat(sender);
-                    broadcast({ type: 'bot_reply', from: sender, text: fallback });
+                    broadcast({ type: 'bot_reply', from: sender, text: fallback, timestamp: replyTs });
+                }
+            } catch (timerErr) {
+                console.error('[chat] erro no timer de digitacao:', timerErr?.message || timerErr);
             }
         }, 10000);
     });

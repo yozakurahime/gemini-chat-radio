@@ -9,6 +9,8 @@ type Chat = {
   lastMessage?: string;
   timestamp?: number;
   unreadCount?: number;
+  attentionActive?: boolean;
+  attentionSince?: number;
   status?: string;
   pausedByHuman?: boolean;
   pendingHuman?: boolean;
@@ -126,6 +128,7 @@ type PanelDataContextValue = {
   messages: string[];
   selectChat: (id: string) => void;
   sendText: (text: string) => Promise<boolean>;
+  setChatIAEnabled: (enabled: boolean) => Promise<boolean>;
   loadMoreMessages: () => Promise<boolean>;
   hasMoreMessages: boolean;
   loadingMessages: boolean;
@@ -221,8 +224,56 @@ function getWsUrl() {
   return window.location.protocol === "https:" ? `wss://${window.location.host}/ws` : `ws://${window.location.host}/ws`;
 }
 
+const HISTORY_TS_PREFIX = /^\[ts=(\d{10,16})\]\s*/i;
+const HISTORY_ISO_PREFIX = /^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*/;
+
+function extractHistoryTimestamp(message: string): { timestampMs?: number; content: string } {
+  const raw = String(message || "");
+  const tsMatch = raw.match(HISTORY_TS_PREFIX);
+  if (tsMatch) {
+    const parsedTs = Number(tsMatch[1]);
+    return {
+      timestampMs: Number.isFinite(parsedTs) && parsedTs > 0 ? parsedTs : undefined,
+      content: raw.slice(tsMatch[0].length),
+    };
+  }
+
+  const isoMatch = raw.match(HISTORY_ISO_PREFIX);
+  if (isoMatch) {
+    const parsedTs = Date.parse(isoMatch[1]);
+    return {
+      timestampMs: Number.isFinite(parsedTs) ? parsedTs : undefined,
+      content: raw.slice(isoMatch[0].length),
+    };
+  }
+
+  return { content: raw };
+}
+
+function formatMessageTimestamp(timestampMs?: number) {
+  if (!timestampMs) return "";
+  try {
+    const date = new Date(timestampMs);
+    if (Number.isNaN(date.getTime())) return "";
+    const datePart = date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
+    const timePart = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    return `${datePart} ${timePart}`;
+  } catch {
+    return "";
+  }
+}
+
+function buildHistoryLine(sender: string, body: string, timestampMs?: number) {
+  const senderLabel = String(sender || "Sistema").replace(/\s+/g, " ").trim() || "Sistema";
+  const content = String(body ?? "");
+  const ts = Number(timestampMs);
+  const safeTs = Number.isFinite(ts) && ts > 0 ? Math.floor(ts) : Date.now();
+  return `[ts=${safeTs}] ${senderLabel}: ${content}`;
+}
+
 function normalizeChatMessage(message: string) {
-  return String(message || "").replace(/^\*([^*]+):\*\s*/i, "$1: ");
+  const { content } = extractHistoryTimestamp(message);
+  return String(content || "").replace(/^\*([^*]+):\*\s*/i, "$1: ");
 }
 
 function splitChatLine(message: string) {
@@ -672,28 +723,42 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     ]);
   }, [fetchGeoPolicy, fetchKnowledge, fetchPlaylist, refreshAdCampaigns, refreshAdHistory, refreshAds, refreshAttendance, refreshNextAdState, requestInitialLists]);
 
-  const updateChatMessage = useCallback((id: string, text: string, name?: string, status = "active", pausedByHuman?: boolean | null, inbound = false) => {
+  const updateChatMessage = useCallback((id: string, text: string, name?: string, status = "active", pausedByHuman?: boolean | null, inbound = false, timestamp?: number) => {
+    const parsedTimestamp = Number(timestamp || extractHistoryTimestamp(text).timestampMs || Date.now());
+    const now = Number.isFinite(parsedTimestamp) && parsedTimestamp > 0 ? parsedTimestamp : Date.now();
+    const preview = previewMessage(text);
     setChats((prev) => {
       const index = prev.findIndex((chat) => chat.id === id);
       if (index >= 0) {
-        return prev.map((chat) => chat.id === id ? {
-          ...chat,
-          name: name || chat.name,
-          lastMessage: text,
-          timestamp: Date.now(),
-          status: status || chat.status,
-          pausedByHuman: pausedByHuman ?? chat.pausedByHuman,
-          unreadCount: chat.id === selectedChatRef.current ? 0 : (chat.unreadCount || 0) + (inbound ? 1 : 0),
-        } : chat);
+        return prev.map((chat) => {
+          if (chat.id !== id) return chat;
+          const isSelected = chat.id === selectedChatRef.current;
+          const nextUnread = isSelected ? 0 : (chat.unreadCount || 0) + (inbound ? 1 : 0);
+          const shouldAttention = inbound && !isSelected;
+          return {
+            ...chat,
+            name: name || chat.name,
+            lastMessage: preview,
+            timestamp: now,
+            status: status || chat.status,
+            pausedByHuman: pausedByHuman ?? chat.pausedByHuman,
+            unreadCount: nextUnread,
+            attentionActive: shouldAttention ? true : (isSelected ? false : chat.attentionActive),
+            attentionSince: shouldAttention ? now : (isSelected ? undefined : chat.attentionSince),
+          };
+        });
       }
+      const shouldAttention = inbound && id !== selectedChatRef.current;
       return [{
         id,
         name: name || id,
-        lastMessage: text,
-        timestamp: Date.now(),
+        lastMessage: preview,
+        timestamp: now,
         status,
         pausedByHuman: !!pausedByHuman,
         unreadCount: id === selectedChatRef.current ? 0 : inbound ? 1 : 0,
+        attentionActive: shouldAttention,
+        attentionSince: shouldAttention ? now : undefined,
       }, ...prev];
     });
 
@@ -708,7 +773,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
         const next = (payload.chats || []).map((chat: any) => ({
           id: chat.id,
           name: chat.name || chat.id,
-          lastMessage: chat.lastMessage || "",
+          lastMessage: previewMessage(chat.lastMessage || ""),
           timestamp: Number(chat.timestamp || Date.now()),
           tags: chat.tags || [],
           notes: chat.notes || "",
@@ -722,6 +787,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             ...chat,
             unreadCount: prevMap.get(chat.id)?.unreadCount || 0,
             needsHuman: !!prevMap.get(chat.id)?.needsHuman,
+            attentionActive: !!prevMap.get(chat.id)?.attentionActive,
+            attentionSince: prevMap.get(chat.id)?.attentionSince,
           }));
         });
         break;
@@ -743,20 +810,70 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
         }
         break;
       case "user_reply":
-        updateChatMessage(payload.from, `Usuario: ${payload.text}`, payload.name, payload.status, payload.pausedByHuman, true);
+        updateChatMessage(
+          payload.from,
+          buildHistoryLine("Usuario", payload.text || "", payload.timestamp),
+          payload.name,
+          payload.status,
+          payload.pausedByHuman,
+          true,
+          payload.timestamp,
+        );
         if (payload.from && payload.from !== selectedChatRef.current) {
           notifyUnreadMessage(payload.name || payload.from);
         }
         break;
       case "bot_reply":
-        updateChatMessage(payload.from, `Hime: ${payload.text}`);
+        updateChatMessage(
+          payload.from,
+          buildHistoryLine("Hime", payload.text || "", payload.timestamp),
+          undefined,
+          "active",
+          undefined,
+          false,
+          payload.timestamp,
+        );
         break;
       case "admin_reply_success":
-        updateChatMessage(payload.from, `${payload.senderName || "Atendente"}: ${payload.text}`, undefined, "active", payload.isPaused);
+        updateChatMessage(
+          payload.from,
+          buildHistoryLine(payload.senderName || "Atendente", payload.text || "", payload.timestamp),
+          undefined,
+          "active",
+          payload.isPaused,
+          false,
+          payload.timestamp,
+        );
+        break;
+      case "chat_ia_state_updated":
+        if (payload.from) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.from ? {
+            ...chat,
+            pausedByHuman: !!payload.isPaused,
+            pendingHuman: false,
+          } : chat));
+        }
+        break;
+      case "bot_resumed":
+        if (payload.from) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.from ? {
+            ...chat,
+            pausedByHuman: false,
+            pendingHuman: false,
+          } : chat));
+        }
         break;
       case "help_alert":
         toast.warning("Humano solicitado", { description: `${payload.name || payload.from}: ${payload.text || ""}` });
-        updateChatMessage(payload.from, `ATENDENTE: ${payload.text || ""}`, payload.name, "active", true, true);
+        updateChatMessage(
+          payload.from,
+          buildHistoryLine("Atendente", payload.text || "", payload.timestamp),
+          payload.name,
+          "active",
+          true,
+          true,
+          payload.timestamp,
+        );
         setChats((prev) => prev.map((chat) => chat.id === payload.from ? { ...chat, needsHuman: true, pausedByHuman: true } : chat));
         break;
       case "radio_sync_update":
@@ -801,7 +918,20 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const unreadTotal = chats.reduce((sum, chat) => sum + Number(chat.unreadCount || 0), 0);
-    document.title = unreadTotal > 0 ? `(${unreadTotal}) GymPanel` : "GymPanel";
+    const attentionTotal = chats.reduce((sum, chat) => sum + (chat.attentionActive ? 1 : 0), 0);
+    const count = unreadTotal || attentionTotal;
+    if (!attentionTotal) {
+      document.title = unreadTotal > 0 ? `(${unreadTotal}) GymPanel` : "GymPanel";
+      return;
+    }
+    let showAlert = true;
+    const applyTitle = () => {
+      document.title = showAlert ? `(${count}) NOVA MENSAGEM` : `(${count}) GymPanel`;
+      showAlert = !showAlert;
+    };
+    applyTitle();
+    const timer = window.setInterval(applyTitle, 900);
+    return () => window.clearInterval(timer);
   }, [chats]);
 
   useEffect(() => {
@@ -932,7 +1062,13 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setSelectedChatId(id);
     setMessages([]);
     setMessageCursor(null);
-    setChats((prev) => prev.map((chat) => chat.id === id ? { ...chat, unreadCount: 0, needsHuman: false } : chat));
+    setChats((prev) => prev.map((chat) => chat.id === id ? {
+      ...chat,
+      unreadCount: 0,
+      needsHuman: false,
+      attentionActive: false,
+      attentionSince: undefined,
+    } : chat));
     setLoadingMessages(true);
     try {
       const res = await apiFetch(`/api/conversations/${encodeURIComponent(id)}/messages?limit=80`);
@@ -974,6 +1110,28 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return true;
     } catch {
       toast.error("Falha ao enviar mensagem");
+      return false;
+    }
+  }, [selectedChatId]);
+
+  const setChatIAEnabled = useCallback(async (enabled: boolean) => {
+    if (!selectedChatId) return false;
+    try {
+      const res = await apiFetch(`/admin/conversations/${encodeURIComponent(selectedChatId)}/ia-state`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      const isPaused = !!data?.isPaused;
+      setChats((prev) => prev.map((chat) => chat.id === selectedChatId ? {
+        ...chat,
+        pausedByHuman: isPaused,
+        pendingHuman: false,
+      } : chat));
+      return true;
+    } catch {
+      toast.error("Falha ao alterar resposta IA");
       return false;
     }
   }, [selectedChatId]);
@@ -1345,6 +1503,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     messages,
     selectChat,
     sendText,
+    setChatIAEnabled,
     loadMoreMessages,
     hasMoreMessages: !!messageCursor,
     loadingMessages,
@@ -1460,6 +1619,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     removeTrack,
     toggleAdCampaign,
     updateRadioSettings,
+    setChatIAEnabled,
     updateAttendanceCatalogItem,
     updateAttendanceTemplate,
     updateAttendanceSchedule,
@@ -1480,15 +1640,16 @@ export function usePanelData() {
 }
 
 export function parsePanelMessage(message: string): ParsedPanelMessage {
-  const parsed = splitChatLine(message);
+  const meta = extractHistoryTimestamp(message);
+  const parsed = splitChatLine(meta.content);
   const senderKey = parsed.sender.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const role = isInboundMessage(message) ? "user" : senderKey === "hime" ? "ai" : senderKey === "sistema" ? "system" : "operator";
+  const role = isInboundMessage(meta.content) ? "user" : senderKey === "hime" ? "ai" : senderKey === "sistema" ? "system" : "operator";
   const media = parseChatMediaMarker(parsed.body);
   return {
     id: `${parsed.sender}-${parsed.body}`.slice(0, 120),
-    content: media ? media.text : previewMessage(message),
+    content: media ? media.text : previewMessage(meta.content),
     sender: role,
-    timestamp: "",
+    timestamp: formatMessageTimestamp(meta.timestampMs),
     senderName: parsed.sender,
     mediaKind: media?.kind,
     media: media?.media,

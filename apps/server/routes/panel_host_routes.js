@@ -5,6 +5,7 @@ function registerPanelHostRoutes({
     express,
     fs,
     rootDir,
+    updatesDir,
     panelV2Dist,
     landingDist,
     radioPageFile,
@@ -12,6 +13,12 @@ function registerPanelHostRoutes({
     appPanelBaseUrl
 }) {
     const panelV2Exists = fs.existsSync(panelV2Dist);
+    const receptionPathAliases = [
+        '/LINKDEDOWNLOADRECEPCAO',
+        '/linkdedownloadrecepcao',
+        '/download-recepcao',
+        '/download-reception'
+    ];
 
     function getRequestHost(req) {
         const forwardedHostRaw = String(req.get('x-forwarded-host') || '').trim();
@@ -66,6 +73,48 @@ function registerPanelHostRoutes({
         const landingIndex = path.join(landingDist, 'index.html');
         if (fs.existsSync(landingIndex)) return res.sendFile(landingIndex);
         return sendPanelIndex(res);
+    }
+
+    function listZipCandidates(dirPath) {
+        if (!dirPath || !fs.existsSync(dirPath)) return [];
+        try {
+            return fs.readdirSync(dirPath)
+                .map((name) => {
+                    const fullPath = path.join(dirPath, name);
+                    const stat = fs.statSync(fullPath);
+                    if (!stat.isFile()) return null;
+                    if (!/\.zip$/i.test(name)) return null;
+                    return { fullPath, name, mtimeMs: Number(stat.mtimeMs || 0) };
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.mtimeMs - a.mtimeMs);
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function resolveReceptionDownloadFile() {
+        const candidates = [];
+        const updatesBaseDir = updatesDir && String(updatesDir).trim()
+            ? path.resolve(updatesDir)
+            : path.join(rootDir, 'updates');
+        const updatesReceptionDir = path.join(updatesBaseDir, 'reception');
+        const distReceptionDir = path.resolve(rootDir, '..', '..', 'dist-recepcao');
+        const preferredLatest = path.join(updatesReceptionDir, 'sca-sync-recepcao-latest.zip');
+        if (fs.existsSync(preferredLatest)) {
+            try {
+                const stat = fs.statSync(preferredLatest);
+                candidates.push({
+                    fullPath: preferredLatest,
+                    name: 'sca-sync-recepcao-latest.zip',
+                    mtimeMs: Number(stat.mtimeMs || 0)
+                });
+            } catch (_) {}
+        }
+        candidates.push(...listZipCandidates(updatesReceptionDir));
+        candidates.push(...listZipCandidates(distReceptionDir));
+        candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        return candidates[0] || null;
     }
 
     app.use((req, res, next) => {
@@ -170,6 +219,15 @@ function registerPanelHostRoutes({
     });
 
     app.get('/radio', (req, res) => res.sendFile(radioPageFile));
+
+    app.get(receptionPathAliases, (req, res) => {
+        const file = resolveReceptionDownloadFile();
+        if (!file) {
+            return res.status(404).send('Pacote da recepcao nao encontrado. Gere o ZIP de sincronizacao SCA DB primeiro.');
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        return res.download(file.fullPath, file.name);
+    });
 }
 
 module.exports = { registerPanelHostRoutes };

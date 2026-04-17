@@ -10,6 +10,7 @@ logs/
 *.db-shm
 usuarios.json
 runtime/
+dist-recepcao/
 reports/
 dist-desktop/
 apps/server/reports/

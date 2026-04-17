@@ -3,6 +3,8 @@ function registerAttendanceAdminRoutes({
     db,
     requirePanelAuth,
     requireAdmin,
+    SCA_SYNC_ENABLED,
+    SCA_SYNC_TOKEN,
     ATTENDANCE_ENABLED,
     getAttendanceGeoPolicy,
     getBotPhoneDigits,
@@ -56,8 +58,12 @@ function registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS
+    WEEKDAY_LABELS,
+    upsertScaAccessBatch,
+    getScaSyncStatus
 }) {
+const SCA_ALLOWED_EVENT_TYPES = new Set(['entry', 'exit', 'access', 'denied']);
+
 function formatLocalDateTime(value) {
     const ts = Number(value || 0);
     if (!Number.isFinite(ts) || ts <= 0) return '';
@@ -74,6 +80,84 @@ function normalizeOptionalNumberInput(value) {
     if (!raw) return null;
     const n = Number(raw);
     return Number.isFinite(n) ? n : NaN;
+}
+
+function normalizeScaToken(value) {
+    return String(value || '').trim();
+}
+
+function normalizeScaEventType(raw) {
+    const value = String(raw || '').toLowerCase().trim();
+    if (!value) return '';
+    if (['entrada', 'entry', 'in', 'entrou', 'acesso'].includes(value)) return 'entry';
+    if (['saida', 'saída', 'exit', 'out', 'saiu'].includes(value)) return 'exit';
+    if (['denied', 'negado', 'bloqueado', 'recusado'].includes(value)) return 'denied';
+    if (SCA_ALLOWED_EVENT_TYPES.has(value)) return value;
+    return '';
+}
+
+function parseScaEventAt(raw) {
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        return raw > 1e12 ? Math.floor(raw) : Math.floor(raw * 1000);
+    }
+    const value = String(raw || '').trim();
+    if (!value) return null;
+    if (/^\d+$/.test(value)) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return n > 1e12 ? Math.floor(n) : Math.floor(n * 1000);
+    }
+    const brMatch = /^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(value);
+    if (brMatch) {
+        const day = Number(brMatch[1]);
+        const month = Number(brMatch[2]);
+        const year = Number(brMatch[3]);
+        const hh = Number(brMatch[4] || 0);
+        const mm = Number(brMatch[5] || 0);
+        const ss = Number(brMatch[6] || 0);
+        const parsed = new Date(year, month - 1, day, hh, mm, ss, 0).getTime();
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeScaConnectorInput(raw, fallbackSource = 'sca_db') {
+    const row = raw && typeof raw === 'object' ? raw : null;
+    if (!row) return null;
+    const source = sanitizePublicText(row.source || fallbackSource || 'sca_db', 60) || 'sca_db';
+    const engineDetected = sanitizePublicText(row.engine_detected || row.engine || '', 40);
+    const dbFile = sanitizePublicText(row.db_file || row.dbFile || '', 320);
+    const lastScanRaw = Number(row.last_scan_at ?? row.lastScanAt ?? 0);
+    const lagRaw = Number(row.lag_sec ?? row.lagSec ?? 0);
+    const meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
+    return {
+        source,
+        engine_detected: engineDetected,
+        db_file: dbFile,
+        last_scan_at: Number.isFinite(lastScanRaw) && lastScanRaw > 0 ? Math.floor(lastScanRaw) : 0,
+        last_error: sanitizePublicText(row.last_error || row.lastError || '', 240),
+        lag_sec: Number.isFinite(lagRaw) && lagRaw >= 0 ? Math.floor(lagRaw) : 0,
+        meta
+    };
+}
+
+function authorizeScaSync(req, res) {
+    if (!SCA_SYNC_ENABLED) {
+        res.status(503).json({ error: 'sca_sync_disabled' });
+        return false;
+    }
+    const token = normalizeScaToken(SCA_SYNC_TOKEN);
+    if (!token) {
+        res.status(503).json({ error: 'sca_sync_token_missing' });
+        return false;
+    }
+    const incoming = normalizeScaToken(req.headers['x-sca-token']);
+    if (!incoming || incoming !== token) {
+        res.status(401).json({ error: 'invalid_sca_token' });
+        return false;
+    }
+    return true;
 }
 
 function computeValuePerClass({ scheduleType, rawValue, fallbackValue = 0 }) {
@@ -133,6 +217,103 @@ app.get('/admin/attendance/status', (req, res) => {
 app.get('/admin/attendance/debug-last', (req, res) => {
     const user = requireAdmin(req, res); if (!user) return;
     res.json({ ok: true, last: attendanceDebugLast });
+});
+
+app.post('/admin/sca/sync/batch', (req, res) => {
+    if (!authorizeScaSync(req, res)) return;
+    if (typeof upsertScaAccessBatch !== 'function') {
+        return res.status(500).json({ error: 'sca_sync_unavailable' });
+    }
+    const source = sanitizePublicText(req.body?.source || 'sca_csv', 60) || 'sca_csv';
+    const connector = normalizeScaConnectorInput(req.body?.connector, source);
+    const payloadEvents = Array.isArray(req.body?.events) ? req.body.events : [];
+    if (!payloadEvents.length && !connector) return res.status(400).json({ error: 'invalid_events' });
+    if (payloadEvents.length > 10000) return res.status(400).json({ error: 'events_limit_exceeded' });
+
+    const normalizedEvents = [];
+    const rejected = [];
+    payloadEvents.forEach((rawEvent, index) => {
+        const row = rawEvent && typeof rawEvent === 'object' ? rawEvent : null;
+        if (!row) {
+            rejected.push({ index, error: 'invalid_event_object' });
+            return;
+        }
+        const sourceEventId = sanitizePublicText(row.source_event_id, 180);
+        const externalId = sanitizePublicText(row.external_id || row.matricula || row['matrícula'] || row.student_id || row.aluno_id, 120);
+        const name = sanitizePublicText(row.name || row.nome || '', 120);
+        const phone = normalizePhoneDigits(row.phone || row.telefone || row.whatsapp || '');
+        const eventType = normalizeScaEventType(row.event_type || row.eventType || row.tipo || row.event || row.movimento);
+        const eventAt = parseScaEventAt(row.event_at || row.eventAt || row.datetime || row.data_hora || row.timestamp || row.occurred_at);
+        const status = sanitizePublicText(row.status || row.situacao || row.situação || '', 40);
+        const plan = sanitizePublicText(row.plan || row.plano || '', 80);
+        const gate = sanitizePublicText(row.gate || row.catraca || row.unidade || row.equipamento || '', 80);
+        if (!sourceEventId) {
+            rejected.push({ index, error: 'source_event_id_required' });
+            return;
+        }
+        if (!externalId && !phone) {
+            rejected.push({ index, error: 'external_id_or_phone_required' });
+            return;
+        }
+        if (!eventType) {
+            rejected.push({ index, error: 'invalid_event_type' });
+            return;
+        }
+        if (!Number.isFinite(eventAt) || eventAt <= 0) {
+            rejected.push({ index, error: 'invalid_event_at' });
+            return;
+        }
+        normalizedEvents.push({
+            source_event_id: sourceEventId,
+            external_id: externalId,
+            name,
+            phone,
+            event_type: eventType,
+            event_at: Number(eventAt),
+            status,
+            plan,
+            gate,
+            raw: row
+        });
+    });
+
+    if (payloadEvents.length > 0 && !normalizedEvents.length) {
+        return res.status(400).json({ error: 'no_valid_events', rejected });
+    }
+    const result = upsertScaAccessBatch({
+        source,
+        actor: 'sca_sync',
+        events: normalizedEvents,
+        connector
+    });
+    return res.json({
+        ok: true,
+        source,
+        processed: payloadEvents.length,
+        accepted: normalizedEvents.length,
+        rejected_count: rejected.length,
+        rejected,
+        connector,
+        ...result
+    });
+});
+
+app.get('/admin/sca/sync/status', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const status = typeof getScaSyncStatus === 'function'
+        ? getScaSyncStatus()
+        : {
+            runs: { total: 0, last_success_at: 0, last_error_at: 0, last_message: '' },
+            events: { total: 0, latest_event_at: 0, lag_sec: null },
+            people: { total: 0 },
+            connector: { source: 'sca_db', engine_detected: '', db_file: '', last_scan_at: 0, last_error: '', lag_sec: null, updated_at: 0, meta: {} }
+        };
+    return res.json({
+        ok: true,
+        enabled: !!SCA_SYNC_ENABLED,
+        tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
+        ...status
+    });
 });
 
 if (ATTENDANCE_ENABLED) {

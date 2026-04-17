@@ -6,6 +6,7 @@ function registerPanelHostSetup({
     express,
     fs,
     rootDir,
+    updatesDir,
     appPanelBaseUrl
 }) {
     const appsDir = path.resolve(rootDir, '..');
@@ -24,6 +25,7 @@ function registerPanelHostSetup({
         express,
         fs,
         rootDir,
+        updatesDir,
         panelV2Dist,
         landingDist,
         radioPageFile,

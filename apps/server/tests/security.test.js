@@ -38,7 +38,7 @@ async function waitForHealth(baseUrl, timeoutMs = 20000) {
   throw new Error('server_health_timeout');
 }
 
-async function startServer({ dataRoot, port, panelUser = 'admin', panelPass = 'admin' }) {
+async function startServer({ dataRoot, port, panelUser = 'admin', panelPass = 'Admin#12345' }) {
   const env = {
     ...process.env,
     PORT: String(port),
@@ -132,7 +132,7 @@ test('security hardening protects public and private routes', async (t) => {
     assert.equal(res.status, 401);
   }
 
-  const auth = await login(server.baseUrl, 'admin', 'admin');
+  const auth = await login(server.baseUrl, 'admin', 'Admin#12345');
   assert.equal(auth.res.status, 200);
   assert.ok(auth.cookie.startsWith('panel_session='));
 
@@ -170,7 +170,7 @@ test('admin password is not overwritten on restart', async (t) => {
   const dataRoot = makeTempDataRoot();
   const port = randomPort();
 
-  let server = await startServer({ dataRoot, port, panelUser: 'admin', panelPass: 'admin' });
+  let server = await startServer({ dataRoot, port, panelUser: 'admin', panelPass: 'Admin#12345' });
   await stopServer(server);
 
   const dbPath = path.join(dataRoot, 'data', 'himefit.db');
@@ -178,7 +178,7 @@ test('admin password is not overwritten on restart', async (t) => {
   db.prepare('UPDATE panel_users SET password=? WHERE username=?').run(hashPassword('Persist123!'), 'admin');
   db.close();
 
-  server = await startServer({ dataRoot, port, panelUser: 'admin', panelPass: 'admin' });
+  server = await startServer({ dataRoot, port, panelUser: 'admin', panelPass: 'Admin#12345' });
   t.after(async () => {
     await stopServer(server);
     fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -187,6 +187,6 @@ test('admin password is not overwritten on restart', async (t) => {
   const persistedLogin = await login(server.baseUrl, 'admin', 'Persist123!');
   assert.equal(persistedLogin.res.status, 200);
 
-  const envLogin = await login(server.baseUrl, 'admin', 'admin');
+  const envLogin = await login(server.baseUrl, 'admin', 'Admin#12345');
   assert.equal(envLogin.res.status, 401);
 });

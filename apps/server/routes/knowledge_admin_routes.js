@@ -8,6 +8,7 @@ function registerKnowledgeAdminRoutes({
     getKnowledgePublished,
     setKnowledgePublished,
     getBaseContext,
+    getAIContextSnapshot,
     setBaseContext,
     syncAttendanceClassTemplatesFromContext,
     broadcast
@@ -15,7 +16,8 @@ function registerKnowledgeAdminRoutes({
     app.get('/admin/knowledge/current', (req, res) => {
         const user = requirePanelAuth(req, res); if (!user) return;
         const published = getKnowledgePublished();
-        res.json({ published, base_context: getBaseContext() || '' });
+        const aiContext = typeof getAIContextSnapshot === 'function' ? getAIContextSnapshot() : null;
+        res.json({ published, base_context: getBaseContext() || '', ai_context: aiContext });
     });
 
     app.get('/admin/knowledge/versions', (req, res) => {

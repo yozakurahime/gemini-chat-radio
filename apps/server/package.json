@@ -6,7 +6,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test tests/security.test.js",
+    "test": "node --test tests/security.test.js tests/admin_flows.test.js",
+    "sca:sync": "node scripts/sca_sync_worker.js",
+    "sca:db:sync": "node scripts/sca_db_sync_worker.js",
     "radio:check": "node scripts/radio_check.js",
     "desktop:publish-manifest": "node scripts/publish-desktop-release.js"
   },

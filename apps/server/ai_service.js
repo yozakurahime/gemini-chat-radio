@@ -1,3 +1,4 @@
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
@@ -225,6 +226,7 @@ function buildAdDraft(raw, fallback = {}) {
 }
 
 function buildAdsContextBlock() {
+    refreshDynamicContextSnapshot();
     const contextParts = [];
     if (contextoAcademia) contextParts.push(`# CONTEXTO DA ACADEMIA\n${contextoAcademia}`);
     if (avisosDoDia) contextParts.push(`# AVISOS DO DIA\n${avisosDoDia}`);
@@ -382,6 +384,8 @@ if (API_KEY) {
 
 let contextoAcademia = '';
 let avisosDoDia = '';
+let contextoAcademiaStamp = { mtimeMs: 0, size: -1 };
+let avisosDoDiaStamp = { mtimeMs: 0, size: -1 };
 
 function isPromptLeakText(text) {
     const s = normalizeInlineText(text);
@@ -425,30 +429,155 @@ function sanitizeModelReply(raw) {
     return normalizeInlineText(text);
 }
 
-function carregarContexto() {
-    try {
-        if (fs.existsSync(CONTEXTO_FILE_PATH)) {
-            contextoAcademia = normalizeLoadedText(fs.readFileSync(CONTEXTO_FILE_PATH, 'utf-8'));
+function normalizeExtraContextText(value, maxLen = 1600) {
+    const text = normalizeInlineText(value || "");
+    if (!text) return "";
+    return text.slice(0, maxLen);
+}
+
+function normalizeForLookup(text) {
+    return normalizeInlineText(text || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+}
+
+function extractNatacaoAdultoFacts(contextText) {
+    const normalized = normalizeForLookup(contextText || '');
+    if (!normalized.includes('natacao adulto')) return null;
+
+    let price = '';
+    const adultPlanBlock = normalized.match(/plano\s+natacao\s+adulto[\s\S]{0,320}/);
+    if (adultPlanBlock?.[0]) {
+        const priceMatch = adultPlanBlock[0].match(/mensal[^r$\n]{0,40}(r\$\s*\d[\d.,]*)/i);
+        if (priceMatch?.[1]) price = priceMatch[1].toUpperCase().replace(/\s+/g, ' ').trim();
+    }
+
+    let schedule = '';
+    const scheduleMatch = normalized.match(/natacao adulto[^\n:]*:\s*([^\n]+)/i);
+    if (scheduleMatch?.[1]) {
+        schedule = scheduleMatch[1]
+            .replace(/\*/g, '')
+            .replace(/\s+/g, ' ')
+            .replace(/^[-:;,\s]+/, '')
+            .replace(/\.\s*$/, '')
+            .trim();
+    } else if (adultPlanBlock?.[0]) {
+        const freqMatch = adultPlanBlock[0].match(/frequencia[^:\n]*:\s*([^\n]+)/i);
+        if (freqMatch?.[1]) {
+            schedule = freqMatch[1]
+                .replace(/\*/g, '')
+                .replace(/\s+/g, ' ')
+                .replace(/^[-:;,\s]+/, '')
+                .trim();
         }
+    }
+
+    return { price, schedule };
+}
+
+function shouldForceNatacaoAdultoReply(questionText) {
+    const question = normalizeForLookup(questionText || '');
+    if (!question.includes('natac') || !question.includes('adult')) return false;
+    if (question.includes('plano completo') || question.includes('inclui')) return false;
+    return true;
+}
+
+function buildNatacaoAdultoReply(facts) {
+    const details = [];
+    if (facts?.price) details.push(`valor mensal: **${facts.price}**`);
+    if (facts?.schedule) details.push(`horario/frequencia: **${facts.schedule}**`);
+    const detailsText = details.length ? `\n\nDetalhes:\n- ${details.join('\n- ')}` : '';
+    return `Sim! Temos turma de natação adulto na academia.${detailsText}\n\nSe quiser, te passo agora como funciona a matrícula.`;
+}
+
+function buildExtraContextBlock(extraContext) {
+    if (!extraContext) return "";
+    if (typeof extraContext === "string") {
+        const text = normalizeExtraContextText(extraContext);
+        return text ? `# CONTEXTO DINAMICO\n${text}` : "";
+    }
+    if (typeof extraContext !== "object") return "";
+    const sections = [];
+    const scaText = normalizeExtraContextText(extraContext.sca || "");
+    if (scaText) sections.push(`# CONTEXTO DO ALUNO (SCA)\n${scaText}`);
+    const attendanceText = normalizeExtraContextText(extraContext.attendance || "");
+    if (attendanceText) sections.push(`# CONTEXTO DE PONTO\n${attendanceText}`);
+    const genericText = normalizeExtraContextText(extraContext.text || "");
+    if (genericText) sections.push(`# CONTEXTO ADICIONAL\n${genericText}`);
+    return sections.join("\n\n");
+}
+
+function getFileStamp(filePath) {
+    try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) return null;
+        return {
+            mtimeMs: Number(stat.mtimeMs || 0),
+            size: Number(stat.size || 0)
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function refreshBaseContextFromDisk(force = false) {
+    try {
+        const stamp = getFileStamp(CONTEXTO_FILE_PATH);
+        if (!stamp) {
+            contextoAcademia = '';
+            contextoAcademiaStamp = { mtimeMs: 0, size: -1 };
+            return;
+        }
+        const changed = force
+            || stamp.mtimeMs !== contextoAcademiaStamp.mtimeMs
+            || stamp.size !== contextoAcademiaStamp.size;
+        if (!changed) return;
+        contextoAcademia = normalizeLoadedText(fs.readFileSync(CONTEXTO_FILE_PATH, 'utf-8'));
+        contextoAcademiaStamp = stamp;
     } catch (error) {
         console.error('Erro ao carregar contexto:', error.message);
     }
 }
-carregarContexto();
-fs.watchFile(CONTEXTO_FILE_PATH, carregarContexto);
 
-function carregarAvisos() {
+function refreshPublishedNoticesFromDisk(force = false) {
     try {
-        if (fs.existsSync(KNOWLEDGE_PUBLISHED_PATH)) {
-            const data = JSON.parse(fs.readFileSync(KNOWLEDGE_PUBLISHED_PATH, 'utf-8'));
-            avisosDoDia = normalizeLoadedText((data.avisos || '').toString());
+        const stamp = getFileStamp(KNOWLEDGE_PUBLISHED_PATH);
+        if (!stamp) {
+            avisosDoDia = '';
+            avisosDoDiaStamp = { mtimeMs: 0, size: -1 };
+            return;
         }
-    } catch (e) {
+        const changed = force
+            || stamp.mtimeMs !== avisosDoDiaStamp.mtimeMs
+            || stamp.size !== avisosDoDiaStamp.size;
+        if (!changed) return;
+        const data = JSON.parse(fs.readFileSync(KNOWLEDGE_PUBLISHED_PATH, 'utf-8'));
+        avisosDoDia = normalizeLoadedText((data.avisos || '').toString());
+        avisosDoDiaStamp = stamp;
+    } catch (_) {
         avisosDoDia = '';
     }
 }
-carregarAvisos();
-fs.watchFile(KNOWLEDGE_PUBLISHED_PATH, carregarAvisos);
+
+function refreshDynamicContextSnapshot(force = false) {
+    refreshBaseContextFromDisk(force);
+    refreshPublishedNoticesFromDisk(force);
+}
+
+function getCurrentContextSnapshot() {
+    refreshDynamicContextSnapshot();
+    return {
+        contexto_length: contextoAcademia.length,
+        avisos_length: avisosDoDia.length,
+        contexto_mtime_ms: contextoAcademiaStamp.mtimeMs || 0,
+        avisos_mtime_ms: avisosDoDiaStamp.mtimeMs || 0
+    };
+}
+
+refreshDynamicContextSnapshot(true);
+fs.watchFile(CONTEXTO_FILE_PATH, () => refreshBaseContextFromDisk(true));
+fs.watchFile(KNOWLEDGE_PUBLISHED_PATH, () => refreshPublishedNoticesFromDisk(true));
 
 async function transcreverAudioIA(audioPath) {
     if (!model) return '[Erro: IA nao configurada]';
@@ -464,17 +593,33 @@ async function transcreverAudioIA(audioPath) {
     }
 }
 
-async function gerarRespostaIA(pergunta, historico = []) {
+async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
     if (!model) return '[Erro: IA nao configurada]';
     const input = normalizeInlineText(pergunta);
     if (!input) return null;
 
     try {
+        refreshDynamicContextSnapshot();
+        const natacaoFacts = extractNatacaoAdultoFacts(contextoAcademia);
+        if (natacaoFacts && shouldForceNatacaoAdultoReply(input)) {
+            return buildNatacaoAdultoReply(natacaoFacts);
+        }
         const dataAtual = new Date().toLocaleDateString('pt-BR');
+        const extraContextBlock = buildExtraContextBlock(extraContext);
+        const contextParts = [
+            `# INSTRUCAO\nHoje: ${dataAtual}.`,
+            contextoAcademia,
+            `# AVISOS DO DIA\n${avisosDoDia || ""}`,
+        ];
+        if (extraContextBlock) {
+            contextParts.push(extraContextBlock);
+        }
+        contextParts.push("Se houver qualquer conflito entre historico e base de conhecimento, priorize SEMPRE a base de conhecimento mais atual.");
+        contextParts.push("Responda de forma curta e vendedora.");
         const systemInstruction = {
             role: 'user',
             parts: [{
-                text: `# INSTRUCAO\nHoje: ${dataAtual}.\n\n${contextoAcademia}\n\n# AVISOS DO DIA\n${avisosDoDia}\n\nResponda de forma curta e vendedora.`
+                text: contextParts.filter(Boolean).join('\n\n')
             }]
         };
         const historyParts = sanitizeHistoryForModel(historico);
@@ -494,5 +639,7 @@ module.exports = {
     generateSeedAdDrafts,
     generateCustomAdDraft,
     synthesizeAdSpeech,
-    getAdsAICapabilities
+    getAdsAICapabilities,
+    refreshDynamicContextSnapshot,
+    getCurrentContextSnapshot
 };

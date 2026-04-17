@@ -1,0 +1,59 @@
+name: Deploy Oracle (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy"
+        required: true
+        default: "main"
+      app_dir:
+        description: "Remote app directory"
+        required: true
+        default: "/opt/himefit"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix apps/panel-v2 ci
+          npm --prefix apps/landing ci
+          npm --prefix apps/server ci
+
+      - name: Validate tests and builds
+        run: |
+          npm --prefix apps/panel-v2 run test
+          node --test apps/server/tests/security.test.js apps/server/tests/admin_flows.test.js
+          npm --prefix apps/panel-v2 run build
+          npm --prefix apps/landing run build
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+
+      - name: Add server host key
+        run: ssh-keyscan -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run remote deploy
+        run: |
+          ssh -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
+            set -euo pipefail; \
+            cd '${{ inputs.app_dir }}'; \
+            export BRANCH='${{ inputs.branch }}'; \
+            bash tools/deploy/update-server.sh"
