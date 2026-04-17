@@ -1,1 +1,4 @@
 project_id = "ccfqinwxtkuqplbrsyqo"
+
+[functions.generate-daily-schedule]
+verify_jwt = false
