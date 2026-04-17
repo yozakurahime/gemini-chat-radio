@@ -114,7 +114,14 @@ const APP_PACKAGE = require('./package.json');
 const APP_VERSION = String(APP_PACKAGE?.version || '0.0.0');
 const PORT = process.env.PORT || 3001;
 const NOME_DO_USUARIO_PAINEL = process.env.PAINEL_USER || 'admin';
-const SENHA_DO_PAINEL = process.env.PAINEL_PASS || 'admin';
+const RAW_PAINEL_PASS = process.env.PAINEL_PASS;
+if (!RAW_PAINEL_PASS || RAW_PAINEL_PASS.trim() === '' || RAW_PAINEL_PASS.toLowerCase() === 'admin' || RAW_PAINEL_PASS === 'trocar-esta-senha') {
+    console.error('\n[FATAL] PAINEL_PASS nao foi configurado de forma segura.');
+    console.error('[FATAL] Defina uma senha forte na variavel de ambiente PAINEL_PASS no arquivo .env antes de iniciar o servidor.');
+    console.error('[FATAL] Valores proibidos: vazio, "admin", "trocar-esta-senha".\n');
+    process.exit(1);
+}
+const SENHA_DO_PAINEL = RAW_PAINEL_PASS;
 const DISABLE_WHATSAPP = process.env.HIMEFIT_DISABLE_WHATSAPP === '1';
 const SKIP_RUNTIME_MIGRATION = process.env.HIMEFIT_SKIP_RUNTIME_MIGRATION === '1';
 const SKIP_LEGACY_USER_IMPORT = process.env.HIMEFIT_SKIP_LEGACY_USER_IMPORT === '1';
