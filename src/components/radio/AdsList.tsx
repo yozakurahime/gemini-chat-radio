@@ -8,7 +8,8 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2, Upload, Loader2 } from "lucide-react";
+import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2, Upload, Loader2, Home } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { useAds, useCreateAd, useUpdateAd, useDeleteAd, useAdvertisers, useContracts } from "@/hooks/useRadioData";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -19,6 +20,7 @@ const statusColors: Record<string, "default" | "secondary" | "destructive"> = { 
 const defaultForm = {
   advertiser_id: "", contract_id: "", name: "", audio_url: "", duration_seconds: 30,
   volume: 1.0, status: "pending", priority: 0, allowed_hours_start: "06:00", allowed_hours_end: "23:00",
+  is_house_ad: false,
 };
 
 export default function AdsList() {
@@ -49,6 +51,7 @@ export default function AdsList() {
       audio_url: a.audio_url || "", duration_seconds: a.duration_seconds, volume: a.volume,
       status: a.status, priority: a.priority, allowed_hours_start: a.allowed_hours_start?.substring(0, 5) || "06:00",
       allowed_hours_end: a.allowed_hours_end?.substring(0, 5) || "23:00",
+      is_house_ad: !!a.is_house_ad,
     });
     setOpen(true);
   };
@@ -92,10 +95,13 @@ export default function AdsList() {
     }
   };
 
+  const HOUSE_ADVERTISER_ID = "00000000-0000-0000-0000-000000000001";
+
   const save = async () => {
     const payload = {
       ...form,
-      contract_id: form.contract_id || null,
+      advertiser_id: form.is_house_ad ? HOUSE_ADVERTISER_ID : form.advertiser_id,
+      contract_id: form.is_house_ad ? null : (form.contract_id || null),
       audio_url: form.audio_url || null,
       approved_at: form.status === "active" && !editing?.approved_at ? new Date().toISOString() : editing?.approved_at || null,
     };
@@ -219,7 +225,16 @@ export default function AdsList() {
                   </SelectContent>
                 </Select>
               </div>
-              <Button onClick={save} className="w-full" disabled={!form.advertiser_id || !form.name || createMut.isPending || updateMut.isPending}>
+              <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
+                <div className="space-y-0.5">
+                  <Label className="flex items-center gap-1.5"><Home className="h-3.5 w-3.5" /> Anúncio padrão da casa</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Preenche horários vagos quando não há anunciante pago. Não exige contrato.
+                  </p>
+                </div>
+                <Switch checked={form.is_house_ad} onCheckedChange={(v) => setForm({ ...form, is_house_ad: v })} />
+              </div>
+              <Button onClick={save} className="w-full" disabled={(!form.advertiser_id && !form.is_house_ad) || !form.name || createMut.isPending || updateMut.isPending}>
                 {editing ? "Salvar" : "Criar Anúncio"}
               </Button>
             </div>
@@ -254,8 +269,19 @@ export default function AdsList() {
                 ) : (
                   filtered.map((a) => (
                     <TableRow key={a.id}>
-                      <TableCell className="font-medium">{a.name}</TableCell>
-                      <TableCell>{a.advertiser?.company_name || "—"}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-1.5">
+                          {a.is_house_ad && <Home className="h-3 w-3 text-primary" />}
+                          {a.name}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {a.is_house_ad ? (
+                          <Badge variant="outline" className="text-[10px]">CASA</Badge>
+                        ) : (
+                          a.advertiser?.company_name || "—"
+                        )}
+                      </TableCell>
                       <TableCell>{a.duration_seconds}s</TableCell>
                       <TableCell><Volume2 className="h-3 w-3 inline mr-1" />{Math.round(Number(a.volume) * 100)}%</TableCell>
                       <TableCell className="text-xs font-mono">{a.allowed_hours_start?.substring(0, 5)}-{a.allowed_hours_end?.substring(0, 5)}</TableCell>

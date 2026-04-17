@@ -229,6 +229,7 @@ export type Database = {
           created_at: string
           duration_seconds: number
           id: string
+          is_house_ad: boolean
           name: string
           priority: number
           status: string
@@ -245,6 +246,7 @@ export type Database = {
           created_at?: string
           duration_seconds?: number
           id?: string
+          is_house_ad?: boolean
           name: string
           priority?: number
           status?: string
@@ -261,6 +263,7 @@ export type Database = {
           created_at?: string
           duration_seconds?: number
           id?: string
+          is_house_ad?: boolean
           name?: string
           priority?: number
           status?: string
@@ -354,6 +357,54 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      class_notifications_log: {
+        Row: {
+          class_id: string
+          employee_id: string
+          error_message: string | null
+          id: string
+          minutes_before: number
+          notification_date: string
+          sent_at: string
+          status: string
+        }
+        Insert: {
+          class_id: string
+          employee_id: string
+          error_message?: string | null
+          id?: string
+          minutes_before: number
+          notification_date?: string
+          sent_at?: string
+          status?: string
+        }
+        Update: {
+          class_id?: string
+          employee_id?: string
+          error_message?: string | null
+          id?: string
+          minutes_before?: number
+          notification_date?: string
+          sent_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "class_notifications_log_class_id_fkey"
+            columns: ["class_id"]
+            isOneToOne: false
+            referencedRelation: "class_schedule"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "class_notifications_log_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       class_schedule: {
         Row: {

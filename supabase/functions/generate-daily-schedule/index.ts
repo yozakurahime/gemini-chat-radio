@@ -13,6 +13,7 @@ interface Ad {
   priority: number;
   allowed_hours_start: string | null;
   allowed_hours_end: string | null;
+  is_house_ad: boolean;
 }
 
 interface Contract {
@@ -42,57 +43,108 @@ const minutesToTime = (m: number) => {
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00`;
 };
 
-function buildSchedule(ads: Ad[], contracts: Contract[], settings: Settings, date: string) {
-  const today = new Date(date);
-  const items: { ad: Ad; contract: Contract; left: number }[] = [];
+type Slot = { scheduled_time: string; ad_id: string; contract_id: string | null; schedule_date: string; execution_status: string };
 
+function buildSchedule(ads: Ad[], contracts: Contract[], settings: Settings, date: string): Slot[] {
+  const today = new Date(date);
+
+  // Paid ads (need active contract within date range)
+  const paid: { ad: Ad; contract: Contract; left: number }[] = [];
   for (const ad of ads) {
-    if (ad.status !== "active" || !ad.contract_id) continue;
+    if (ad.status !== "active" || ad.is_house_ad || !ad.contract_id) continue;
     const c = contracts.find((x) => x.id === ad.contract_id);
     if (!c || c.contract_status !== "active" || c.payment_status === "overdue") continue;
     if (today < new Date(c.start_date) || today > new Date(c.end_date)) continue;
-    items.push({ ad, contract: c, left: c.daily_executions });
+    paid.push({ ad, contract: c, left: c.daily_executions });
   }
+  paid.sort((a, b) => b.ad.priority - a.ad.priority);
 
-  if (!items.length) return [];
-  items.sort((a, b) => b.ad.priority - a.ad.priority);
+  // House ads (active, marked is_house_ad, no contract required)
+  const houseAds = ads.filter((a) => a.status === "active" && a.is_house_ad);
 
   const opStart = timeToMinutes(settings.operating_hours_start);
   const opEnd = timeToMinutes(settings.operating_hours_end);
   const minInt = settings.min_interval_minutes;
   const minSame = settings.min_same_advertiser_interval_minutes;
 
-  const slots: Array<{ scheduled_time: string; ad_id: string; contract_id: string; schedule_date: string; execution_status: string }> = [];
+  const slots: Slot[] = [];
   const advLast: Record<string, number> = {};
+  const houseAdLast: Record<string, number> = {};
   let cur = opStart;
+  let houseRotation = 0;
 
-  while (items.some((i) => i.left > 0) && cur < opEnd) {
-    let placed = false;
-    for (const it of items) {
-      if (it.left <= 0 || cur >= opEnd) continue;
+  const tryPlacePaid = (cur: number): Slot | null => {
+    for (const it of paid) {
+      if (it.left <= 0) continue;
       const aS = timeToMinutes(it.ad.allowed_hours_start || "06:00");
       const aE = timeToMinutes(it.ad.allowed_hours_end || "23:00");
       if (cur < aS || cur > aE) continue;
       const last = advLast[it.ad.advertiser_id];
       if (last !== undefined && cur - last < minSame) continue;
-
-      slots.push({
+      it.left--;
+      advLast[it.ad.advertiser_id] = cur;
+      return {
         scheduled_time: minutesToTime(cur),
         ad_id: it.ad.id,
         contract_id: it.contract.id,
         schedule_date: date,
         execution_status: "pending",
-      });
-      advLast[it.ad.advertiser_id] = cur;
-      it.left--;
-      cur += minInt;
-      placed = true;
-      break;
+      };
     }
-    if (!placed) cur += 1;
+    return null;
+  };
+
+  const tryPlaceHouse = (cur: number): Slot | null => {
+    if (!houseAds.length) return null;
+    // round-robin starting from rotation index
+    for (let i = 0; i < houseAds.length; i++) {
+      const idx = (houseRotation + i) % houseAds.length;
+      const ad = houseAds[idx];
+      const aS = timeToMinutes(ad.allowed_hours_start || "06:00");
+      const aE = timeToMinutes(ad.allowed_hours_end || "23:00");
+      if (cur < aS || cur > aE) continue;
+      const last = houseAdLast[ad.id];
+      // avoid repeating same house ad within minSame window
+      if (last !== undefined && cur - last < minSame) continue;
+      houseAdLast[ad.id] = cur;
+      houseRotation = idx + 1;
+      return {
+        scheduled_time: minutesToTime(cur),
+        ad_id: ad.id,
+        contract_id: null,
+        schedule_date: date,
+        execution_status: "pending",
+      };
+    }
+    return null;
+  };
+
+  // 1) Place all paid ads first, evenly through the day at minInt cadence
+  while (paid.some((p) => p.left > 0) && cur < opEnd) {
+    const slot = tryPlacePaid(cur);
+    if (slot) {
+      slots.push(slot);
+      cur += minInt;
+    } else {
+      cur += 1;
+    }
   }
 
-  return slots;
+  // 2) Fill remaining gaps with house ads at minInt cadence across full operating window
+  if (houseAds.length) {
+    // Walk through operating hours minute-by-minute on the cadence
+    cur = opStart;
+    while (cur < opEnd) {
+      const taken = slots.some((s) => Math.abs(timeToMinutes(s.scheduled_time.slice(0, 5)) - cur) < minInt);
+      if (!taken) {
+        const slot = tryPlaceHouse(cur);
+        if (slot) slots.push(slot);
+      }
+      cur += minInt;
+    }
+  }
+
+  return slots.sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
 }
 
 Deno.serve(async (req) => {
@@ -104,7 +156,6 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Allow override via body { date: "YYYY-MM-DD" }, default = today (server TZ UTC → use São Paulo)
     let targetDate: string;
     try {
       const body = await req.json();
@@ -114,7 +165,6 @@ Deno.serve(async (req) => {
     }
     if (!targetDate) {
       const now = new Date();
-      // Brazil/SP is UTC-3 (no DST). Cron runs at 03:05 UTC = 00:05 BRT.
       const sp = new Date(now.getTime() - 3 * 60 * 60 * 1000);
       targetDate = sp.toISOString().slice(0, 10);
     }
@@ -135,20 +185,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Clear existing pending entries for the date so re-runs are idempotent
     await supabase.from("ad_schedule").delete().eq("schedule_date", targetDate).eq("execution_status", "pending");
 
     const slots = buildSchedule((ads || []) as Ad[], (contracts || []) as Contract[], settings as Settings, targetDate);
+    const houseCount = slots.filter((s) => !s.contract_id).length;
 
     if (slots.length) {
       const { error: insErr } = await supabase.from("ad_schedule").insert(slots);
       if (insErr) throw insErr;
     }
 
-    console.log(`[generate-daily-schedule] inserted ${slots.length} slots for ${targetDate}`);
+    console.log(`[generate-daily-schedule] inserted ${slots.length} slots (${houseCount} house) for ${targetDate}`);
 
     return new Response(
-      JSON.stringify({ ok: true, date: targetDate, inserted: slots.length }),
+      JSON.stringify({ ok: true, date: targetDate, inserted: slots.length, house_ads: houseCount, paid_ads: slots.length - houseCount }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (e) {
