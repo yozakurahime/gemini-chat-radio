@@ -95,10 +95,13 @@ export default function AdsList() {
     }
   };
 
+  const HOUSE_ADVERTISER_ID = "00000000-0000-0000-0000-000000000001";
+
   const save = async () => {
     const payload = {
       ...form,
-      contract_id: form.contract_id || null,
+      advertiser_id: form.is_house_ad ? HOUSE_ADVERTISER_ID : form.advertiser_id,
+      contract_id: form.is_house_ad ? null : (form.contract_id || null),
       audio_url: form.audio_url || null,
       approved_at: form.status === "active" && !editing?.approved_at ? new Date().toISOString() : editing?.approved_at || null,
     };
