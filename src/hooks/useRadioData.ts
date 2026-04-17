@@ -52,6 +52,7 @@ export interface Ad {
   priority: number;
   allowed_hours_start: string;
   allowed_hours_end: string;
+  is_house_ad: boolean;
   created_at: string;
   advertiser?: Advertiser;
   contract?: AdContract;

@@ -8,7 +8,8 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2, Upload, Loader2 } from "lucide-react";
+import { Plus, Edit, Trash2, Megaphone, Search, Play, Volume2, Upload, Loader2, Home } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { useAds, useCreateAd, useUpdateAd, useDeleteAd, useAdvertisers, useContracts } from "@/hooks/useRadioData";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -19,6 +20,7 @@ const statusColors: Record<string, "default" | "secondary" | "destructive"> = { 
 const defaultForm = {
   advertiser_id: "", contract_id: "", name: "", audio_url: "", duration_seconds: 30,
   volume: 1.0, status: "pending", priority: 0, allowed_hours_start: "06:00", allowed_hours_end: "23:00",
+  is_house_ad: false,
 };
 
 export default function AdsList() {
@@ -49,6 +51,7 @@ export default function AdsList() {
       audio_url: a.audio_url || "", duration_seconds: a.duration_seconds, volume: a.volume,
       status: a.status, priority: a.priority, allowed_hours_start: a.allowed_hours_start?.substring(0, 5) || "06:00",
       allowed_hours_end: a.allowed_hours_end?.substring(0, 5) || "23:00",
+      is_house_ad: !!a.is_house_ad,
     });
     setOpen(true);
   };
