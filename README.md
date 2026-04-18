@@ -92,6 +92,7 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
   - `backup-db.sh` (backup do SQLite com retencao)
   - `install-backup-cron.sh` (agenda backup diario no cron)
   - `deploy_oracle_manual.ps1` (disparo manual via Windows + SSH)
+  - `.github/workflows/deploy-production-auto.yml` (deploy automatico via GitHub Actions apos CI verde no `main`)
 
 ### Fluxo recomendado no servidor Linux (GitHub + deploy)
 
@@ -102,3 +103,17 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
    - `cd /opt/himefit && bash tools/deploy/deploy-now.sh`
 3. Agendar backup diario do banco:
    - `cd /opt/himefit && bash tools/deploy/install-backup-cron.sh`
+
+### Deploy automatico 24/7 (GitHub Actions -> VM)
+
+1. Em `GitHub > Settings > Secrets and variables > Actions`, criar:
+   - `ORACLE_SSH_HOST` (IP ou dominio da VM)
+   - `ORACLE_SSH_PORT` (normalmente `22`)
+   - `ORACLE_SSH_USER` (ex: `newbiegamers1`)
+   - `ORACLE_SSH_PRIVATE_KEY` (chave privada SSH completa, incluindo `BEGIN/END`)
+2. Garantir que no servidor o repositorio esteja em `/opt/himefit` e `tools/deploy/update-server.sh` funcional.
+3. Fluxo automatico:
+   - Push no `main` -> workflow `CI` roda testes/build
+   - Se CI passar, workflow `Deploy Production (Auto)` conecta na VM e executa update sem precisar do PC local ligado
+4. Fallback manual:
+   - `Actions > Deploy Production (Auto) > Run workflow` (selecionar branch/app_dir)

@@ -1,0 +1,66 @@
+name: Deploy Production (Auto)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy"
+        required: true
+        default: "main"
+      app_dir:
+        description: "Remote app directory"
+        required: true
+        default: "/opt/himefit"
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve deploy target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "app_dir=${{ inputs.app_dir }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+            echo "app_dir=/opt/himefit" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout deploy ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.ref }}
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+
+      - name: Add server host key
+        run: |
+          ssh-keyscan -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run remote update
+        run: |
+          ssh -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
+            set -euo pipefail; \
+            cd '${{ steps.target.outputs.app_dir }}'; \
+            export BRANCH='${{ steps.target.outputs.branch }}'; \
+            bash tools/deploy/update-server.sh"
