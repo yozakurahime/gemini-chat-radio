@@ -533,6 +533,7 @@ function setRadioSetting(key, value) {
 
 const SYSTEM_CONFIG_KEY = 'system.config.v1';
 const SYSTEM_UPDATE_STATE_KEY = 'system.update.state.v1';
+const OPS_ALERTS_CONFIG_KEY = 'ops.alerts.v1';
 const SYSTEM_CONFIG_SECRET_FIELDS = new Set(['aiApiKey', 'updatesToken']);
 const SYSTEM_DEFAULT_CONFIG = {
     onboardingCompleted: false,
@@ -546,6 +547,22 @@ const SYSTEM_DEFAULT_CONFIG = {
     updatesEnabled: true,
     updatesManifestUrl: '',
     updatesChannel: 'stable',
+    updatedAt: 0
+};
+const OPS_ALERTS_DEFAULT_CONFIG = {
+    enabled: true,
+    whatsappDestinations: [],
+    thresholds: {
+        scaLagWarnSec: 1800,
+        scaLagCriticalSec: 5400,
+        backupWarnAgeMin: 720,
+        backupCriticalAgeMin: 1440,
+        downtimeWarnMin: 2,
+        downtimeCriticalMin: 5,
+        cooldownMin: 15,
+        chatSlaDelayMin: 5,
+        chatSlaCriticalMin: 15
+    },
     updatedAt: 0
 };
 
@@ -732,6 +749,85 @@ function setSystemConfig(nextConfig, options = {}) {
     merged.updatedAt = Date.now();
     setAppConfigRaw(SYSTEM_CONFIG_KEY, merged, { updatedBy: options.updatedBy || '', isSecret: 1 });
     return getSystemConfig();
+}
+
+function normalizeOpsDestinationsInput(rawList = []) {
+    const out = [];
+    const values = Array.isArray(rawList)
+        ? rawList
+        : String(rawList || '').split(/[\n,;]/g);
+    const seen = new Set();
+    for (const raw of values) {
+        const digits = normalizePhoneDigits(raw || '');
+        if (!digits || digits.length < 10) continue;
+        const jid = `${digits}@s.whatsapp.net`;
+        if (seen.has(jid)) continue;
+        seen.add(jid);
+        out.push(jid);
+    }
+    return out;
+}
+
+function normalizeOpsThresholdNumber(raw, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    const rounded = Math.floor(n);
+    if (rounded < min) return min;
+    if (rounded > max) return max;
+    return rounded;
+}
+
+function normalizeOpsAlertsConfigInput(payload, currentConfig = OPS_ALERTS_DEFAULT_CONFIG) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const current = currentConfig && typeof currentConfig === 'object' ? currentConfig : OPS_ALERTS_DEFAULT_CONFIG;
+    const sourceThresholds = source.thresholds && typeof source.thresholds === 'object' ? source.thresholds : {};
+    const currentThresholds = current.thresholds && typeof current.thresholds === 'object' ? current.thresholds : OPS_ALERTS_DEFAULT_CONFIG.thresholds;
+    const delayMin = normalizeOpsThresholdNumber(
+        sourceThresholds.chatSlaDelayMin,
+        Number(currentThresholds.chatSlaDelayMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.chatSlaDelayMin),
+        { min: 1, max: 720 }
+    );
+    const criticalMinRaw = normalizeOpsThresholdNumber(
+        sourceThresholds.chatSlaCriticalMin,
+        Number(currentThresholds.chatSlaCriticalMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.chatSlaCriticalMin),
+        { min: 2, max: 1440 }
+    );
+    const criticalMin = Math.max(delayMin + 1, criticalMinRaw);
+    return {
+        enabled: source.enabled !== false,
+        whatsappDestinations: normalizeOpsDestinationsInput(source.whatsappDestinations ?? current.whatsappDestinations ?? []),
+        thresholds: {
+            scaLagWarnSec: normalizeOpsThresholdNumber(sourceThresholds.scaLagWarnSec, Number(currentThresholds.scaLagWarnSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagWarnSec), { min: 60, max: 604800 }),
+            scaLagCriticalSec: normalizeOpsThresholdNumber(sourceThresholds.scaLagCriticalSec, Number(currentThresholds.scaLagCriticalSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagCriticalSec), { min: 120, max: 1209600 }),
+            backupWarnAgeMin: normalizeOpsThresholdNumber(sourceThresholds.backupWarnAgeMin, Number(currentThresholds.backupWarnAgeMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.backupWarnAgeMin), { min: 5, max: 10080 }),
+            backupCriticalAgeMin: normalizeOpsThresholdNumber(sourceThresholds.backupCriticalAgeMin, Number(currentThresholds.backupCriticalAgeMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.backupCriticalAgeMin), { min: 10, max: 20160 }),
+            downtimeWarnMin: normalizeOpsThresholdNumber(sourceThresholds.downtimeWarnMin, Number(currentThresholds.downtimeWarnMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeWarnMin), { min: 1, max: 720 }),
+            downtimeCriticalMin: normalizeOpsThresholdNumber(sourceThresholds.downtimeCriticalMin, Number(currentThresholds.downtimeCriticalMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeCriticalMin), { min: 2, max: 1440 }),
+            cooldownMin: normalizeOpsThresholdNumber(sourceThresholds.cooldownMin, Number(currentThresholds.cooldownMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.cooldownMin), { min: 1, max: 1440 }),
+            chatSlaDelayMin: delayMin,
+            chatSlaCriticalMin: criticalMin
+        },
+        updatedAt: Number(current.updatedAt || 0)
+    };
+}
+
+function getOpsAlertsConfig() {
+    const stored = getAppConfigRaw(OPS_ALERTS_CONFIG_KEY, {});
+    return normalizeOpsAlertsConfigInput({
+        ...OPS_ALERTS_DEFAULT_CONFIG,
+        ...(stored || {}),
+        thresholds: {
+            ...OPS_ALERTS_DEFAULT_CONFIG.thresholds,
+            ...((stored && stored.thresholds) || {})
+        }
+    }, OPS_ALERTS_DEFAULT_CONFIG);
+}
+
+function setOpsAlertsConfig(nextConfig, updatedBy = 'system') {
+    const normalized = normalizeOpsAlertsConfigInput(nextConfig, getOpsAlertsConfig());
+    normalized.updatedAt = Date.now();
+    setAppConfigRaw(OPS_ALERTS_CONFIG_KEY, normalized, { updatedBy, isSecret: 0 });
+    return getOpsAlertsConfig();
 }
 
 function maskSystemConfig(config) {
@@ -1011,7 +1107,7 @@ function sanitizePlaylistTable() {
 }
 
 // --- DATABASE SETUP ---
-db.prepare(`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, name TEXT, history TEXT, tags TEXT, notes TEXT, last_activity INTEGER, paused_by_human INTEGER DEFAULT 0, status TEXT DEFAULT 'active', route_jid TEXT DEFAULT '')`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, name TEXT, history TEXT, tags TEXT, notes TEXT, last_activity INTEGER, paused_by_human INTEGER DEFAULT 0, status TEXT DEFAULT 'active', route_jid TEXT DEFAULT '', sla_pending_since INTEGER DEFAULT 0, sla_status TEXT DEFAULT 'ok', sla_updated_at INTEGER DEFAULT 0)`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS panel_users (username TEXT PRIMARY KEY, password TEXT, role TEXT DEFAULT 'user', fullname TEXT DEFAULT 'Atendente', avatar TEXT DEFAULT '')`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS panel_sessions (token_hash TEXT PRIMARY KEY, username TEXT, role TEXT, created_at INTEGER, expires_at INTEGER)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_panel_sessions_username ON panel_sessions (username)`).run();
@@ -1132,6 +1228,17 @@ db.prepare(`CREATE TABLE IF NOT EXISTS app_config (
     is_secret INTEGER DEFAULT 0,
     updated_by TEXT DEFAULT '',
     updated_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS ai_feedback_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    actor TEXT DEFAULT '',
+    feedback_type TEXT DEFAULT 'inadequada',
+    reason TEXT DEFAULT '',
+    last_user_message TEXT DEFAULT '',
+    last_ai_message TEXT DEFAULT '',
+    context_json TEXT DEFAULT '{}',
+    created_at INTEGER
 )`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, actor TEXT, target TEXT, meta_json TEXT, ip TEXT, created_at INTEGER)`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS contact_alias (jid TEXT PRIMARY KEY, canonical_jid TEXT NOT NULL, updated_at INTEGER, source TEXT DEFAULT 'runtime')`).run();
@@ -1311,6 +1418,8 @@ db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_phone ON sca_people(phone)
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_runs_finished ON sca_sync_runs(finished_at)').run();
 db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_connector_source ON sca_sync_connector_status(source)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_updated ON sca_sync_connector_status(updated_at)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_conversation_created ON ai_feedback_events(conversation_id, created_at DESC)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback_events(created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_advertisers_segment_status ON advertisers(segment_id, status)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ad_contracts_advertiser_status ON ad_contracts(advertiser_id, contract_status, payment_status)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_radio_ads_contract_status ON radio_ads(contract_id, status)').run();
@@ -1380,6 +1489,9 @@ try { db.prepare("ALTER TABLE playlist ADD COLUMN error_count INTEGER DEFAULT 0"
 sanitizePlaylistTable();
 try { db.prepare("ALTER TABLE conversations ADD COLUMN status TEXT DEFAULT 'active'").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE conversations ADD COLUMN route_jid TEXT DEFAULT ''").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_pending_since INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_status TEXT DEFAULT 'ok'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_updated_at INTEGER DEFAULT 0").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE knowledge_versions ADD COLUMN published INTEGER DEFAULT 0").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE ad_campaigns ADD COLUMN advertiser TEXT DEFAULT ''").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE ad_campaigns ADD COLUMN notes TEXT DEFAULT ''").run(); } catch(e) {}
@@ -1445,6 +1557,10 @@ try {
             lastApplyAt: 0,
             lastApplyError: ''
         }, 'bootstrap');
+    }
+    const existingOpsAlerts = getAppConfigRaw(OPS_ALERTS_CONFIG_KEY, null);
+    if (!existingOpsAlerts) {
+        setOpsAlertsConfig(OPS_ALERTS_DEFAULT_CONFIG, 'bootstrap');
     }
 } catch (e) {
     console.error('[system] falha ao inicializar app_config:', e?.message || e);
@@ -1887,6 +2003,455 @@ function getScaSyncStatus() {
             meta: connectorMeta
         }
     };
+}
+
+const HEALTH_STATUS_RANK = { ok: 0, degraded: 1, critical: 2 };
+let operationalHealthSnapshot = {
+    generatedAt: 0,
+    status: 'ok',
+    components: {},
+    incidents: [],
+    summary: { ok: 0, degraded: 0, critical: 0 }
+};
+const operationalDowntimeSince = new Map();
+const operationalIncidents = new Map();
+let operationalHealthHash = '';
+let operationalHealthTimer = null;
+
+function normalizeHealthStatus(rawStatus) {
+    const status = String(rawStatus || '').toLowerCase().trim();
+    if (status === 'critical') return 'critical';
+    if (status === 'degraded') return 'degraded';
+    return 'ok';
+}
+
+function healthStatusRank(status) {
+    return HEALTH_STATUS_RANK[normalizeHealthStatus(status)] || 0;
+}
+
+function normalizeIncidentMessage(message) {
+    return sanitizePublicText(message || '', 240) || 'estado operacional alterado';
+}
+
+function collectBackupMetrics(thresholds) {
+    const warnMin = Math.max(5, Number(thresholds?.backupWarnAgeMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.backupWarnAgeMin));
+    const criticalMin = Math.max(warnMin + 1, Number(thresholds?.backupCriticalAgeMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.backupCriticalAgeMin));
+    try {
+        ensureDir(BACKUP_DIR);
+        const files = fs.readdirSync(BACKUP_DIR)
+            .filter((name) => name.toLowerCase().endsWith('.db'))
+            .map((name) => {
+                const full = path.join(BACKUP_DIR, name);
+                const stat = fs.statSync(full);
+                return {
+                    name,
+                    mtimeMs: Number(stat.mtimeMs || 0),
+                    size: Number(stat.size || 0)
+                };
+            })
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const latest = files[0] || null;
+        if (!latest) {
+            return {
+                status: 'critical',
+                message: 'nenhum backup encontrado',
+                metrics: {
+                    latestFile: '',
+                    latestAt: 0,
+                    ageMin: null,
+                    totalFiles: 0,
+                    warnMin,
+                    criticalMin
+                }
+            };
+        }
+        const ageMin = Math.max(0, Math.floor((Date.now() - latest.mtimeMs) / 60000));
+        let status = 'ok';
+        let message = 'backup atualizado';
+        if (ageMin >= criticalMin) {
+            status = 'critical';
+            message = `backup atrasado (${ageMin} min)`;
+        } else if (ageMin >= warnMin) {
+            status = 'degraded';
+            message = `backup envelhecido (${ageMin} min)`;
+        }
+        return {
+            status,
+            message,
+            metrics: {
+                latestFile: latest.name,
+                latestAt: latest.mtimeMs,
+                ageMin,
+                totalFiles: files.length,
+                warnMin,
+                criticalMin
+            }
+        };
+    } catch (error) {
+        return {
+            status: 'critical',
+            message: normalizeIncidentMessage(error?.message || 'falha ao ler backups'),
+            metrics: {
+                latestFile: '',
+                latestAt: 0,
+                ageMin: null,
+                totalFiles: 0,
+                warnMin,
+                criticalMin
+            }
+        };
+    }
+}
+
+function collectOperationalComponents() {
+    const config = getOpsAlertsConfig();
+    const thresholds = config?.thresholds || OPS_ALERTS_DEFAULT_CONFIG.thresholds;
+    const now = Date.now();
+    const components = {};
+
+    components.api = {
+        status: 'ok',
+        message: 'api online',
+        metrics: {
+            uptimeSec: Math.floor(process.uptime()),
+            now
+        }
+    };
+
+    try {
+        db.prepare('SELECT 1 AS ok').get();
+        components.db = {
+            status: 'ok',
+            message: 'db online',
+            metrics: {}
+        };
+    } catch (error) {
+        components.db = {
+            status: 'critical',
+            message: normalizeIncidentMessage(error?.message || 'db indisponivel'),
+            metrics: {}
+        };
+    }
+
+    if (DISABLE_WHATSAPP) {
+        components.whatsapp = {
+            status: 'ok',
+            message: 'whatsapp desativado por configuracao',
+            metrics: {
+                connected: false,
+                disabled: true,
+                reconnectAttempts
+            }
+        };
+    } else {
+        let waStatus = 'ok';
+        let waMessage = 'whatsapp conectado';
+        if (!whatsappConnected && (startingSock || reconnectTimer)) {
+            waStatus = 'degraded';
+            waMessage = 'whatsapp reconectando';
+        } else if (!whatsappConnected) {
+            waStatus = 'critical';
+            waMessage = whatsappLastError ? `whatsapp offline (${sanitizePublicText(whatsappLastError, 120)})` : 'whatsapp offline';
+        }
+        components.whatsapp = {
+            status: waStatus,
+            message: waMessage,
+            metrics: {
+                connected: !!whatsappConnected,
+                reconnectAttempts: Number(reconnectAttempts || 0),
+                lastErrorCode: Number(whatsappLastErrorCode || 0),
+                lastError: sanitizePublicText(whatsappLastError || '', 120)
+            }
+        };
+    }
+
+    try {
+        const totals = { clients: 0, admins: 0 };
+        if (wss?.clients) {
+            wss.clients.forEach((client) => {
+                if (client.readyState !== client.OPEN) return;
+                totals.clients += 1;
+                if (client.isLogged && client.isAdmin) totals.admins += 1;
+            });
+        }
+        components.ws = {
+            status: 'ok',
+            message: 'ws online',
+            metrics: totals
+        };
+    } catch (error) {
+        components.ws = {
+            status: 'critical',
+            message: normalizeIncidentMessage(error?.message || 'falha no websocket'),
+            metrics: {}
+        };
+    }
+
+    components.backup = collectBackupMetrics(thresholds);
+
+    if (!SCA_SYNC_ENABLED) {
+        components.sca_sync = {
+            status: 'ok',
+            message: 'sca sync desativado',
+            metrics: {
+                enabled: false
+            }
+        };
+    } else {
+        const scaStatus = getScaSyncStatus();
+        const lagSec = Number(scaStatus?.connector?.lag_sec ?? scaStatus?.events?.lag_sec ?? 0);
+        const warnLag = Math.max(60, Number(thresholds?.scaLagWarnSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagWarnSec));
+        const criticalLag = Math.max(warnLag + 60, Number(thresholds?.scaLagCriticalSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagCriticalSec));
+        let scaState = 'ok';
+        let scaMessage = 'sync em dia';
+        if (Number(scaStatus?.runs?.total || 0) <= 0) {
+            scaState = 'degraded';
+            scaMessage = 'sync ainda sem execucoes';
+        } else if (lagSec >= criticalLag) {
+            scaState = 'critical';
+            scaMessage = `lag SCA alto (${lagSec}s)`;
+        } else if (lagSec >= warnLag) {
+            scaState = 'degraded';
+            scaMessage = `lag SCA elevado (${lagSec}s)`;
+        }
+        if (scaState !== 'critical' && scaStatus?.connector?.last_error) {
+            scaState = 'degraded';
+            scaMessage = sanitizePublicText(`conector com erro: ${scaStatus.connector.last_error}`, 180);
+        }
+        components.sca_sync = {
+            status: scaState,
+            message: scaMessage,
+            metrics: {
+                enabled: true,
+                lagSec,
+                warnLag,
+                criticalLag,
+                runsTotal: Number(scaStatus?.runs?.total || 0),
+                lastSuccessAt: Number(scaStatus?.runs?.last_success_at || 0),
+                lastErrorAt: Number(scaStatus?.runs?.last_error_at || 0)
+            }
+        };
+    }
+
+    const downtimeWarnMin = Math.max(1, Number(thresholds?.downtimeWarnMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeWarnMin));
+    const downtimeCriticalMin = Math.max(downtimeWarnMin + 1, Number(thresholds?.downtimeCriticalMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeCriticalMin));
+    for (const [componentName, component] of Object.entries(components)) {
+        const currentStatus = normalizeHealthStatus(component.status);
+        if (currentStatus === 'ok') {
+            operationalDowntimeSince.delete(componentName);
+            component.status = 'ok';
+            component.metrics = { ...(component.metrics || {}), downtimeSec: 0 };
+            continue;
+        }
+        const existingSince = Number(operationalDowntimeSince.get(componentName) || 0);
+        const since = existingSince > 0 ? existingSince : now;
+        operationalDowntimeSince.set(componentName, since);
+        const downtimeSec = Math.max(0, Math.floor((now - since) / 1000));
+        const downtimeMin = downtimeSec / 60;
+        let nextStatus = currentStatus;
+        if (downtimeMin >= downtimeCriticalMin) {
+            nextStatus = 'critical';
+        } else if (downtimeMin >= downtimeWarnMin && nextStatus === 'ok') {
+            nextStatus = 'degraded';
+        }
+        component.status = nextStatus;
+        component.metrics = {
+            ...(component.metrics || {}),
+            downtimeSec,
+            downtimeSince: since
+        };
+    }
+
+    return { components, config };
+}
+
+function buildOperationalHealthSnapshot() {
+    const now = Date.now();
+    const { components } = collectOperationalComponents();
+    let summary = { ok: 0, degraded: 0, critical: 0 };
+    let overall = 'ok';
+    for (const component of Object.values(components)) {
+        const status = normalizeHealthStatus(component.status);
+        summary[status] += 1;
+        if (healthStatusRank(status) > healthStatusRank(overall)) overall = status;
+    }
+    return {
+        generatedAt: now,
+        status: overall,
+        components,
+        incidents: Array.from(operationalIncidents.values())
+            .map((incident) => ({ ...incident }))
+            .sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0)),
+        summary
+    };
+}
+
+function buildIncidentHash(snapshot) {
+    const compact = {
+        status: snapshot.status,
+        components: Object.fromEntries(
+            Object.entries(snapshot.components || {}).map(([key, value]) => [
+                key,
+                {
+                    status: value.status,
+                    message: value.message,
+                    lagSec: Number(value?.metrics?.lagSec || 0),
+                    ageMin: Number(value?.metrics?.ageMin || 0),
+                    downtimeSec: Number(value?.metrics?.downtimeSec || 0)
+                }
+            ])
+        ),
+        incidents: (snapshot.incidents || []).map((incident) => ({
+            id: incident.id,
+            status: incident.status,
+            component: incident.component,
+            openedAt: incident.openedAt,
+            closedAt: incident.closedAt || 0
+        }))
+    };
+    return JSON.stringify(compact);
+}
+
+function formatIncidentWhatsappMessage(incident, phase = 'opened') {
+    const severity = String(incident?.status || 'degraded').toUpperCase();
+    const component = sanitizePublicText(incident?.component || 'system', 80) || 'system';
+    const title = phase === 'closed'
+        ? `[HimeFit] Recuperacao ${component}`
+        : `[HimeFit] Incidente ${severity} - ${component}`;
+    const openedAt = Number(incident?.openedAt || 0);
+    const closedAt = Number(incident?.closedAt || 0);
+    const lines = [
+        title,
+        `Mensagem: ${sanitizePublicText(incident?.message || '', 180) || 'sem detalhes'}`,
+        openedAt > 0 ? `Inicio: ${formatDateTimeBR(openedAt)}` : '',
+        closedAt > 0 ? `Fim: ${formatDateTimeBR(closedAt)}` : ''
+    ].filter(Boolean);
+    return lines.join('\n');
+}
+
+async function dispatchOperationalWhatsappAlert(incident, phase = 'opened') {
+    const config = getOpsAlertsConfig();
+    if (!config?.enabled) return;
+    const destinations = Array.isArray(config.whatsappDestinations) ? config.whatsappDestinations : [];
+    if (!destinations.length) return;
+    if (!sock?.user) return;
+    const message = formatIncidentWhatsappMessage(incident, phase);
+    await Promise.all(destinations.map(async (jid) => {
+        try {
+            await sock.sendMessage(jid, { text: message });
+        } catch (error) {
+            console.error('[ops-alert] falha ao enviar alerta whatsapp:', jid, error?.message || error);
+        }
+    }));
+}
+
+function broadcastToAdmins(message) {
+    if (!wss?.clients) return;
+    const payload = JSON.stringify(message);
+    wss.clients.forEach((client) => {
+        if (client.readyState !== client.OPEN) return;
+        if (!client.isLogged || !client.isAdmin) return;
+        client.send(payload);
+    });
+}
+
+function reconcileOperationalIncidents(snapshot) {
+    const now = Date.now();
+    const config = getOpsAlertsConfig();
+    const cooldownMs = Math.max(60 * 1000, Number(config?.thresholds?.cooldownMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.cooldownMin) * 60 * 1000);
+
+    for (const [componentName, component] of Object.entries(snapshot.components || {})) {
+        const status = normalizeHealthStatus(component.status);
+        const existing = operationalIncidents.get(componentName) || null;
+        if (status === 'ok') {
+            if (existing) {
+                const closed = {
+                    ...existing,
+                    status: 'ok',
+                    closedAt: now,
+                    lastUpdatedAt: now
+                };
+                operationalIncidents.delete(componentName);
+                broadcastToAdmins({ type: 'incident_closed', incident: closed });
+                void dispatchOperationalWhatsappAlert(closed, 'closed');
+            }
+            continue;
+        }
+
+        if (!existing) {
+            const opened = {
+                id: `${componentName}:${now}`,
+                component: componentName,
+                status,
+                message: normalizeIncidentMessage(component.message),
+                openedAt: now,
+                lastUpdatedAt: now,
+                lastAlertAt: now,
+                meta: component.metrics || {}
+            };
+            operationalIncidents.set(componentName, opened);
+            broadcastToAdmins({ type: 'incident_opened', incident: opened });
+            void dispatchOperationalWhatsappAlert(opened, 'opened');
+            continue;
+        }
+
+        const escalated = healthStatusRank(status) > healthStatusRank(existing.status);
+        const messageChanged = normalizeIncidentMessage(component.message) !== String(existing.message || '');
+        existing.status = status;
+        existing.message = normalizeIncidentMessage(component.message);
+        existing.meta = component.metrics || {};
+        existing.lastUpdatedAt = now;
+        if (escalated || messageChanged) {
+            const canAlert = (now - Number(existing.lastAlertAt || 0)) >= cooldownMs;
+            if (canAlert) {
+                existing.lastAlertAt = now;
+                broadcastToAdmins({ type: 'incident_opened', incident: { ...existing, escalated } });
+                void dispatchOperationalWhatsappAlert(existing, 'opened');
+            }
+        } else if ((now - Number(existing.lastAlertAt || 0)) >= cooldownMs) {
+            existing.lastAlertAt = now;
+            void dispatchOperationalWhatsappAlert(existing, 'opened');
+        }
+    }
+}
+
+function evaluateOperationalHealth({ emit = true } = {}) {
+    const snapshot = buildOperationalHealthSnapshot();
+    reconcileOperationalIncidents(snapshot);
+    snapshot.incidents = Array.from(operationalIncidents.values())
+        .map((incident) => ({ ...incident }))
+        .sort((a, b) => Number(b.openedAt || 0) - Number(a.openedAt || 0));
+    operationalHealthSnapshot = snapshot;
+    const hash = buildIncidentHash(snapshot);
+    if (emit && hash !== operationalHealthHash) {
+        broadcastToAdmins({ type: 'system_health_update', health: snapshot });
+    }
+    operationalHealthHash = hash;
+    return snapshot;
+}
+
+function getOperationalHealthSnapshot() {
+    if (!operationalHealthSnapshot.generatedAt || (Date.now() - operationalHealthSnapshot.generatedAt) > 20000) {
+        try {
+            evaluateOperationalHealth({ emit: false });
+        } catch (error) {
+            console.error('[ops-health] falha ao atualizar snapshot:', error?.message || error);
+        }
+    }
+    return operationalHealthSnapshot;
+}
+
+function startOperationalHealthMonitoring() {
+    if (operationalHealthTimer) clearInterval(operationalHealthTimer);
+    evaluateOperationalHealth({ emit: false });
+    operationalHealthTimer = setInterval(() => {
+        try {
+            evaluateOperationalHealth({ emit: true });
+            reevaluateAllConversationsSla({ emit: true, reason: 'sla_timer' });
+        } catch (error) {
+            console.error('[ops-health] monitor loop error:', error?.message || error);
+        }
+    }, 30000);
 }
 
 function buildScaContextSnippetForSender(senderJid, senderRawJid = '') {
@@ -5239,15 +5804,293 @@ rows.forEach(row => {
         pendingHumanHandoff: null,
         status: row.status || 'active',
         routeJid: row.route_jid || row.id,
+        slaPendingSince: Number(row.sla_pending_since || 0),
+        slaStatus: String(row.sla_status || 'ok'),
+        slaUpdatedAt: Number(row.sla_updated_at || 0),
         messageBuffer: [],
         typingTimer: null
     };
 });
 
-const saveStmt = db.prepare('INSERT OR REPLACE INTO conversations (id, name, history, tags, notes, last_activity, paused_by_human, status, route_jid) VALUES (@id, @name, @history, @tags, @notes, @last_activity, @paused_by_human, @status, @route_jid)');
+const saveStmt = db.prepare('INSERT OR REPLACE INTO conversations (id, name, history, tags, notes, last_activity, paused_by_human, status, route_jid, sla_pending_since, sla_status, sla_updated_at) VALUES (@id, @name, @history, @tags, @notes, @last_activity, @paused_by_human, @status, @route_jid, @sla_pending_since, @sla_status, @sla_updated_at)');
 function saveChat(id) {
     const u = conversationState[id]; if (!u) return;
-    try { saveStmt.run({ id: id, name: u.name, history: JSON.stringify(u.history), tags: JSON.stringify(u.tags), notes: u.notes, last_activity: u.lastActivityTimestamp, paused_by_human: u.pausedByHuman ? 1 : 0, status: u.status, route_jid: u.routeJid || id }); } catch (e) {}
+    try {
+        saveStmt.run({
+            id: id,
+            name: u.name,
+            history: JSON.stringify(u.history),
+            tags: JSON.stringify(u.tags),
+            notes: u.notes,
+            last_activity: u.lastActivityTimestamp,
+            paused_by_human: u.pausedByHuman ? 1 : 0,
+            status: u.status,
+            route_jid: u.routeJid || id,
+            sla_pending_since: Number(u.slaPendingSince || 0),
+            sla_status: String(u.slaStatus || 'ok'),
+            sla_updated_at: Number(u.slaUpdatedAt || Date.now())
+        });
+    } catch (e) {}
+}
+
+const CHAT_SLA_STATUS = Object.freeze({
+    OK: 'ok',
+    DELAYED: 'atrasando',
+    CRITICAL: 'critico'
+});
+
+function normalizeChatSlaStatus(raw) {
+    const value = String(raw || '').toLowerCase().trim();
+    if (value === CHAT_SLA_STATUS.CRITICAL) return CHAT_SLA_STATUS.CRITICAL;
+    if (value === CHAT_SLA_STATUS.DELAYED) return CHAT_SLA_STATUS.DELAYED;
+    return CHAT_SLA_STATUS.OK;
+}
+
+function getChatSlaThresholds() {
+    const config = getOpsAlertsConfig();
+    const thresholds = config?.thresholds || {};
+    const delayMin = Math.max(1, Number(thresholds.chatSlaDelayMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.chatSlaDelayMin));
+    const criticalMinRaw = Math.max(2, Number(thresholds.chatSlaCriticalMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.chatSlaCriticalMin));
+    const criticalMin = Math.max(delayMin + 1, criticalMinRaw);
+    return {
+        delayMin,
+        criticalMin
+    };
+}
+
+function computeChatSlaStatus(pendingSince, now = Date.now()) {
+    const since = Number(pendingSince || 0);
+    if (!Number.isFinite(since) || since <= 0) return CHAT_SLA_STATUS.OK;
+    const elapsedSec = Math.max(0, Math.floor((Number(now) - since) / 1000));
+    const elapsedMin = elapsedSec / 60;
+    const { delayMin, criticalMin } = getChatSlaThresholds();
+    if (elapsedMin >= criticalMin) return CHAT_SLA_STATUS.CRITICAL;
+    if (elapsedMin >= delayMin) return CHAT_SLA_STATUS.DELAYED;
+    return CHAT_SLA_STATUS.OK;
+}
+
+function getChatSlaSeverityRank(status) {
+    if (status === CHAT_SLA_STATUS.CRITICAL) return 2;
+    if (status === CHAT_SLA_STATUS.DELAYED) return 1;
+    return 0;
+}
+
+function normalizeHistorySender(sender) {
+    return String(sender || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+}
+
+function parseHistoryEntry(rawEntry) {
+    const raw = String(rawEntry || '');
+    let content = raw;
+    let timestamp = 0;
+    const tsMatch = content.match(/^\[ts=(\d{10,16})\]\s*/i);
+    if (tsMatch) {
+        const parsedTs = Number(tsMatch[1]);
+        if (Number.isFinite(parsedTs) && parsedTs > 0) timestamp = Math.floor(parsedTs);
+        content = content.slice(tsMatch[0].length);
+    }
+    const splitIndex = content.indexOf(':');
+    if (splitIndex < 0) {
+        return {
+            sender: '',
+            body: content.trim(),
+            timestamp
+        };
+    }
+    return {
+        sender: content.slice(0, splitIndex).trim(),
+        body: content.slice(splitIndex + 1).trim(),
+        timestamp
+    };
+}
+
+function findLastHistoryMessageByRole(history, role) {
+    const list = Array.isArray(history) ? history : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+        const parsed = parseHistoryEntry(list[i]);
+        const sender = normalizeHistorySender(parsed.sender);
+        const isUser = sender === 'usuario' || sender === 'cliente';
+        const isAi = sender === 'hime';
+        if ((role === 'user' && isUser) || (role === 'ai' && isAi)) {
+            return {
+                text: parsed.body || '',
+                timestamp: Number(parsed.timestamp || 0)
+            };
+        }
+    }
+    return { text: '', timestamp: 0 };
+}
+
+function buildChatSlaPayload(contactId, user, now = Date.now()) {
+    const pendingSince = Number(user?.slaPendingSince || 0);
+    const status = normalizeChatSlaStatus(user?.slaStatus || computeChatSlaStatus(pendingSince, now));
+    const elapsedSec = pendingSince > 0 ? Math.max(0, Math.floor((now - pendingSince) / 1000)) : 0;
+    return {
+        from: contactId,
+        status,
+        pendingSince,
+        elapsedSec,
+        updatedAt: now
+    };
+}
+
+function evaluateConversationSlaStatus(contactId, { emit = true, reason = 'refresh', force = false } = {}) {
+    const user = conversationState[contactId];
+    if (!user) return null;
+    const now = Date.now();
+    const nextStatus = normalizeChatSlaStatus(computeChatSlaStatus(user.slaPendingSince, now));
+    const prevStatus = normalizeChatSlaStatus(user.slaStatus);
+    const statusChanged = nextStatus !== prevStatus;
+    if (statusChanged || force) {
+        user.slaStatus = nextStatus;
+        user.slaUpdatedAt = now;
+        saveChat(contactId);
+        if (emit) {
+            broadcast({
+                type: 'chat_sla_update',
+                reason,
+                ...buildChatSlaPayload(contactId, user, now)
+            });
+        }
+    }
+    return buildChatSlaPayload(contactId, user, now);
+}
+
+function markConversationInboundForSla(contactId, timestamp = Date.now()) {
+    const user = conversationState[contactId];
+    if (!user) return null;
+    const ts = Number(timestamp);
+    const safeTs = Number.isFinite(ts) && ts > 0 ? Math.floor(ts) : Date.now();
+    if (!Number.isFinite(Number(user.slaPendingSince || 0)) || Number(user.slaPendingSince || 0) <= 0) {
+        user.slaPendingSince = safeTs;
+    }
+    return evaluateConversationSlaStatus(contactId, { emit: true, reason: 'inbound' });
+}
+
+function acknowledgeConversationAttention(contactId, { actor = 'system', reason = 'ack' } = {}) {
+    const user = conversationState[contactId];
+    if (!user) return null;
+    const hadPending = Number(user.slaPendingSince || 0) > 0 || normalizeChatSlaStatus(user.slaStatus) !== CHAT_SLA_STATUS.OK;
+    user.slaPendingSince = 0;
+    user.slaStatus = CHAT_SLA_STATUS.OK;
+    user.slaUpdatedAt = Date.now();
+    saveChat(contactId);
+    if (hadPending) {
+        broadcast({
+            type: 'chat_sla_update',
+            reason,
+            actor: String(actor || ''),
+            ...buildChatSlaPayload(contactId, user)
+        });
+    }
+    return buildChatSlaPayload(contactId, user);
+}
+
+function reevaluateAllConversationsSla({ emit = true, reason = 'timer' } = {}) {
+    const ids = Object.keys(conversationState || {});
+    ids.forEach((id) => {
+        evaluateConversationSlaStatus(id, { emit, reason });
+    });
+}
+
+function buildAiContextPreviewForConversation(contactId) {
+    const convo = conversationState[contactId];
+    if (!convo) return null;
+    const snapshot = getAIContextSnapshot();
+    const scaContext = buildScaContextSnippetForSender(contactId, convo.routeJid || contactId);
+    const warnings = [];
+    const baseLen = Number(snapshot?.contexto_length || 0);
+    const noticesLen = Number(snapshot?.avisos_length || 0);
+    if (baseLen <= 0) warnings.push('Base de conhecimento vazia.');
+    if (SCA_SYNC_ENABLED && !scaContext) warnings.push('Sem match SCA por telefone para este contato.');
+    const confidence = warnings.length >= 2 ? 'low' : warnings.length === 1 ? 'medium' : 'high';
+    return {
+        conversation: {
+            id: contactId,
+            name: convo.name || contactId,
+            routeJid: convo.routeJid || contactId
+        },
+        generatedAt: Date.now(),
+        context: {
+            baseContextLength: baseLen,
+            noticesLength: noticesLen,
+            baseContextUpdatedAt: Number(snapshot?.contexto_mtime_ms || 0),
+            noticesUpdatedAt: Number(snapshot?.avisos_mtime_ms || 0),
+            scaMatch: !!scaContext,
+            scaSnippet: scaContext || ''
+        },
+        confidence,
+        warnings
+    };
+}
+
+function registerAiFeedbackForConversation({ contactId, actor = '', feedbackType = 'inadequada', reason = '' } = {}) {
+    const convo = conversationState[contactId];
+    if (!convo) return null;
+    const now = Date.now();
+    const userMsg = findLastHistoryMessageByRole(convo.history, 'user');
+    const aiMsg = findLastHistoryMessageByRole(convo.history, 'ai');
+    const preview = buildAiContextPreviewForConversation(contactId);
+    const cleanType = sanitizePublicText(feedbackType, 30) || 'inadequada';
+    const cleanReason = sanitizePublicText(reason, 240);
+    const row = db.prepare(`
+        INSERT INTO ai_feedback_events (
+            conversation_id,
+            actor,
+            feedback_type,
+            reason,
+            last_user_message,
+            last_ai_message,
+            context_json,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        String(contactId || ''),
+        sanitizePublicText(actor || '', 80),
+        cleanType,
+        cleanReason,
+        sanitizePublicText(userMsg.text || '', 1500),
+        sanitizePublicText(aiMsg.text || '', 1500),
+        safeJsonStringify(preview || {}, '{}'),
+        now
+    );
+    return {
+        id: Number(row?.lastInsertRowid || 0),
+        conversation_id: String(contactId || ''),
+        actor: sanitizePublicText(actor || '', 80),
+        feedback_type: cleanType,
+        reason: cleanReason,
+        created_at: now
+    };
+}
+
+function listAiFeedbackEvents({ limit = 100 } = {}) {
+    const safeLimit = Math.max(1, Math.min(500, Number(limit || 100)));
+    const rows = db.prepare(`
+        SELECT id, conversation_id, actor, feedback_type, reason, last_user_message, last_ai_message, context_json, created_at
+        FROM ai_feedback_events
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+    `).all(safeLimit);
+    return rows.map((row) => {
+        let context = {};
+        try { context = JSON.parse(row.context_json || '{}'); } catch (_) { context = {}; }
+        return {
+            id: Number(row.id || 0),
+            conversation_id: String(row.conversation_id || ''),
+            actor: String(row.actor || ''),
+            feedback_type: String(row.feedback_type || 'inadequada'),
+            reason: String(row.reason || ''),
+            last_user_message: String(row.last_user_message || ''),
+            last_ai_message: String(row.last_ai_message || ''),
+            context,
+            created_at: Number(row.created_at || 0)
+        };
+    });
 }
 
 function appendHistoryEntry(history, sender, text, timestamp = Date.now()) {
@@ -5352,6 +6195,19 @@ function mergeConversation(targetId, sourceId) {
     target.pausedByHuman = !!(target.pausedByHuman || source.pausedByHuman);
     target.status = (target.status === 'active' || source.status === 'active') ? 'active' : 'archived';
     target.routeJid = target.routeJid || source.routeJid || sourceId;
+    const targetPending = Number(target.slaPendingSince || 0);
+    const sourcePending = Number(source.slaPendingSince || 0);
+    if (targetPending > 0 && sourcePending > 0) {
+        target.slaPendingSince = Math.min(targetPending, sourcePending);
+    } else {
+        target.slaPendingSince = Math.max(targetPending, sourcePending, 0);
+    }
+    target.slaStatus = normalizeChatSlaStatus(
+        getChatSlaSeverityRank(normalizeChatSlaStatus(target.slaStatus)) >= getChatSlaSeverityRank(normalizeChatSlaStatus(source.slaStatus))
+            ? target.slaStatus
+            : source.slaStatus
+    );
+    target.slaUpdatedAt = Math.max(Number(target.slaUpdatedAt || 0), Number(source.slaUpdatedAt || 0), Date.now());
     saveChat(targetId);
     try { db.prepare('DELETE FROM conversations WHERE id=?').run(sourceId); } catch(e) {}
     delete conversationState[sourceId];
@@ -5368,6 +6224,7 @@ function migrateConversationsToCanonicalIds() {
     });
 }
 migrateConversationsToCanonicalIds();
+reevaluateAllConversationsSla({ emit: false, reason: 'bootstrap' });
 
 // --- RADIO ENGINE ---
 let radioState = { isPlaying: false, currentTrack: null, musicVolume: 50, adVolume: 80, adFrequency: 15, isShuffle: false, startTime: 0, serverDuration: 0, pausedPositionMs: 0, lastAdTime: 0 };
@@ -6076,7 +6933,11 @@ registerSystemAdminRoutes({
     createDatabaseBackup,
     downloadFileOverHttp,
     restoreDatabaseBackup,
-    ensureDir
+    ensureDir,
+    getOperationalHealthSnapshot,
+    getOpsAlertsConfig,
+    normalizeOpsAlertsConfigInput,
+    setOpsAlertsConfig
 });
 
 const APP_PANEL_BASE_URL = String(process.env.APP_PANEL_BASE_URL || '').trim();
@@ -6172,6 +7033,7 @@ registerChatAdminRoutes({
     fs,
     chatMediaDir: CHAT_MEDIA_DIR,
     requirePanelAuth,
+    requireAdmin,
     sendSafeStaticFile,
     isPathInside,
     sanitizePublicText,
@@ -6190,7 +7052,11 @@ registerChatAdminRoutes({
     saveChatStickerBuffer,
     buildChatImagePublicUrl,
     buildChatImageHistoryMarker,
-    buildChatStickerHistoryMarker
+    buildChatStickerHistoryMarker,
+    acknowledgeConversationAttention,
+    getAiContextPreviewForConversation: buildAiContextPreviewForConversation,
+    registerAiFeedbackForConversation,
+    listAiFeedbackEvents
 });
 
 // --- ATTENDANCE (PONTO) ---
@@ -6712,6 +7578,10 @@ wss.on('connection', (ws, req) => {
         ws.fullname = sessionUser.fullname;
         ws.avatar = sessionUser.avatar;
         ws.send(JSON.stringify({ type: 'login_success', username: ws.username, isAdmin: ws.isAdmin, fullname: ws.fullname, avatar: ws.avatar }));
+        if (ws.isAdmin) {
+            const health = getOperationalHealthSnapshot();
+            ws.send(JSON.stringify({ type: 'system_health_update', health }));
+        }
     }
     ws.send(JSON.stringify({ type: 'radio_sync_update', state: radioState }));
     ws.on('message', async (msg) => {
@@ -6812,6 +7682,9 @@ wss.on('connection', (ws, req) => {
                 if (ws.isLogged) {
                     ws.send(JSON.stringify({ type: 'login_success', username: ws.username, isAdmin: ws.isAdmin, fullname: ws.fullname, avatar: ws.avatar }));
                     ws.send(JSON.stringify({ type: 'radio_sync_update', state: radioState }));
+                    if (ws.isAdmin) {
+                        ws.send(JSON.stringify({ type: 'system_health_update', health: getOperationalHealthSnapshot() }));
+                    }
                 } else {
                     ws.send(JSON.stringify({ type: 'login_error' }));
                 }
@@ -6992,7 +7865,19 @@ wss.on('connection', (ws, req) => {
             }
 
             if (data.type === 'request_initial_lists') { 
-                const chats = Object.entries(conversationState).map(([id, s]) => ({ id, name: s.name, lastMessage: s.history.slice(-1)[0], timestamp: s.lastActivityTimestamp, tags: s.tags, notes: s.notes, status: s.status, pausedByHuman: s.pausedByHuman, pendingHuman: !!s.pendingHumanHandoff })).sort((a, b) => b.timestamp - a.timestamp); 
+                const chats = Object.entries(conversationState).map(([id, s]) => ({
+                    id,
+                    name: s.name,
+                    lastMessage: s.history.slice(-1)[0],
+                    timestamp: s.lastActivityTimestamp,
+                    tags: s.tags,
+                    notes: s.notes,
+                    status: s.status,
+                    pausedByHuman: s.pausedByHuman,
+                    pendingHuman: !!s.pendingHumanHandoff,
+                    slaStatus: normalizeChatSlaStatus(s.slaStatus),
+                    slaPendingSince: Number(s.slaPendingSince || 0)
+                })).sort((a, b) => b.timestamp - a.timestamp); 
                 ws.send(JSON.stringify({ type: 'active_chat_list', chats })); 
             }
             if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u) ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff })); }
@@ -7013,6 +7898,7 @@ wss.on('connection', (ws, req) => {
                     await sock.sendMessage(getSendTarget(data.to), { text: txt });
                     appendHistoryEntry(u.history, sn, data.text, now);
                     saveChat(data.to);
+                    acknowledgeConversationAttention(data.to, { actor: ws.username || '', reason: 'admin_reply_ws' });
                     broadcast({ type: 'admin_reply_success', from: data.to, text: data.text, senderName: sn, isPaused: true, timestamp: now });
                     scheduleBotResume(data.to);
                 }
@@ -7287,7 +8173,7 @@ async function startBot() {
             }
             const time = chat.conversationTimestamp ? (typeof chat.conversationTimestamp === 'number' ? chat.conversationTimestamp * 1000 : chat.conversationTimestamp.low * 1000) : Date.now();
             const newStatus = (now - time) < ONE_WEEK ? 'active' : 'archived';
-            if (!conversationState[id]) { conversationState[id] = { history: ["Sistema: Histórico recuperado."], name: name, tags: [], notes: "", lastActivityTimestamp: time, pausedByHuman: false, pendingHumanHandoff: null, messageBuffer: [], typingTimer: null, status: newStatus, routeJid: id }; saveChat(id); updated++; }
+            if (!conversationState[id]) { conversationState[id] = { history: ["Sistema: Histórico recuperado."], name: name, tags: [], notes: "", lastActivityTimestamp: time, pausedByHuman: false, pendingHumanHandoff: null, status: newStatus, routeJid: id, slaPendingSince: 0, slaStatus: 'ok', slaUpdatedAt: Date.now(), messageBuffer: [], typingTimer: null }; saveChat(id); updated++; }
             else { const u = conversationState[id]; if(time > u.lastActivityTimestamp) { u.lastActivityTimestamp = time; if(newStatus === 'active') u.status = 'active'; } u.routeJid = u.routeJid || id; saveChat(id); updated++; }
         });
         chats.forEach(chat => {
@@ -7323,7 +8209,7 @@ async function startBot() {
             ? (msgTsRaw > 9999999999 ? msgTsRaw : (msgTsRaw * 1000))
             : (msgTsRaw?.low ? Number(msgTsRaw.low) * 1000 : Date.now());
 
-        if (!conversationState[sender]) conversationState[sender] = { history: [], messageBuffer: [], typingTimer: null, pausedByHuman: false, pendingHumanHandoff: null, name: msg.pushName || sender.split('@')[0], lastActivityTimestamp: Date.now(), tags: [], notes: "", status: 'active', routeJid: senderRaw };
+        if (!conversationState[sender]) conversationState[sender] = { history: [], messageBuffer: [], typingTimer: null, pausedByHuman: false, pendingHumanHandoff: null, name: msg.pushName || sender.split('@')[0], lastActivityTimestamp: Date.now(), tags: [], notes: "", status: 'active', routeJid: senderRaw, slaPendingSince: 0, slaStatus: 'ok', slaUpdatedAt: Date.now() };
         const user = conversationState[sender]; user.lastActivityTimestamp = Date.now(); user.status = 'active'; user.routeJid = senderRaw;
 
         let isAttendanceContact = false;
@@ -7366,6 +8252,9 @@ async function startBot() {
                 }
                 return;
             }
+        }
+        if (!isAttendanceContact) {
+            markConversationInboundForSla(sender, msgTimestampMs);
         }
 
         if (incomingImage) {
@@ -7663,6 +8552,7 @@ async function startBot() {
         }, 10000);
     });
 }
+startOperationalHealthMonitoring();
 startRuntimeServices({
     startChatMediaCleanupLoop,
     disableWhatsapp: DISABLE_WHATSAPP,

@@ -6,6 +6,8 @@ const mockSelectChat = vi.fn();
 const mockSendText = vi.fn();
 const mockSetChatIAEnabled = vi.fn();
 const mockLoadMoreMessages = vi.fn();
+const mockFetchAiContextPreview = vi.fn();
+const mockSubmitAiFeedback = vi.fn();
 
 vi.mock("@/components/whatsapp/WhatsAppConnect", () => ({
   default: () => <div data-testid="whatsapp-connect-stub" />,
@@ -49,6 +51,8 @@ vi.mock("@/hooks/use-panel-data", async () => {
       selectChat: mockSelectChat,
       sendText: mockSendText,
       setChatIAEnabled: mockSetChatIAEnabled,
+      fetchAiContextPreview: mockFetchAiContextPreview,
+      submitAiFeedback: mockSubmitAiFeedback,
       hasMoreMessages: false,
       loadingMessages: false,
       loadMoreMessages: mockLoadMoreMessages,
@@ -62,6 +66,8 @@ describe("Atendimento page interactions", () => {
     mockSendText.mockReset().mockResolvedValue(true);
     mockSetChatIAEnabled.mockReset().mockResolvedValue(true);
     mockLoadMoreMessages.mockReset().mockResolvedValue(false);
+    mockFetchAiContextPreview.mockReset().mockResolvedValue(null);
+    mockSubmitAiFeedback.mockReset().mockResolvedValue(true);
   });
 
   it("calls selectChat when a conversation is clicked", () => {

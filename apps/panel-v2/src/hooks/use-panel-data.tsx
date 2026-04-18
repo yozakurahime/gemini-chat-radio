@@ -11,12 +11,39 @@ type Chat = {
   unreadCount?: number;
   attentionActive?: boolean;
   attentionSince?: number;
+  slaStatus?: "ok" | "atrasando" | "critico";
+  slaPendingSince?: number;
   status?: string;
   pausedByHuman?: boolean;
   pendingHuman?: boolean;
   needsHuman?: boolean;
   tags?: string[];
   notes?: string;
+};
+type AiContextPreview = {
+  conversation?: {
+    id: string;
+    name: string;
+    routeJid?: string;
+  };
+  generatedAt?: number;
+  context?: {
+    baseContextLength?: number;
+    noticesLength?: number;
+    baseContextUpdatedAt?: number;
+    noticesUpdatedAt?: number;
+    scaMatch?: boolean;
+    scaSnippet?: string;
+  };
+  confidence?: "high" | "medium" | "low";
+  warnings?: string[];
+};
+type SystemHealthSnapshot = {
+  generatedAt?: number;
+  status?: "ok" | "degraded" | "critical";
+  components?: Record<string, { status?: string; message?: string; metrics?: Record<string, any> }>;
+  incidents?: Array<Record<string, any>>;
+  summary?: { ok?: number; degraded?: number; critical?: number };
 };
 type RadioState = {
   isPlaying: boolean;
@@ -127,8 +154,11 @@ type PanelDataContextValue = {
   selectedChat: Chat | null;
   messages: string[];
   selectChat: (id: string) => void;
+  ackChatAttention: (id: string) => Promise<void>;
   sendText: (text: string) => Promise<boolean>;
   setChatIAEnabled: (enabled: boolean) => Promise<boolean>;
+  fetchAiContextPreview: (contactId: string) => Promise<AiContextPreview | null>;
+  submitAiFeedback: (contactId: string, payload?: { feedbackType?: string; reason?: string }) => Promise<boolean>;
   loadMoreMessages: () => Promise<boolean>;
   hasMoreMessages: boolean;
   loadingMessages: boolean;
@@ -186,6 +216,7 @@ type PanelDataContextValue = {
   saveKnowledgeBase: (value: string) => Promise<boolean>;
   geoPolicy: any;
   saveGeoPolicy: (policy: { academyLat: string; academyLng: string; radiusM: string }) => Promise<boolean>;
+  systemHealth: SystemHealthSnapshot | null;
 };
 
 const PanelDataContext = createContext<PanelDataContextValue | null>(null);
@@ -470,6 +501,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [attendanceToDate, setAttendanceToDate] = useState("");
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [geoPolicy, setGeoPolicy] = useState<any>(null);
+  const [systemHealth, setSystemHealth] = useState<SystemHealthSnapshot | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selectedChatRef = useRef<string | null>(null);
@@ -709,6 +741,20 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const refreshSystemHealth = useCallback(async () => {
+    if (user?.role !== "admin") {
+      setSystemHealth(null);
+      return;
+    }
+    try {
+      const res = await apiFetch("/admin/system/health/detailed");
+      const data = await res.json();
+      setSystemHealth((data?.health || null) as SystemHealthSnapshot | null);
+    } catch {
+      setSystemHealth(null);
+    }
+  }, [user?.role]);
+
   const refreshAll = useCallback(async () => {
     requestInitialLists();
     await Promise.all([
@@ -720,10 +766,20 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       refreshAttendance(),
       fetchKnowledge(),
       fetchGeoPolicy(),
+      refreshSystemHealth(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, fetchPlaylist, refreshAdCampaigns, refreshAdHistory, refreshAds, refreshAttendance, refreshNextAdState, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, fetchPlaylist, refreshAdCampaigns, refreshAdHistory, refreshAds, refreshAttendance, refreshNextAdState, refreshSystemHealth, requestInitialLists]);
 
-  const updateChatMessage = useCallback((id: string, text: string, name?: string, status = "active", pausedByHuman?: boolean | null, inbound = false, timestamp?: number) => {
+  const updateChatMessage = useCallback((
+    id: string,
+    text: string,
+    name?: string,
+    status = "active",
+    pausedByHuman?: boolean | null,
+    inbound = false,
+    timestamp?: number,
+    extra?: { slaStatus?: "ok" | "atrasando" | "critico"; slaPendingSince?: number | null },
+  ) => {
     const parsedTimestamp = Number(timestamp || extractHistoryTimestamp(text).timestampMs || Date.now());
     const now = Number.isFinite(parsedTimestamp) && parsedTimestamp > 0 ? parsedTimestamp : Date.now();
     const preview = previewMessage(text);
@@ -745,6 +801,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             unreadCount: nextUnread,
             attentionActive: shouldAttention ? true : (isSelected ? false : chat.attentionActive),
             attentionSince: shouldAttention ? now : (isSelected ? undefined : chat.attentionSince),
+            slaStatus: extra?.slaStatus || chat.slaStatus || "ok",
+            slaPendingSince: extra?.slaPendingSince ?? chat.slaPendingSince,
           };
         });
       }
@@ -759,6 +817,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
         unreadCount: id === selectedChatRef.current ? 0 : inbound ? 1 : 0,
         attentionActive: shouldAttention,
         attentionSince: shouldAttention ? now : undefined,
+        slaStatus: extra?.slaStatus || "ok",
+        slaPendingSince: extra?.slaPendingSince ?? 0,
       }, ...prev];
     });
 
@@ -780,6 +840,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           status: chat.status || "active",
           pausedByHuman: !!chat.pausedByHuman,
           pendingHuman: !!chat.pendingHuman,
+          slaStatus: (chat.slaStatus || "ok") as "ok" | "atrasando" | "critico",
+          slaPendingSince: Number(chat.slaPendingSince || 0),
         }));
         setChats((prev) => {
           const prevMap = new Map(prev.map((chat) => [chat.id, chat]));
@@ -789,6 +851,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             needsHuman: !!prevMap.get(chat.id)?.needsHuman,
             attentionActive: !!prevMap.get(chat.id)?.attentionActive,
             attentionSince: prevMap.get(chat.id)?.attentionSince,
+            slaStatus: (chat.slaStatus || prevMap.get(chat.id)?.slaStatus || "ok") as "ok" | "atrasando" | "critico",
+            slaPendingSince: Number(chat.slaPendingSince || prevMap.get(chat.id)?.slaPendingSince || 0),
           }));
         });
         break;
@@ -818,9 +882,18 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           payload.pausedByHuman,
           true,
           payload.timestamp,
+          {
+            slaStatus: payload.slaStatus,
+            slaPendingSince: payload.slaPendingSince,
+          },
         );
         if (payload.from && payload.from !== selectedChatRef.current) {
           notifyUnreadMessage(payload.name || payload.from);
+        } else if (payload.from) {
+          void apiFetch(`/admin/conversations/${encodeURIComponent(payload.from)}/ack`, {
+            method: "POST",
+            headers: jsonHeaders,
+          }).catch(() => undefined);
         }
         break;
       case "bot_reply":
@@ -875,6 +948,28 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           payload.timestamp,
         );
         setChats((prev) => prev.map((chat) => chat.id === payload.from ? { ...chat, needsHuman: true, pausedByHuman: true } : chat));
+        break;
+      case "chat_sla_update":
+        if (payload.from) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.from ? {
+            ...chat,
+            slaStatus: (payload.status || "ok") as "ok" | "atrasando" | "critico",
+            slaPendingSince: Number(payload.pendingSince || 0),
+          } : chat));
+        }
+        break;
+      case "incident_opened":
+        toast.error("Incidente operacional", {
+          description: `${payload?.incident?.component || "sistema"}: ${payload?.incident?.message || "verifique o painel"}`,
+        });
+        break;
+      case "incident_closed":
+        toast.success("Incidente resolvido", {
+          description: `${payload?.incident?.component || "sistema"} voltou ao normal`,
+        });
+        break;
+      case "system_health_update":
+        setSystemHealth(payload.health || null);
         break;
       case "radio_sync_update":
         if (payload.state) {
@@ -1068,7 +1163,13 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       needsHuman: false,
       attentionActive: false,
       attentionSince: undefined,
+      slaStatus: "ok",
+      slaPendingSince: 0,
     } : chat));
+    void apiFetch(`/admin/conversations/${encodeURIComponent(id)}/ack`, {
+      method: "POST",
+      headers: jsonHeaders,
+    }).catch(() => undefined);
     setLoadingMessages(true);
     try {
       const res = await apiFetch(`/api/conversations/${encodeURIComponent(id)}/messages?limit=80`);
@@ -1135,6 +1236,49 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
   }, [selectedChatId]);
+
+  const ackChatAttention = useCallback(async (contactId: string) => {
+    if (!contactId) return;
+    try {
+      await apiFetch(`/admin/conversations/${encodeURIComponent(contactId)}/ack`, {
+        method: "POST",
+        headers: jsonHeaders,
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const fetchAiContextPreview = useCallback(async (contactId: string) => {
+    if (!contactId) return null;
+    try {
+      const res = await apiFetch(`/admin/conversations/${encodeURIComponent(contactId)}/ai-context-preview`);
+      const data = await res.json();
+      return (data?.preview || null) as AiContextPreview | null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const submitAiFeedback = useCallback(async (
+    contactId: string,
+    payload: { feedbackType?: string; reason?: string } = {},
+  ) => {
+    if (!contactId) return false;
+    try {
+      await apiFetch(`/admin/conversations/${encodeURIComponent(contactId)}/ia-feedback`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          feedbackType: payload.feedbackType || "inadequada",
+          reason: payload.reason || "",
+        }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   const uploadAd = useCallback(async (file: File) => {
     if (user?.role !== "admin") return false;
@@ -1502,8 +1646,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     selectedChat,
     messages,
     selectChat,
+    ackChatAttention,
     sendText,
     setChatIAEnabled,
+    fetchAiContextPreview,
+    submitAiFeedback,
     loadMoreMessages,
     hasMoreMessages: !!messageCursor,
     loadingMessages,
@@ -1561,6 +1708,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     saveKnowledgeBase,
     geoPolicy,
     saveGeoPolicy,
+    systemHealth,
   }), [
     adCampaigns,
     adFiles,
@@ -1587,6 +1735,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     deleteAd,
     deleteAdCampaign,
     emitAdsEvent,
+    fetchAiContextPreview,
+    submitAiFeedback,
     knowledgeBase,
     loadMoreMessages,
     loadingMessages,
@@ -1608,6 +1758,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     saveKnowledgeBase,
     geoPolicy,
     saveGeoPolicy,
+    systemHealth,
+    ackChatAttention,
     selectChat,
     selectedChat,
     selectedChatId,

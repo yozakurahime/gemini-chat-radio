@@ -5,6 +5,7 @@ function registerChatAdminRoutes({
     fs,
     chatMediaDir,
     requirePanelAuth,
+    requireAdmin,
     sendSafeStaticFile,
     isPathInside,
     sanitizePublicText,
@@ -23,7 +24,11 @@ function registerChatAdminRoutes({
     saveChatStickerBuffer,
     buildChatImagePublicUrl,
     buildChatImageHistoryMarker,
-    buildChatStickerHistoryMarker
+    buildChatStickerHistoryMarker,
+    acknowledgeConversationAttention,
+    getAiContextPreviewForConversation,
+    registerAiFeedbackForConversation,
+    listAiFeedbackEvents
 }) {
     app.get('/admin/chat/media/:filename', (req, res) => {
         const user = requirePanelAuth(req, res); if (!user) return;
@@ -82,6 +87,9 @@ function registerChatAdminRoutes({
             convo.lastActivityTimestamp = now;
             appendHistoryEntry(convo.history, senderName, text, now);
             saveChat(contactId);
+            if (typeof acknowledgeConversationAttention === 'function') {
+                acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: 'admin_reply_text' });
+            }
             broadcast({
                 type: 'admin_reply_success',
                 from: contactId,
@@ -193,6 +201,9 @@ function registerChatAdminRoutes({
                 convo.lastActivityTimestamp = now;
                 appendHistoryEntry(convo.history, senderName, marker, now);
                 saveChat(contactId);
+                if (typeof acknowledgeConversationAttention === 'function') {
+                    acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: 'admin_reply_image' });
+                }
                 broadcast({
                     type: 'admin_reply_success',
                     from: contactId,
@@ -267,6 +278,9 @@ function registerChatAdminRoutes({
                 convo.lastActivityTimestamp = now;
                 appendHistoryEntry(convo.history, senderName, marker, now);
                 saveChat(contactId);
+                if (typeof acknowledgeConversationAttention === 'function') {
+                    acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: 'admin_reply_sticker' });
+                }
                 broadcast({
                     type: 'admin_reply_success',
                     from: contactId,
@@ -291,6 +305,59 @@ function registerChatAdminRoutes({
                 return res.status(500).json({ error: 'send_failed' });
             }
         });
+    });
+
+    app.post('/admin/conversations/:id/ack', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        if (!contactId) return res.status(400).json({ error: 'conversation_not_found' });
+        if (!conversationState[contactId]) return res.status(404).json({ error: 'conversation_not_found' });
+        if (typeof acknowledgeConversationAttention === 'function') {
+            acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: 'panel_open_chat' });
+        }
+        return res.json({ ok: true, contactId });
+    });
+
+    app.get('/admin/conversations/:id/ai-context-preview', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        if (!contactId) return res.status(400).json({ error: 'conversation_not_found' });
+        if (typeof getAiContextPreviewForConversation !== 'function') {
+            return res.status(503).json({ error: 'ai_preview_unavailable' });
+        }
+        const preview = getAiContextPreviewForConversation(contactId);
+        if (!preview) return res.status(404).json({ error: 'conversation_not_found' });
+        return res.json({ ok: true, preview });
+    });
+
+    app.post('/admin/conversations/:id/ia-feedback', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        if (!contactId) return res.status(400).json({ error: 'conversation_not_found' });
+        if (typeof registerAiFeedbackForConversation !== 'function') {
+            return res.status(503).json({ error: 'ai_feedback_unavailable' });
+        }
+        const feedbackType = sanitizePublicText(req.body?.feedbackType || req.body?.type || 'inadequada', 30) || 'inadequada';
+        const reason = sanitizePublicText(req.body?.reason || req.body?.text || '', 240);
+        const event = registerAiFeedbackForConversation({
+            contactId,
+            actor: authUser.username,
+            feedbackType,
+            reason
+        });
+        if (!event) return res.status(404).json({ error: 'conversation_not_found' });
+        return res.json({ ok: true, event });
+    });
+
+    app.get('/admin/ai/feedback', (req, res) => {
+        const authUser = requireAdmin(req, res); if (!authUser) return;
+        if (typeof listAiFeedbackEvents !== 'function') {
+            return res.status(503).json({ error: 'ai_feedback_unavailable' });
+        }
+        const limitRaw = Number(req.query?.limit || 100);
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.floor(limitRaw))) : 100;
+        const events = listAiFeedbackEvents({ limit });
+        return res.json({ ok: true, events });
     });
 }
 

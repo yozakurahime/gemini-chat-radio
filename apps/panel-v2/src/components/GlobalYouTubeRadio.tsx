@@ -124,6 +124,7 @@ export default function GlobalYouTubeRadio() {
       playerRef.current = new YT.Player(hostRef.current, {
         width: 200,
         height: 200,
+        host: "https://www.youtube.com",
         videoId,
         playerVars: {
           autoplay: 0,
@@ -134,7 +135,9 @@ export default function GlobalYouTubeRadio() {
           modestbranding: 1,
           playsinline: 1,
           rel: 0,
+          enablejsapi: 1,
           origin: window.location.origin,
+          widget_referrer: window.location.origin,
         },
         events: {
           onReady: (event: any) => {

@@ -6,7 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Bot, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, UserPlus, Users } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Activity, Bot, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
@@ -25,6 +26,39 @@ type ManagedUser = {
   active: boolean;
   created_at?: number;
   updated_at?: number;
+};
+
+type OpsAlertsConfig = {
+  enabled: boolean;
+  whatsappDestinations: string[];
+  thresholds: {
+    scaLagWarnSec: number;
+    scaLagCriticalSec: number;
+    backupWarnAgeMin: number;
+    backupCriticalAgeMin: number;
+    downtimeWarnMin: number;
+    downtimeCriticalMin: number;
+    cooldownMin: number;
+    chatSlaDelayMin: number;
+    chatSlaCriticalMin: number;
+  };
+  updatedAt?: number;
+};
+
+const OPS_ALERTS_DEFAULT: OpsAlertsConfig = {
+  enabled: true,
+  whatsappDestinations: [],
+  thresholds: {
+    scaLagWarnSec: 1800,
+    scaLagCriticalSec: 5400,
+    backupWarnAgeMin: 720,
+    backupCriticalAgeMin: 1440,
+    downtimeWarnMin: 2,
+    downtimeCriticalMin: 5,
+    cooldownMin: 15,
+    chatSlaDelayMin: 5,
+    chatSlaCriticalMin: 15,
+  },
 };
 
 function authErrorMessage(code: string) {
@@ -58,8 +92,14 @@ function formatDateTimeBr(value?: number) {
   }
 }
 
+function statusBadgeClass(status?: string): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "critical" || status === "critico") return "destructive";
+  if (status === "degraded" || status === "atrasando") return "secondary";
+  return "default";
+}
+
 export default function ConfiguracoesPage() {
-  const { user, knowledgeBase, saveKnowledgeBase, geoPolicy, saveGeoPolicy } = usePanelData();
+  const { user, knowledgeBase, saveKnowledgeBase, geoPolicy, saveGeoPolicy, systemHealth } = usePanelData();
   const isAdmin = user?.role === "admin";
 
   const [aiContext, setAiContext] = useState("");
@@ -77,6 +117,10 @@ export default function ConfiguracoesPage() {
   const [passwordUpdatingUser, setPasswordUpdatingUser] = useState<string>("");
   const [actionTarget, setActionTarget] = useState<string>("");
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
+  const [opsConfig, setOpsConfig] = useState<OpsAlertsConfig>(OPS_ALERTS_DEFAULT);
+  const [opsDestinationsText, setOpsDestinationsText] = useState("");
+  const [loadingOpsConfig, setLoadingOpsConfig] = useState(false);
+  const [savingOpsConfig, setSavingOpsConfig] = useState(false);
   const [newUserForm, setNewUserForm] = useState({
     username: "",
     fullname: "",
@@ -107,6 +151,79 @@ export default function ConfiguracoesPage() {
     }
   }, [isAdmin]);
 
+  const loadOpsConfig = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingOpsConfig(true);
+    try {
+      const res = await apiFetch("/admin/system/alerts/config");
+      const data = await res.json();
+      const next = {
+        ...OPS_ALERTS_DEFAULT,
+        ...(data?.config || {}),
+        thresholds: {
+          ...OPS_ALERTS_DEFAULT.thresholds,
+          ...(data?.config?.thresholds || {}),
+        },
+      } as OpsAlertsConfig;
+      setOpsConfig(next);
+      setOpsDestinationsText((Array.isArray(next.whatsappDestinations) ? next.whatsappDestinations : []).join("\n"));
+    } catch {
+      toast.error("Falha ao carregar configuracao operacional.");
+    } finally {
+      setLoadingOpsConfig(false);
+    }
+  }, [isAdmin]);
+
+  const updateOpsThreshold = (key: keyof OpsAlertsConfig["thresholds"], value: string) => {
+    const parsed = Number(value);
+    setOpsConfig((prev) => ({
+      ...prev,
+      thresholds: {
+        ...prev.thresholds,
+        [key]: Number.isFinite(parsed) ? parsed : 0,
+      },
+    }));
+  };
+
+  const saveOpsConfig = async () => {
+    if (!isAdmin || savingOpsConfig) return;
+    setSavingOpsConfig(true);
+    try {
+      const destinations = opsDestinationsText
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const payload = {
+        enabled: !!opsConfig.enabled,
+        whatsappDestinations: destinations,
+        thresholds: {
+          ...opsConfig.thresholds,
+        },
+      };
+      const res = await apiFetch("/admin/system/alerts/config", {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      const next = {
+        ...OPS_ALERTS_DEFAULT,
+        ...(data?.config || payload),
+        thresholds: {
+          ...OPS_ALERTS_DEFAULT.thresholds,
+          ...(data?.config?.thresholds || payload.thresholds),
+        },
+      } as OpsAlertsConfig;
+      setOpsConfig(next);
+      setOpsDestinationsText((Array.isArray(next.whatsappDestinations) ? next.whatsappDestinations : []).join("\n"));
+      toast.success("Configuracao operacional salva.");
+    } catch {
+      toast.error("Falha ao salvar configuracao operacional.");
+    } finally {
+      setSavingOpsConfig(false);
+    }
+  };
+
   useEffect(() => {
     setAiContext(knowledgeBase || "");
   }, [knowledgeBase]);
@@ -122,6 +239,11 @@ export default function ConfiguracoesPage() {
     if (!isAdmin) return;
     loadManagedUsers();
   }, [isAdmin, loadManagedUsers]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadOpsConfig();
+  }, [isAdmin, loadOpsConfig]);
 
   const handleSaveContext = () => {
     saveKnowledgeBase(aiContext);
@@ -236,6 +358,11 @@ export default function ConfiguracoesPage() {
             <MapPin className="h-4 w-4" /> Localizacao
           </TabsTrigger>
           {isAdmin ? (
+            <TabsTrigger value="operacao" className="gap-1">
+              <Activity className="h-4 w-4" /> Operacao
+            </TabsTrigger>
+          ) : null}
+          {isAdmin ? (
             <TabsTrigger value="access" className="gap-1">
               <Shield className="h-4 w-4" /> Acessos
             </TabsTrigger>
@@ -340,6 +467,140 @@ export default function ConfiguracoesPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {isAdmin ? (
+          <TabsContent value="operacao" className="space-y-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Activity className="h-4 w-4" /> Saude operacional
+                  </CardTitle>
+                  <CardDescription>
+                    Visao de incidentes e estado dos componentes em tempo real.
+                  </CardDescription>
+                </div>
+                <Button variant="outline" onClick={loadOpsConfig} disabled={loadingOpsConfig}>
+                  Atualizar
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Status geral:</span>
+                  <Badge variant={statusBadgeClass(systemHealth?.status)}>
+                    {String(systemHealth?.status || "desconhecido")}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    Atualizado: {formatDateTimeBr(systemHealth?.generatedAt)}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {Object.entries(systemHealth?.components || {}).map(([component, info]: [string, any]) => (
+                    <div key={component} className="rounded-lg border p-3 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium">{component}</p>
+                        <Badge variant={statusBadgeClass(info?.status)}>{String(info?.status || "ok")}</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{String(info?.message || "-")}</p>
+                    </div>
+                  ))}
+                </div>
+                {(systemHealth?.incidents || []).length > 0 ? (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-sm font-medium flex items-center gap-1">
+                      <TriangleAlert className="h-4 w-4 text-amber-500" /> Incidentes abertos
+                    </p>
+                    {(systemHealth?.incidents || []).map((incident: any) => (
+                      <div key={incident.id} className="text-xs text-muted-foreground">
+                        <strong>{incident.component}</strong>: {incident.message} ({String(incident.status || "-")})
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Nenhum incidente aberto no momento.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Shield className="h-4 w-4" /> Alertas operacionais
+                </CardTitle>
+                <CardDescription>
+                  Configure destinos no WhatsApp e limites de degradacao/criticidade.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-medium">Alertas habilitados</p>
+                    <p className="text-xs text-muted-foreground">Painel em tempo real + envio complementar no WhatsApp admin.</p>
+                  </div>
+                  <Switch
+                    checked={!!opsConfig.enabled}
+                    onCheckedChange={(checked) => setOpsConfig((prev) => ({ ...prev, enabled: checked }))}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Destinos WhatsApp (um por linha)</Label>
+                  <Textarea
+                    value={opsDestinationsText}
+                    onChange={(event) => setOpsDestinationsText(event.target.value)}
+                    className="min-h-[110px] font-mono text-xs"
+                    placeholder="5511999999999@s.whatsapp.net"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-2">
+                    <Label>Lag SCA aviso (seg)</Label>
+                    <Input type="number" value={opsConfig.thresholds.scaLagWarnSec} onChange={(event) => updateOpsThreshold("scaLagWarnSec", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Lag SCA critico (seg)</Label>
+                    <Input type="number" value={opsConfig.thresholds.scaLagCriticalSec} onChange={(event) => updateOpsThreshold("scaLagCriticalSec", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Backup aviso (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.backupWarnAgeMin} onChange={(event) => updateOpsThreshold("backupWarnAgeMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Backup critico (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.backupCriticalAgeMin} onChange={(event) => updateOpsThreshold("backupCriticalAgeMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Downtime aviso (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.downtimeWarnMin} onChange={(event) => updateOpsThreshold("downtimeWarnMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Downtime critico (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.downtimeCriticalMin} onChange={(event) => updateOpsThreshold("downtimeCriticalMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Cooldown alerta (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.cooldownMin} onChange={(event) => updateOpsThreshold("cooldownMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SLA chat atrasando (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.chatSlaDelayMin} onChange={(event) => updateOpsThreshold("chatSlaDelayMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SLA chat critico (min)</Label>
+                    <Input type="number" value={opsConfig.thresholds.chatSlaCriticalMin} onChange={(event) => updateOpsThreshold("chatSlaCriticalMin", event.target.value)} />
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button className="gap-1" onClick={saveOpsConfig} disabled={savingOpsConfig || loadingOpsConfig}>
+                    <Save className="h-4 w-4" /> Salvar alertas
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         {isAdmin ? (
           <TabsContent value="access" className="space-y-4">

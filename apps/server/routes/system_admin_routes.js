@@ -42,7 +42,11 @@ function registerSystemAdminRoutes({
     createDatabaseBackup,
     downloadFileOverHttp,
     restoreDatabaseBackup,
-    ensureDir
+    ensureDir,
+    getOperationalHealthSnapshot,
+    getOpsAlertsConfig,
+    normalizeOpsAlertsConfigInput,
+    setOpsAlertsConfig
 }) {
     const USERNAME_RE = /^[a-z0-9._-]{3,60}$/;
 
@@ -178,6 +182,52 @@ function registerSystemAdminRoutes({
             lastErrorCode,
             updatedAt: Date.now()
         });
+    });
+
+    app.get('/admin/system/health/detailed', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const health = typeof getOperationalHealthSnapshot === 'function'
+            ? getOperationalHealthSnapshot()
+            : null;
+        if (!health) {
+            return res.status(503).json({ ok: false, error: 'health_snapshot_unavailable' });
+        }
+        return res.json({
+            ok: true,
+            profile: appProfile,
+            appVersion,
+            health
+        });
+    });
+
+    app.get('/admin/system/alerts/config', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const config = typeof getOpsAlertsConfig === 'function'
+            ? getOpsAlertsConfig()
+            : null;
+        if (!config) {
+            return res.status(503).json({ ok: false, error: 'ops_alerts_unavailable' });
+        }
+        return res.json({
+            ok: true,
+            config
+        });
+    });
+
+    app.put('/admin/system/alerts/config', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        if (typeof normalizeOpsAlertsConfigInput !== 'function' || typeof setOpsAlertsConfig !== 'function') {
+            return res.status(503).json({ ok: false, error: 'ops_alerts_unavailable' });
+        }
+        const current = typeof getOpsAlertsConfig === 'function' ? getOpsAlertsConfig() : {};
+        const payload = req.body && typeof req.body === 'object' ? req.body : {};
+        const normalized = normalizeOpsAlertsConfigInput(payload, current || {});
+        const saved = setOpsAlertsConfig(normalized, user.username);
+        logAdminAction('system.alerts.config.update', user.username, 'ops_alerts', {
+            enabled: !!saved.enabled,
+            destinations: Array.isArray(saved.whatsappDestinations) ? saved.whatsappDestinations.length : 0
+        }, req.ip);
+        return res.json({ ok: true, config: saved });
     });
 
     app.get('/admin/system/config', (req, res) => {

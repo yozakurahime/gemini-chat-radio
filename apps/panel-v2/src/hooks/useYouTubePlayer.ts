@@ -81,8 +81,18 @@ export function useYouTubePlayer({ containerId, onEnd, onReady, onStateChange }:
     playerRef.current = new window.YT.Player(containerId, {
       height: "0",
       width: "0",
+      host: "https://www.youtube.com",
       videoId,
-      playerVars: { autoplay: 1, controls: 0, disablekb: 1, fs: 0, modestbranding: 1 },
+      playerVars: {
+        autoplay: 1,
+        controls: 0,
+        disablekb: 1,
+        fs: 0,
+        modestbranding: 1,
+        enablejsapi: 1,
+        origin: window.location.origin,
+        widget_referrer: window.location.origin,
+      },
       events: {
         onReady: (e: any) => {
           setDuration(e.target.getDuration());

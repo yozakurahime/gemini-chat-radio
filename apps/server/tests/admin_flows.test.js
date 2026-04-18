@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const Database = require('better-sqlite3');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -319,6 +320,114 @@ test('knowledge admin endpoints persist base context updates', async (t) => {
   });
   assert.equal(versions.res.status, 200);
   assert.ok(Array.isArray(versions.data.versions));
+});
+
+test('operational health/config and AI feedback endpoints work for admin', async (t) => {
+  const dataRoot = makeTempDataRoot();
+  const port = randomPort();
+  let server = await startServer({
+    dataRoot,
+    port,
+  });
+
+  t.after(async () => {
+    await stopServer(server);
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  });
+
+  let auth = await login(server.baseUrl, server.panelUser, server.panelPass);
+  assert.equal(auth.res.status, 200);
+
+  const getOps = await reqJson(server.baseUrl, '/admin/system/alerts/config', {
+    cookie: auth.cookie,
+  });
+  assert.equal(getOps.res.status, 200);
+  assert.equal(getOps.data.ok, true);
+  assert.equal(typeof getOps.data.config?.enabled, 'boolean');
+
+  const putOps = await reqJson(server.baseUrl, '/admin/system/alerts/config', {
+    method: 'PUT',
+    cookie: auth.cookie,
+    body: {
+      enabled: true,
+      whatsappDestinations: ['5511999999999'],
+      thresholds: {
+        scaLagWarnSec: 900,
+        scaLagCriticalSec: 1800,
+        backupWarnAgeMin: 60,
+        backupCriticalAgeMin: 120,
+        downtimeWarnMin: 2,
+        downtimeCriticalMin: 5,
+        cooldownMin: 10,
+        chatSlaDelayMin: 4,
+        chatSlaCriticalMin: 9,
+      },
+    },
+  });
+  assert.equal(putOps.res.status, 200);
+  assert.equal(putOps.data.ok, true);
+  assert.ok(Array.isArray(putOps.data.config?.whatsappDestinations));
+  assert.equal(Number(putOps.data.config?.thresholds?.chatSlaDelayMin), 4);
+
+  const health = await reqJson(server.baseUrl, '/admin/system/health/detailed', {
+    cookie: auth.cookie,
+  });
+  assert.equal(health.res.status, 200);
+  assert.equal(health.data.ok, true);
+  assert.equal(typeof health.data.health?.status, 'string');
+  assert.equal(typeof health.data.health?.components?.api?.status, 'string');
+
+  await stopServer(server);
+
+  const dbPath = path.join(dataRoot, 'data', 'himefit.db');
+  const db = new Database(dbPath);
+  const contactId = '5511999999999@s.whatsapp.net';
+  const now = Date.now();
+  const history = [
+    `[ts=${now - 120000}] Usuario: Oi, tudo bem?`,
+    `[ts=${now - 110000}] Hime: Tudo bem! Em que posso ajudar?`
+  ];
+  db.prepare(`
+    INSERT OR REPLACE INTO conversations (
+      id, name, history, tags, notes, last_activity, paused_by_human, status, route_jid, sla_pending_since, sla_status, sla_updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, 0, 'ok', ?)
+  `).run(contactId, 'Cliente QA', JSON.stringify(history), JSON.stringify([]), '', now, contactId, now);
+  db.close();
+
+  server = await startServer({
+    dataRoot,
+    port,
+  });
+
+  auth = await login(server.baseUrl, server.panelUser, server.panelPass);
+  assert.equal(auth.res.status, 200);
+
+  const preview = await reqJson(server.baseUrl, `/admin/conversations/${encodeURIComponent(contactId)}/ai-context-preview`, {
+    cookie: auth.cookie,
+  });
+  assert.equal(preview.res.status, 200);
+  assert.equal(preview.data.ok, true);
+  assert.equal(String(preview.data.preview?.conversation?.id || ''), contactId);
+
+  const feedback = await reqJson(server.baseUrl, `/admin/conversations/${encodeURIComponent(contactId)}/ia-feedback`, {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: {
+      feedbackType: 'inadequada',
+      reason: 'Resposta nao aderente ao contexto no teste',
+    },
+  });
+  assert.equal(feedback.res.status, 200);
+  assert.equal(feedback.data.ok, true);
+  assert.ok(Number(feedback.data.event?.id || 0) > 0);
+
+  const feedbackList = await reqJson(server.baseUrl, '/admin/ai/feedback?limit=10', {
+    cookie: auth.cookie,
+  });
+  assert.equal(feedbackList.res.status, 200);
+  assert.equal(feedbackList.data.ok, true);
+  const events = Array.isArray(feedbackList.data.events) ? feedbackList.data.events : [];
+  assert.ok(events.some((event) => String(event.conversation_id || '') === contactId));
 });
 
 test('SCA sync endpoint enforces token and keeps idempotency', async (t) => {
