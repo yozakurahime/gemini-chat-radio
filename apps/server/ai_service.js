@@ -18,6 +18,7 @@ const ADS_AI_FLAG = process.env.ADS_AI_ENABLED !== '0';
 const APP_PATHS = resolveAppPaths(__dirname, process.env, process.platform);
 const CONTEXTO_FILE_PATH = APP_PATHS.BASE_CONTEXT_FILE;
 const KNOWLEDGE_PUBLISHED_PATH = APP_PATHS.KNOWLEDGE_PUBLISHED_FILE;
+const AI_TIMEZONE = String(process.env.HIMEFIT_TZ || process.env.TZ || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
 const MAX_HISTORY_TOKENS = 12;
 const ADS_SCRIPT_TEXT_LIMIT = 1200;
 const ADS_BRIEFING_LIMIT = 500;
@@ -442,6 +443,56 @@ function normalizeForLookup(text) {
         .toLowerCase();
 }
 
+function canonicalWeekdayPt(value) {
+    const normalized = normalizeForLookup(value || '')
+        .replace(/\bfeira\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!normalized) return '';
+    if (normalized.includes('domingo')) return 'domingo';
+    if (normalized.includes('segunda')) return 'segunda-feira';
+    if (normalized.includes('terca')) return 'terça-feira';
+    if (normalized.includes('quarta')) return 'quarta-feira';
+    if (normalized.includes('quinta')) return 'quinta-feira';
+    if (normalized.includes('sexta')) return 'sexta-feira';
+    if (normalized.includes('sabado')) return 'sábado';
+    return '';
+}
+
+function resolveBrazilNowInfo(baseDate = new Date()) {
+    const now = baseDate instanceof Date ? baseDate : new Date();
+    const dateBR = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: AI_TIMEZONE,
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+    }).format(now);
+    const weekdayRaw = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: AI_TIMEZONE,
+        weekday: 'long'
+    }).format(now);
+    const weekday = canonicalWeekdayPt(weekdayRaw) || weekdayRaw;
+    return {
+        timezone: AI_TIMEZONE,
+        dateBR,
+        weekday
+    };
+}
+
+function enforceTodayWeekdayConsistency(text, nowInfo) {
+    const source = normalizeInlineText(text || '');
+    const expected = canonicalWeekdayPt(nowInfo?.weekday || '');
+    if (!source || !expected || !/\bhoje\b/i.test(source)) return source;
+
+    const dayPattern = '(domingo|segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado)';
+    const regex = new RegExp(`(\\bhoje\\b[^.\\n]{0,80}?\\b(?:e|é|eh|,|-)\\s*)${dayPattern}`, 'i');
+    return source.replace(regex, (full, prefix, foundDay) => {
+        const foundCanonical = canonicalWeekdayPt(foundDay || '');
+        if (!foundCanonical || foundCanonical === expected) return full;
+        return `${prefix}${expected}`;
+    });
+}
+
 function extractNatacaoAdultoFacts(contextText) {
     const normalized = normalizeForLookup(contextText || '');
     if (!normalized.includes('natacao adulto')) return null;
@@ -604,10 +655,11 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
         if (natacaoFacts && shouldForceNatacaoAdultoReply(input)) {
             return buildNatacaoAdultoReply(natacaoFacts);
         }
-        const dataAtual = new Date().toLocaleDateString('pt-BR');
+        const nowInfo = resolveBrazilNowInfo();
         const extraContextBlock = buildExtraContextBlock(extraContext);
         const contextParts = [
-            `# INSTRUCAO\nHoje: ${dataAtual}.`,
+            `# RELOGIO OFICIAL\nFuso horario oficial: ${nowInfo.timezone}\nData de hoje: ${nowInfo.dateBR}\nDia da semana oficial: ${nowInfo.weekday}.`,
+            `# REGRA DE DATA\nQuando mencionar "hoje", use EXATAMENTE o dia da semana oficial acima. Nunca invente outro dia da semana para hoje.`,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,
         ];
@@ -626,7 +678,8 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
         const result = await model.generateContent({
             contents: [systemInstruction, ...historyParts, { role: 'user', parts: [{ text: input }] }]
         });
-        return sanitizeModelReply(result.response.text());
+        const safeReply = sanitizeModelReply(result.response.text());
+        return enforceTodayWeekdayConsistency(safeReply, nowInfo);
     } catch (error) {
         console.error('[erro] IA:', error.message);
         return null;
