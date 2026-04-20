@@ -56,6 +56,10 @@ jobs:
           ORACLE_SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
           ORACLE_SSH_PORT: ${{ secrets.ORACLE_SSH_PORT }}
         run: |
+          ORACLE_SSH_HOST="$(echo "$ORACLE_SSH_HOST" | tr -d '[:space:]')"
+          ORACLE_SSH_USER="$(echo "$ORACLE_SSH_USER" | tr -d '[:space:]')"
+          ORACLE_SSH_PORT="$(echo "$ORACLE_SSH_PORT" | tr -d '[:space:]')"
+
           missing=()
           [ -z "$ORACLE_SSH_PRIVATE_KEY" ] && missing+=("ORACLE_SSH_PRIVATE_KEY")
           [ -z "$ORACLE_SSH_HOST" ] && missing+=("ORACLE_SSH_HOST")
@@ -70,6 +74,9 @@ jobs:
             echo "::warning::Deploy skipped: ORACLE_SSH_PORT is invalid"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "ssh_host=$ORACLE_SSH_HOST" >> "$GITHUB_OUTPUT"
+            echo "ssh_user=$ORACLE_SSH_USER" >> "$GITHUB_OUTPUT"
+            echo "ssh_port=$ORACLE_SSH_PORT" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup SSH key
@@ -81,8 +88,8 @@ jobs:
       - name: Check SSH reachability
         if: steps.secrets_check.outputs.ready == 'true'
         env:
-          ORACLE_SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
-          ORACLE_SSH_PORT: ${{ secrets.ORACLE_SSH_PORT }}
+          ORACLE_SSH_HOST: ${{ steps.secrets_check.outputs.ssh_host }}
+          ORACLE_SSH_PORT: ${{ steps.secrets_check.outputs.ssh_port }}
         run: |
           for attempt in 1 2 3 4 5 6; do
             if timeout 5 bash -lc "cat < /dev/null > /dev/tcp/${ORACLE_SSH_HOST}/${ORACLE_SSH_PORT}" 2>/dev/null; then
@@ -98,7 +105,7 @@ jobs:
       - name: Run remote update
         if: steps.secrets_check.outputs.ready == 'true'
         run: |
-          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ steps.secrets_check.outputs.ssh_port }}" "${{ steps.secrets_check.outputs.ssh_user }}@${{ steps.secrets_check.outputs.ssh_host }}" "\
             set -euo pipefail; \
             cd '${{ steps.target.outputs.app_dir }}'; \
             export BRANCH='${{ steps.target.outputs.branch }}'; \
