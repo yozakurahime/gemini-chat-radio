@@ -22,7 +22,6 @@ apps/server/_tmp_script.js
 apps/server/t_*.mp3
 apps/server/*.exe
 apps/server/*.exe.new
-apps/server/package-lock.json
 apps/panel-legacy/dist/
 apps/panel-v2/dist/
 apps/landing/dist/
