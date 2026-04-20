@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/yozakurahime/academiaoxigenio.git}"
 BRANCH="${BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/himefit}"
+SERVER_TIMEZONE="${SERVER_TIMEZONE:-America/Sao_Paulo}"
 
 install_deps() {
   local prefix="$1"
@@ -23,9 +24,25 @@ install_deps() {
   npm --prefix "$prefix" install --no-audit --no-fund
 }
 
+configure_timezone() {
+  local tz="$1"
+  echo "[deploy] Setting server timezone to ${tz}..."
+  if command -v timedatectl >/dev/null 2>&1; then
+    sudo timedatectl set-timezone "$tz" || true
+    timedatectl | grep "Time zone" || true
+    return 0
+  fi
+
+  if [ -f "/usr/share/zoneinfo/${tz}" ]; then
+    sudo ln -sf "/usr/share/zoneinfo/${tz}" /etc/localtime || true
+    echo "$tz" | sudo tee /etc/timezone >/dev/null || true
+  fi
+}
+
 echo "[deploy] Installing base dependencies..."
 sudo apt-get update -y
 sudo apt-get install -y git curl ca-certificates build-essential ffmpeg
+configure_timezone "$SERVER_TIMEZONE"
 
 if ! command -v node >/dev/null 2>&1; then
   echo "[deploy] Installing Node.js 22..."

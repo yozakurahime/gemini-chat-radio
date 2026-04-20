@@ -11,6 +11,8 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         HIMEFIT_DISABLE_WHATSAPP: "0",
+        TZ: "America/Sao_Paulo",
+        HIMEFIT_TZ: "America/Sao_Paulo",
       },
     },
   ],

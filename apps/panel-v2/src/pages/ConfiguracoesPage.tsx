@@ -11,6 +11,7 @@ import { Activity, Bot, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shiel
 import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
+import { formatDateTimeBr as formatDateTimeBrTz } from "@/lib/date-time";
 import {
   Select,
   SelectContent,
@@ -83,13 +84,7 @@ function authErrorMessage(code: string) {
 }
 
 function formatDateTimeBr(value?: number) {
-  const ts = Number(value || 0);
-  if (!Number.isFinite(ts) || ts <= 0) return "-";
-  try {
-    return new Date(ts).toLocaleString("pt-BR");
-  } catch {
-    return "-";
-  }
+  return formatDateTimeBrTz(value, "-");
 }
 
 function statusBadgeClass(status?: string): "default" | "secondary" | "destructive" | "outline" {

@@ -505,3 +505,56 @@ test('SCA sync endpoint enforces token and keeps idempotency', async (t) => {
   assert.equal(status.data.tokenConfigured, true);
   assert.ok(Number(status.data.events?.total || 0) >= 1);
 });
+
+test('radio control endpoint supports play, pause and skip via HTTP fallback', async (t) => {
+  const server = await startServer({
+    dataRoot: makeTempDataRoot(),
+    port: randomPort(),
+  });
+  t.after(async () => {
+    await stopServer(server);
+    fs.rmSync(server.dataRoot, { recursive: true, force: true });
+  });
+
+  const auth = await login(server.baseUrl, server.panelUser, server.panelPass);
+  assert.equal(auth.res.status, 200);
+
+  const unauthenticated = await reqJson(server.baseUrl, '/admin/radio/control', {
+    method: 'POST',
+    body: { action: 'play' },
+  });
+  assert.equal(unauthenticated.res.status, 401);
+
+  const invalidAction = await reqJson(server.baseUrl, '/admin/radio/control', {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: { action: 'invalid' },
+  });
+  assert.equal(invalidAction.res.status, 400);
+
+  const play = await reqJson(server.baseUrl, '/admin/radio/control', {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: { action: 'play' },
+  });
+  assert.equal(play.res.status, 200);
+  assert.equal(play.data.ok, true);
+  assert.equal(typeof play.data.state?.isPlaying, 'boolean');
+
+  const pause = await reqJson(server.baseUrl, '/admin/radio/control', {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: { action: 'pause' },
+  });
+  assert.equal(pause.res.status, 200);
+  assert.equal(pause.data.ok, true);
+  assert.equal(pause.data.state?.isPlaying, false);
+
+  const skip = await reqJson(server.baseUrl, '/admin/radio/control', {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: { action: 'skip' },
+  });
+  assert.equal(skip.res.status, 200);
+  assert.equal(skip.data.ok, true);
+});

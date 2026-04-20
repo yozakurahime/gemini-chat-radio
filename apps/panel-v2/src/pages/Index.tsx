@@ -7,23 +7,14 @@ import { Switch } from "@/components/ui/switch";
 import { Send, Bot, User, Search, MessageSquare, Image as ImageIcon, AlertTriangle, Loader2 } from "lucide-react";
 import { parsePanelMessage, usePanelData } from "@/hooks/use-panel-data";
 import WhatsAppConnect from "@/components/whatsapp/WhatsAppConnect";
+import { formatDateTimeBr, formatTimeBr } from "@/lib/date-time";
 
 function formatTime(value?: number) {
-  if (!value) return "";
-  try {
-    return new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "";
-  }
+  return formatTimeBr(value, "");
 }
 
 function formatDateTime(value?: number) {
-  if (!value) return "-";
-  try {
-    return new Date(value).toLocaleString("pt-BR");
-  } catch {
-    return "-";
-  }
+  return formatDateTimeBr(value, "-");
 }
 
 function phoneFromJid(id: string) {

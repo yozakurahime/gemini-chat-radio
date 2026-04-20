@@ -3,6 +3,7 @@ set -euo pipefail
 
 BRANCH="${BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/himefit}"
+SERVER_TIMEZONE="${SERVER_TIMEZONE:-America/Sao_Paulo}"
 
 install_deps() {
   local prefix="$1"
@@ -22,12 +23,28 @@ install_deps() {
   npm --prefix "$prefix" install --no-audit --no-fund
 }
 
+configure_timezone() {
+  local tz="$1"
+  echo "[deploy] Enforcing server timezone ${tz}..."
+  if command -v timedatectl >/dev/null 2>&1; then
+    sudo timedatectl set-timezone "$tz" || true
+    timedatectl | grep "Time zone" || true
+    return 0
+  fi
+
+  if [ -f "/usr/share/zoneinfo/${tz}" ]; then
+    sudo ln -sf "/usr/share/zoneinfo/${tz}" /etc/localtime || true
+    echo "$tz" | sudo tee /etc/timezone >/dev/null || true
+  fi
+}
+
 if [ ! -d "${APP_DIR}/.git" ]; then
   echo "[deploy] Repository not found at ${APP_DIR}. Run install-server.sh first."
   exit 1
 fi
 
 cd "${APP_DIR}"
+configure_timezone "$SERVER_TIMEZONE"
 
 echo "[deploy] Updating code from origin/${BRANCH}..."
 git fetch --all --prune

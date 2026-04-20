@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
+import { BR_TIMEZONE } from "@/lib/date-time";
 
 type User = { username: string; fullname?: string; role?: string; avatar?: string };
 type Chat = {
@@ -286,8 +287,17 @@ function formatMessageTimestamp(timestampMs?: number) {
   try {
     const date = new Date(timestampMs);
     if (Number.isNaN(date.getTime())) return "";
-    const datePart = date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
-    const timePart = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const datePart = date.toLocaleDateString("pt-BR", {
+      timeZone: BR_TIMEZONE,
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+    });
+    const timePart = date.toLocaleTimeString("pt-BR", {
+      timeZone: BR_TIMEZONE,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     return `${datePart} ${timePart}`;
   } catch {
     return "";
@@ -1428,19 +1438,49 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [adPlayback.isPlaying, radio.isPlaying, user?.role]);
 
+  const sendRadioAction = useCallback(async (
+    action: "play" | "pause" | "skip",
+    track?: any,
+  ) => {
+    const socket = wsRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      if (action === "skip") sendWs({ type: "skip_track" });
+      else sendWs({ type: "radio_action", action, track });
+      return true;
+    }
+    try {
+      await apiFetch("/admin/radio/control", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ action, track }),
+      });
+      return true;
+    } catch {
+      toast.error("Sem conexao com o servidor da radio");
+      return false;
+    }
+  }, [sendWs]);
+
   const toggleRadio = useCallback(() => {
-    const action = radio.isPlaying ? "pause" : "play";
+    const wasPlaying = !!radio.isPlaying;
+    const action = wasPlaying ? "pause" : "play";
     setRadio((prev) => ({ ...prev, isPlaying: action === "play" }));
     window.dispatchEvent(new CustomEvent(RADIO_COMMAND_EVENT, { detail: { action, track: radio.currentTrack || playlist[0] || null } }));
-    sendWs({ type: "radio_action", action });
-  }, [playlist, radio.currentTrack, radio.isPlaying, sendWs]);
+    void sendRadioAction(action, radio.currentTrack || playlist[0] || null).then((ok) => {
+      if (!ok) {
+        setRadio((prev) => ({ ...prev, isPlaying: wasPlaying }));
+      }
+    });
+  }, [playlist, radio.currentTrack, radio.isPlaying, sendRadioAction]);
 
-  const skipTrack = useCallback(() => sendWs({ type: "skip_track" }), [sendWs]);
+  const skipTrack = useCallback(() => {
+    void sendRadioAction("skip");
+  }, [sendRadioAction]);
   const playTrack = useCallback((track: any) => {
     setRadio((prev) => ({ ...prev, currentTrack: track, isPlaying: true }));
     window.dispatchEvent(new CustomEvent(RADIO_COMMAND_EVENT, { detail: { action: "play", track } }));
-    sendWs({ type: "radio_action", action: "play", track });
-  }, [sendWs]);
+    void sendRadioAction("play", track);
+  }, [sendRadioAction]);
   const addTrack = useCallback((url: string) => url.trim() && sendWs({ type: "add_track", url: url.trim() }), [sendWs]);
   const removeTrack = useCallback((id: string) => sendWs({ type: "remove_track", id }), [sendWs]);
   const updateRadioSettings = useCallback((next: Partial<RadioState>) => {

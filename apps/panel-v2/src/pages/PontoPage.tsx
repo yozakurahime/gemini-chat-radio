@@ -14,6 +14,7 @@ import { Clock, Download, Calendar, User, CheckCircle, XCircle, ListChecks, MapP
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
+import { formatDateBr as formatDateBrTz } from "@/lib/date-time";
 
 const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
 
@@ -37,12 +38,7 @@ function attendanceErrorMessage(code: string) {
 }
 
 function formatDateBr(value?: string) {
-  if (!value) return "-";
-  try {
-    return new Date(`${value}T00:00:00`).toLocaleDateString("pt-BR");
-  } catch {
-    return value;
-  }
+  return formatDateBrTz(value ? `${value}T00:00:00` : undefined, value || "-");
 }
 
 function scheduleTypeLabel(value?: string) {

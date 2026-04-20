@@ -7,6 +7,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 require('dotenv').config();
+process.env.TZ = process.env.TZ || process.env.HIMEFIT_TZ || 'America/Sao_Paulo';
 
 // IMPORTACAO IA
 let gerarRespostaIA = async () => "IA Indisponivel";
@@ -7539,6 +7540,62 @@ function requireAdmin(req, res) {
     if (user.role !== 'admin') { res.status(403).json({ error: 'forbidden' }); return null; }
     return user;
 }
+
+app.post('/admin/radio/control', async (req, res) => {
+    const user = requirePanelAuth(req, res);
+    if (!user) return;
+    const action = String(req.body?.action || '').trim().toLowerCase();
+    if (!['play', 'pause', 'skip'].includes(action)) {
+        return res.status(400).json({ error: 'invalid_action' });
+    }
+
+    if (action === 'skip') {
+        playNextTrack();
+        return res.json({ ok: true, state: radioState });
+    }
+
+    if (action === 'pause') {
+        pauseRadioPlayback();
+        broadcast({ type: 'radio_sync_update', state: radioState }, true);
+        return res.json({ ok: true, state: radioState });
+    }
+
+    const requestedTrack = normalizeIncomingRadioTrack(req.body?.track || null);
+    if (requestedTrack) {
+        radioState.currentTrack = requestedTrack;
+        resetRadioPlaybackClock(Date.now());
+        radioState.serverDuration = (radioState.currentTrack.duration_sec || 180) * 1000;
+        startRadioTimer(radioState.serverDuration);
+        radioState.isPlaying = true;
+        saveRadioSettings();
+        broadcast({ type: 'radio_sync_update', state: radioState }, true);
+        return res.json({ ok: true, state: radioState });
+    }
+
+    if (!radioState.currentTrack) {
+        const total = db.prepare("SELECT COUNT(*) as c FROM playlist").get()?.c || 0;
+        if (total === 0) {
+            radioState.isPlaying = false;
+            saveRadioSettings();
+            broadcast({ type: 'radio_sync_update', state: radioState }, true);
+            return res.json({ ok: true, state: radioState });
+        }
+        radioState.isPlaying = true;
+        saveRadioSettings();
+        playNextTrack();
+        return res.json({ ok: true, state: radioState });
+    }
+
+    if (!radioState.isPlaying) {
+        resumeRadioPlayback();
+    } else {
+        radioState.isPlaying = true;
+        saveRadioSettings();
+        broadcast({ type: 'radio_sync_update', state: radioState }, true);
+    }
+
+    return res.json({ ok: true, state: radioState });
+});
 
 function getKnowledgePublished() {
     if (!fs.existsSync(KNOWLEDGE_PUBLISHED_FILE)) return { avisos: '' };

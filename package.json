@@ -18,6 +18,7 @@
     "server:start": "tools\\bin\\node.cmd apps\\server\\index.js",
     "server:test": "tools\\bin\\node.cmd --test apps\\server\\tests\\security.test.js apps\\server\\tests\\admin_flows.test.js",
     "server:health-check": "bash tools/deploy/health-check.sh",
+    "server:timezone:set": "bash tools/deploy/set-timezone-brasilia.sh",
     "server:health-check:install-cron": "bash tools/deploy/install-health-check-cron.sh",
     "sca:sync:run": "tools\\bin\\node.cmd apps\\server\\scripts\\sca_sync_worker.js",
     "sca:db:sync:run": "tools\\bin\\node.cmd apps\\server\\scripts\\sca_db_sync_worker.js",
