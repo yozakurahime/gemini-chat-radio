@@ -65,6 +65,9 @@ jobs:
           if [ ${#missing[@]} -gt 0 ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Deploy skipped: missing secrets -> ${missing[*]}"
+          elif ! [[ "$ORACLE_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$ORACLE_SSH_PORT" -lt 1 ] || [ "$ORACLE_SSH_PORT" -gt 65535 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Deploy skipped: ORACLE_SSH_PORT is invalid"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
@@ -75,15 +78,27 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
 
-      - name: Add server host key
+      - name: Check SSH reachability
         if: steps.secrets_check.outputs.ready == 'true'
+        env:
+          ORACLE_SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          ORACLE_SSH_PORT: ${{ secrets.ORACLE_SSH_PORT }}
         run: |
-          ssh-keyscan -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
+          for attempt in 1 2 3 4 5 6; do
+            if timeout 5 bash -lc "cat < /dev/null > /dev/tcp/${ORACLE_SSH_HOST}/${ORACLE_SSH_PORT}" 2>/dev/null; then
+              echo "SSH endpoint reachable on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Attempt ${attempt}: SSH endpoint not reachable yet, waiting 10s..."
+            sleep 10
+          done
+          echo "::error::Cannot reach ${ORACLE_SSH_HOST}:${ORACLE_SSH_PORT} from GitHub runner. Check GCP firewall tcp:22 and VM public IP."
+          exit 1
 
       - name: Run remote update
         if: steps.secrets_check.outputs.ready == 'true'
         run: |
-          ssh -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
             set -euo pipefail; \
             cd '${{ steps.target.outputs.app_dir }}'; \
             export BRANCH='${{ steps.target.outputs.branch }}'; \
