@@ -8,17 +8,19 @@ set -euo pipefail
 # Opcional:
 #   RUNNER_NAME="himefit-prod"
 #   RUNNER_LABELS="self-hosted,linux,x64,himefit-prod"
-#   RUNNER_VERSION="2.327.1"
+#   RUNNER_VERSION="2.333.1"
 #   RUNNER_DIR="/opt/actions-runner"
+#   RUNNER_DISABLE_UPDATE="1"
 
 : "${GITHUB_REPO:?Set GITHUB_REPO=owner/repo}"
 : "${GITHUB_RUNNER_TOKEN:?Set GITHUB_RUNNER_TOKEN=<registration_token>}"
 
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)-himefit}"
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64,himefit-prod}"
-RUNNER_VERSION="${RUNNER_VERSION:-2.327.1}"
+RUNNER_VERSION="${RUNNER_VERSION:-2.333.1}"
 RUNNER_DIR="${RUNNER_DIR:-/opt/actions-runner}"
 RUNNER_USER="${RUNNER_USER:-$USER}"
+RUNNER_DISABLE_UPDATE="${RUNNER_DISABLE_UPDATE:-1}"
 
 echo "[runner] Installing dependencies..."
 sudo apt-get update -y
@@ -44,14 +46,19 @@ if [ -f ".runner" ]; then
 fi
 
 echo "[runner] Configuring runner for ${GITHUB_REPO}..."
-./config.sh \
-  --url "https://github.com/${GITHUB_REPO}" \
-  --token "${GITHUB_RUNNER_TOKEN}" \
-  --name "${RUNNER_NAME}" \
-  --labels "${RUNNER_LABELS}" \
-  --work "_work" \
-  --unattended \
+config_args=(
+  --url "https://github.com/${GITHUB_REPO}"
+  --token "${GITHUB_RUNNER_TOKEN}"
+  --name "${RUNNER_NAME}"
+  --labels "${RUNNER_LABELS}"
+  --work "_work"
+  --unattended
   --replace
+)
+if [ "${RUNNER_DISABLE_UPDATE}" = "1" ]; then
+  config_args+=(--disableupdate)
+fi
+./config.sh "${config_args[@]}"
 
 echo "[runner] Installing service..."
 sudo ./svc.sh install "${RUNNER_USER}"
