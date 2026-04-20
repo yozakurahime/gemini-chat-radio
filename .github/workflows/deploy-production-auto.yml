@@ -105,8 +105,17 @@ jobs:
       - name: Run remote update
         if: steps.secrets_check.outputs.ready == 'true'
         run: |
-          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ steps.secrets_check.outputs.ssh_port }}" "${{ steps.secrets_check.outputs.ssh_user }}@${{ steps.secrets_check.outputs.ssh_host }}" "\
-            set -euo pipefail; \
-            cd '${{ steps.target.outputs.app_dir }}'; \
-            export BRANCH='${{ steps.target.outputs.branch }}'; \
-            bash tools/deploy/update-server.sh"
+          for attempt in 1 2 3 4; do
+            if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o ConnectionAttempts=3 -p "${{ steps.secrets_check.outputs.ssh_port }}" "${{ steps.secrets_check.outputs.ssh_user }}@${{ steps.secrets_check.outputs.ssh_host }}" "\
+              set -euo pipefail; \
+              cd '${{ steps.target.outputs.app_dir }}'; \
+              export BRANCH='${{ steps.target.outputs.branch }}'; \
+              bash tools/deploy/update-server.sh"; then
+              echo "Remote update succeeded on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Attempt ${attempt} failed; waiting 15s before retry..."
+            sleep 15
+          done
+          echo "::error::Remote update failed after retries."
+          exit 1
