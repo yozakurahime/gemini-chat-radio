@@ -42,6 +42,24 @@ jobs:
           npm --prefix apps/panel-v2 run build
           npm --prefix apps/landing run build
 
+      - name: Check required SSH secrets
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          ORACLE_SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          ORACLE_SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          ORACLE_SSH_PORT: ${{ secrets.ORACLE_SSH_PORT }}
+        run: |
+          missing=()
+          [ -z "$ORACLE_SSH_PRIVATE_KEY" ] && missing+=("ORACLE_SSH_PRIVATE_KEY")
+          [ -z "$ORACLE_SSH_HOST" ] && missing+=("ORACLE_SSH_HOST")
+          [ -z "$ORACLE_SSH_USER" ] && missing+=("ORACLE_SSH_USER")
+          [ -z "$ORACLE_SSH_PORT" ] && missing+=("ORACLE_SSH_PORT")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
       - name: Setup SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:

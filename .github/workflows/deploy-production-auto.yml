@@ -48,16 +48,40 @@ jobs:
         with:
           ref: ${{ steps.target.outputs.ref }}
 
+      - name: Check required SSH secrets
+        id: secrets_check
+        env:
+          ORACLE_SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          ORACLE_SSH_HOST: ${{ secrets.ORACLE_SSH_HOST }}
+          ORACLE_SSH_USER: ${{ secrets.ORACLE_SSH_USER }}
+          ORACLE_SSH_PORT: ${{ secrets.ORACLE_SSH_PORT }}
+        run: |
+          missing=()
+          [ -z "$ORACLE_SSH_PRIVATE_KEY" ] && missing+=("ORACLE_SSH_PRIVATE_KEY")
+          [ -z "$ORACLE_SSH_HOST" ] && missing+=("ORACLE_SSH_HOST")
+          [ -z "$ORACLE_SSH_USER" ] && missing+=("ORACLE_SSH_USER")
+          [ -z "$ORACLE_SSH_PORT" ] && missing+=("ORACLE_SSH_PORT")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Deploy skipped: missing secrets -> ${missing[*]}"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup SSH key
+        if: steps.secrets_check.outputs.ready == 'true'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
 
       - name: Add server host key
+        if: steps.secrets_check.outputs.ready == 'true'
         run: |
           ssh-keyscan -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Run remote update
+        if: steps.secrets_check.outputs.ready == 'true'
         run: |
           ssh -p "${{ secrets.ORACLE_SSH_PORT }}" "${{ secrets.ORACLE_SSH_USER }}@${{ secrets.ORACLE_SSH_HOST }}" "\
             set -euo pipefail; \
