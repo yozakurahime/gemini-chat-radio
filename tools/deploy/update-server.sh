@@ -4,6 +4,7 @@ set -euo pipefail
 BRANCH="${BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/himefit}"
 SERVER_TIMEZONE="${SERVER_TIMEZONE:-America/Sao_Paulo}"
+RUN_TESTS_ON_SERVER="${RUN_TESTS_ON_SERVER:-0}"
 
 install_deps() {
   local prefix="$1"
@@ -57,9 +58,13 @@ install_deps "apps/panel-v2"
 install_deps "apps/landing"
 install_deps "apps/server"
 
-echo "[deploy] Running tests..."
-npm --prefix apps/panel-v2 run test
-node --test apps/server/tests/security.test.js apps/server/tests/admin_flows.test.js
+if [ "${RUN_TESTS_ON_SERVER}" = "1" ]; then
+  echo "[deploy] Running tests on server (RUN_TESTS_ON_SERVER=1)..."
+  npm --prefix apps/panel-v2 run test
+  node --test apps/server/tests/security.test.js apps/server/tests/admin_flows.test.js
+else
+  echo "[deploy] Skipping tests on server (already validated in CI)."
+fi
 
 echo "[deploy] Building frontend apps..."
 npm --prefix apps/panel-v2 run build

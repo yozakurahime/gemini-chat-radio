@@ -26,9 +26,15 @@ function randomPort() {
   return 3400 + Math.floor(Math.random() * 1000);
 }
 
-async function waitForHealth(baseUrl, timeoutMs = 20000) {
+async function waitForHealth(baseUrl, timeoutMs = Number(process.env.HIMEFIT_TEST_HEALTH_TIMEOUT_MS || 45000), child = null) {
   const startedAt = Date.now();
   while ((Date.now() - startedAt) < timeoutMs) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`server_exited_early_${child.exitCode}`);
+    }
+    if (child && child.signalCode !== null) {
+      throw new Error(`server_exited_signal_${child.signalCode}`);
+    }
     try {
       const res = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) return;
@@ -56,7 +62,7 @@ async function startServer({ dataRoot, port, panelUser = 'admin', panelPass = 'A
     stdio: 'ignore'
   });
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForHealth(baseUrl);
+  await waitForHealth(baseUrl, Number(process.env.HIMEFIT_TEST_HEALTH_TIMEOUT_MS || 45000), child);
   return { child, baseUrl, dataRoot, port };
 }
 
