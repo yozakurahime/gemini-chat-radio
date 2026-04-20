@@ -108,16 +108,16 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
 4. Agendar backup diario do banco:
    - `cd /opt/himefit && bash tools/deploy/install-backup-cron.sh`
 
-### Deploy automatico 24/7 (GitHub Actions -> VM)
+### Deploy automatico 24/7 (GitHub Actions self-hosted na VM)
 
-1. Em `GitHub > Settings > Secrets and variables > Actions`, criar:
-   - `ORACLE_SSH_HOST` (IP ou dominio da VM)
-   - `ORACLE_SSH_PORT` (normalmente `22`)
-   - `ORACLE_SSH_USER` (ex: `newbiegamers1`)
-   - `ORACLE_SSH_PRIVATE_KEY` (chave privada SSH completa, incluindo `BEGIN/END`)
-2. Garantir que no servidor o repositorio esteja em `/opt/himefit` e `tools/deploy/update-server.sh` funcional.
+1. Instalar runner na VM (uma vez), com token de registro do repositorio:
+   - `cd /opt/himefit`
+   - `chmod +x tools/deploy/install-self-hosted-runner.sh`
+   - `GITHUB_REPO="yozakurahime/gemini-chat-radio" GITHUB_RUNNER_TOKEN="SEU_TOKEN_TEMPORARIO" bash tools/deploy/install-self-hosted-runner.sh`
+2. Confirmar no GitHub:
+   - `Settings > Actions > Runners` deve mostrar runner `online` com label `himefit-prod`.
 3. Fluxo automatico:
    - Push no `main` -> workflow `CI` roda testes/build
-   - Se CI passar, workflow `Deploy Production (Auto)` conecta na VM e executa update sem precisar do PC local ligado
+   - Se CI passar, workflow `Deploy Production (Auto)` roda dentro da propria VM (sem SSH externo) e executa `tools/deploy/update-server.sh`
 4. Fallback manual:
-   - `Actions > Deploy Production (Auto) > Run workflow` (selecionar branch/app_dir)
+   - `Actions > Deploy Production (Auto) > Run workflow` (branch `main`, `app_dir=/opt/himefit`)
