@@ -6,6 +6,7 @@ APP_DIR="${APP_DIR:-/opt/himefit}"
 SERVER_TIMEZONE="${SERVER_TIMEZONE:-America/Sao_Paulo}"
 RUN_TESTS_ON_SERVER="${RUN_TESTS_ON_SERVER:-0}"
 NPM_TIMEOUT_SEC="${NPM_TIMEOUT_SEC:-1200}"
+INSTALL_ROOT_DEPS="${INSTALL_ROOT_DEPS:-0}"
 
 install_deps() {
   local prefix="$1"
@@ -55,25 +56,40 @@ git checkout "${BRANCH}"
 git pull --ff-only origin "${BRANCH}"
 NEXT_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
 
-should_install_deps=0
-if [ ! -d node_modules ] || [ ! -d apps/panel-v2/node_modules ] || [ ! -d apps/landing/node_modules ] || [ ! -d apps/server/node_modules ]; then
-  should_install_deps=1
+should_install_root_deps=0
+should_install_app_deps=0
+
+if [ "${INSTALL_ROOT_DEPS}" = "1" ] && [ ! -d node_modules ]; then
+  should_install_root_deps=1
 fi
 
-if [ "$should_install_deps" = "0" ] && [ -n "$PREV_HEAD" ] && [ -n "$NEXT_HEAD" ] && [ "$PREV_HEAD" != "$NEXT_HEAD" ]; then
-  if git diff --name-only "$PREV_HEAD" "$NEXT_HEAD" -- package-lock.json apps/panel-v2/package-lock.json apps/landing/package-lock.json apps/server/package-lock.json | grep -q .; then
-    should_install_deps=1
+if [ ! -d apps/panel-v2/node_modules ] || [ ! -d apps/landing/node_modules ] || [ ! -d apps/server/node_modules ]; then
+  should_install_app_deps=1
+fi
+
+if [ -n "$PREV_HEAD" ] && [ -n "$NEXT_HEAD" ] && [ "$PREV_HEAD" != "$NEXT_HEAD" ]; then
+  if [ "${INSTALL_ROOT_DEPS}" = "1" ] && git diff --name-only "$PREV_HEAD" "$NEXT_HEAD" -- package-lock.json | grep -q .; then
+    should_install_root_deps=1
+  fi
+  if git diff --name-only "$PREV_HEAD" "$NEXT_HEAD" -- apps/panel-v2/package-lock.json apps/landing/package-lock.json apps/server/package-lock.json | grep -q .; then
+    should_install_app_deps=1
   fi
 fi
 
-if [ "$should_install_deps" = "1" ]; then
-  echo "[deploy] Installing dependencies..."
+if [ "$should_install_root_deps" = "1" ]; then
+  echo "[deploy] Installing root dependencies (INSTALL_ROOT_DEPS=1)..."
   install_deps ""
+else
+  echo "[deploy] Skipping root dependency install (INSTALL_ROOT_DEPS=${INSTALL_ROOT_DEPS})."
+fi
+
+if [ "$should_install_app_deps" = "1" ]; then
+  echo "[deploy] Installing app dependencies..."
   install_deps "apps/panel-v2"
   install_deps "apps/landing"
   install_deps "apps/server"
 else
-  echo "[deploy] Skipping dependency install (lockfiles unchanged and node_modules already present)."
+  echo "[deploy] Skipping app dependency install (lockfiles unchanged and node_modules already present)."
 fi
 
 if [ "${RUN_TESTS_ON_SERVER}" = "1" ]; then

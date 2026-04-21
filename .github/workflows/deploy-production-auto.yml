@@ -26,6 +26,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: [self-hosted, linux, x64, himefit-prod]
+    timeout-minutes: 120
     permissions:
       contents: read
 
@@ -66,5 +67,6 @@ jobs:
           APP_DIR: ${{ steps.target.outputs.app_dir }}
           BRANCH: ${{ steps.target.outputs.branch }}
           RUN_TESTS_ON_SERVER: "0"
+          NPM_TIMEOUT_SEC: "2400"
         run: |
-          timeout 1800 bash tools/deploy/update-server.sh
+          bash tools/deploy/update-server.sh
