@@ -26,6 +26,16 @@ install_deps() {
   timeout "${NPM_TIMEOUT_SEC}" npm --prefix "$prefix" install --no-audit --no-fund
 }
 
+diff_has_changes() {
+  if [ -z "${PREV_HEAD}" ] || [ -z "${NEXT_HEAD}" ] || [ "${PREV_HEAD}" = "${NEXT_HEAD}" ]; then
+    return 1
+  fi
+  if git diff --quiet "${PREV_HEAD}" "${NEXT_HEAD}" -- "$@"; then
+    return 1
+  fi
+  return 0
+}
+
 configure_timezone() {
   local tz="$1"
   echo "[deploy] Enforcing server timezone ${tz}..."
@@ -57,22 +67,51 @@ git pull --ff-only origin "${BRANCH}"
 NEXT_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
 
 should_install_root_deps=0
-should_install_app_deps=0
+should_install_panel_deps=0
+should_install_landing_deps=0
+should_install_server_deps=0
+should_build_panel=0
+should_build_landing=0
 
-if [ "${INSTALL_ROOT_DEPS}" = "1" ] && [ ! -d node_modules ]; then
+if [ "${INSTALL_ROOT_DEPS}" = "1" ] && [ ! -d "node_modules" ]; then
   should_install_root_deps=1
 fi
 
-if [ ! -d apps/panel-v2/node_modules ] || [ ! -d apps/landing/node_modules ] || [ ! -d apps/server/node_modules ]; then
-  should_install_app_deps=1
+if [ ! -d "apps/panel-v2/node_modules" ]; then
+  should_install_panel_deps=1
+fi
+if [ ! -d "apps/landing/node_modules" ]; then
+  should_install_landing_deps=1
+fi
+if [ ! -d "apps/server/node_modules" ]; then
+  should_install_server_deps=1
+fi
+if [ ! -d "apps/panel-v2/dist" ]; then
+  should_build_panel=1
+fi
+if [ ! -d "apps/landing/dist" ]; then
+  should_build_landing=1
 fi
 
-if [ -n "$PREV_HEAD" ] && [ -n "$NEXT_HEAD" ] && [ "$PREV_HEAD" != "$NEXT_HEAD" ]; then
-  if [ "${INSTALL_ROOT_DEPS}" = "1" ] && git diff --name-only "$PREV_HEAD" "$NEXT_HEAD" -- package-lock.json | grep -q .; then
+if [ -n "${PREV_HEAD}" ] && [ -n "${NEXT_HEAD}" ] && [ "${PREV_HEAD}" != "${NEXT_HEAD}" ]; then
+  if [ "${INSTALL_ROOT_DEPS}" = "1" ] && diff_has_changes "package-lock.json"; then
     should_install_root_deps=1
   fi
-  if git diff --name-only "$PREV_HEAD" "$NEXT_HEAD" -- apps/panel-v2/package-lock.json apps/landing/package-lock.json apps/server/package-lock.json | grep -q .; then
-    should_install_app_deps=1
+  if diff_has_changes "apps/panel-v2/package.json" "apps/panel-v2/package-lock.json"; then
+    should_install_panel_deps=1
+  fi
+  if diff_has_changes "apps/landing/package.json" "apps/landing/package-lock.json"; then
+    should_install_landing_deps=1
+  fi
+  if diff_has_changes "apps/server/package.json" "apps/server/package-lock.json"; then
+    should_install_server_deps=1
+  fi
+
+  if diff_has_changes "apps/panel-v2"; then
+    should_build_panel=1
+  fi
+  if diff_has_changes "apps/landing"; then
+    should_build_landing=1
   fi
 fi
 
@@ -83,13 +122,25 @@ else
   echo "[deploy] Skipping root dependency install (INSTALL_ROOT_DEPS=${INSTALL_ROOT_DEPS})."
 fi
 
-if [ "$should_install_app_deps" = "1" ]; then
-  echo "[deploy] Installing app dependencies..."
+if [ "$should_install_panel_deps" = "1" ]; then
+  echo "[deploy] Installing panel dependencies..."
   install_deps "apps/panel-v2"
+else
+  echo "[deploy] Skipping panel dependency install."
+fi
+
+if [ "$should_install_landing_deps" = "1" ]; then
+  echo "[deploy] Installing landing dependencies..."
   install_deps "apps/landing"
+else
+  echo "[deploy] Skipping landing dependency install."
+fi
+
+if [ "$should_install_server_deps" = "1" ]; then
+  echo "[deploy] Installing server dependencies..."
   install_deps "apps/server"
 else
-  echo "[deploy] Skipping app dependency install (lockfiles unchanged and node_modules already present)."
+  echo "[deploy] Skipping server dependency install."
 fi
 
 if [ "${RUN_TESTS_ON_SERVER}" = "1" ]; then
@@ -100,9 +151,19 @@ else
   echo "[deploy] Skipping tests on server (already validated in CI)."
 fi
 
-echo "[deploy] Building frontend apps..."
-npm --prefix apps/panel-v2 run build
-npm --prefix apps/landing run build
+if [ "$should_build_panel" = "1" ]; then
+  echo "[deploy] Building panel frontend..."
+  npm --prefix apps/panel-v2 run build
+else
+  echo "[deploy] Skipping panel build (no changes)."
+fi
+
+if [ "$should_build_landing" = "1" ]; then
+  echo "[deploy] Building landing frontend..."
+  npm --prefix apps/landing run build
+else
+  echo "[deploy] Skipping landing build (no changes)."
+fi
 
 echo "[deploy] Reloading PM2 process..."
 pm2 startOrReload tools/deploy/ecosystem.config.cjs --update-env
