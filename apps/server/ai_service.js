@@ -19,6 +19,7 @@ const APP_PATHS = resolveAppPaths(__dirname, process.env, process.platform);
 const CONTEXTO_FILE_PATH = APP_PATHS.BASE_CONTEXT_FILE;
 const KNOWLEDGE_PUBLISHED_PATH = APP_PATHS.KNOWLEDGE_PUBLISHED_FILE;
 const AI_TIMEZONE = String(process.env.HIMEFIT_TZ || process.env.TZ || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
+const HIMEFIT_LOCAL_HOLIDAYS = String(process.env.HIMEFIT_LOCAL_HOLIDAYS || '').trim();
 const MAX_HISTORY_TOKENS = 12;
 const ADS_SCRIPT_TEXT_LIMIT = 1200;
 const ADS_BRIEFING_LIMIT = 500;
@@ -459,6 +460,143 @@ function canonicalWeekdayPt(value) {
     return '';
 }
 
+function pad2(value) {
+    return String(Number(value || 0)).padStart(2, '0');
+}
+
+function getTzDateParts(baseDate = new Date()) {
+    const now = baseDate instanceof Date ? baseDate : new Date(baseDate);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: AI_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(now);
+    const year = Number(parts.find((p) => p.type === 'year')?.value || 0);
+    const month = Number(parts.find((p) => p.type === 'month')?.value || 0);
+    const day = Number(parts.find((p) => p.type === 'day')?.value || 0);
+    const isoDate = `${year}-${pad2(month)}-${pad2(day)}`;
+    const monthDay = `${pad2(month)}-${pad2(day)}`;
+    return { year, month, day, isoDate, monthDay };
+}
+
+function computeEasterSunday(year) {
+    const y = Number(year || 0);
+    if (!Number.isFinite(y) || y < 1900) return null;
+    const a = y % 19;
+    const b = Math.floor(y / 100);
+    const c = y % 100;
+    const d = Math.floor(b / 4);
+    const e = b % 4;
+    const f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4);
+    const k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31);
+    const day = ((h + l - 7 * m + 114) % 31) + 1;
+    return { year: y, month, day };
+}
+
+function offsetFromDateParts(parts, daysDelta) {
+    const date = new Date(Date.UTC(parts.year, Number(parts.month || 1) - 1, parts.day));
+    date.setUTCDate(date.getUTCDate() + Number(daysDelta || 0));
+    return {
+        year: date.getUTCFullYear(),
+        month: date.getUTCMonth() + 1,
+        day: date.getUTCDate()
+    };
+}
+
+function toIsoDate(parts) {
+    return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function buildNationalHolidayMap(year) {
+    const fixed = new Map([
+        ['01-01', 'Confraternizacao Universal'],
+        ['04-21', 'Tiradentes'],
+        ['05-01', 'Dia do Trabalho'],
+        ['09-07', 'Independencia do Brasil'],
+        ['10-12', 'Nossa Senhora Aparecida'],
+        ['11-02', 'Finados'],
+        ['11-15', 'Proclamacao da Republica'],
+        ['11-20', 'Dia Nacional de Zumbi e da Consciencia Negra'],
+        ['12-25', 'Natal']
+    ]);
+    const map = new Map();
+    for (const [monthDay, name] of fixed.entries()) {
+        map.set(`${year}-${monthDay}`, name);
+    }
+
+    const easter = computeEasterSunday(year);
+    if (easter) {
+        const goodFriday = toIsoDate(offsetFromDateParts(easter, -2));
+        map.set(goodFriday, 'Sexta-feira Santa');
+    }
+    return map;
+}
+
+function parseLocalHolidayEntries(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return [];
+    const entries = [];
+    for (const piece of text.split(/[,\n;]+/g)) {
+        const item = piece.trim();
+        if (!item) continue;
+        const idx = item.indexOf(':');
+        if (idx <= 0) continue;
+        const key = item.slice(0, idx).trim();
+        const name = item.slice(idx + 1).trim();
+        if (!name) continue;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(key) || /^\d{2}-\d{2}$/.test(key)) {
+            entries.push({ key, name });
+        }
+    }
+    return entries;
+}
+
+function resolveHolidayInfo(baseDate = new Date()) {
+    const nowParts = getTzDateParts(baseDate);
+    const national = buildNationalHolidayMap(nowParts.year);
+    const nationalName = national.get(nowParts.isoDate) || '';
+    const localEntries = parseLocalHolidayEntries(HIMEFIT_LOCAL_HOLIDAYS);
+    const localHit = localEntries.find((entry) => entry.key === nowParts.isoDate || entry.key === nowParts.monthDay);
+
+    if (nationalName && localHit) {
+        return {
+            isHoliday: true,
+            scope: 'nacional e local',
+            name: `${nationalName}; ${localHit.name}`,
+            isoDate: nowParts.isoDate
+        };
+    }
+    if (localHit) {
+        return {
+            isHoliday: true,
+            scope: 'local',
+            name: localHit.name,
+            isoDate: nowParts.isoDate
+        };
+    }
+    if (nationalName) {
+        return {
+            isHoliday: true,
+            scope: 'nacional',
+            name: nationalName,
+            isoDate: nowParts.isoDate
+        };
+    }
+    return {
+        isHoliday: false,
+        scope: '',
+        name: '',
+        isoDate: nowParts.isoDate
+    };
+}
+
 function resolveBrazilNowInfo(baseDate = new Date()) {
     const now = baseDate instanceof Date ? baseDate : new Date();
     const dateBR = new Intl.DateTimeFormat('pt-BR', {
@@ -472,10 +610,12 @@ function resolveBrazilNowInfo(baseDate = new Date()) {
         weekday: 'long'
     }).format(now);
     const weekday = canonicalWeekdayPt(weekdayRaw) || weekdayRaw;
+    const holiday = resolveHolidayInfo(now);
     return {
         timezone: AI_TIMEZONE,
         dateBR,
-        weekday
+        weekday,
+        holiday
     };
 }
 
@@ -657,9 +797,14 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
         }
         const nowInfo = resolveBrazilNowInfo();
         const extraContextBlock = buildExtraContextBlock(extraContext);
+        const holidayLine = nowInfo.holiday?.isHoliday
+            ? `Hoje (${nowInfo.dateBR}) e feriado ${nowInfo.holiday.scope}: ${nowInfo.holiday.name}.`
+            : `Hoje (${nowInfo.dateBR}) nao e feriado nacional conhecido.`;
         const contextParts = [
             `# RELOGIO OFICIAL\nFuso horario oficial: ${nowInfo.timezone}\nData de hoje: ${nowInfo.dateBR}\nDia da semana oficial: ${nowInfo.weekday}.`,
+            `# FERIADO OFICIAL\n${holidayLine}`,
             `# REGRA DE DATA\nQuando mencionar "hoje", use EXATAMENTE o dia da semana oficial acima. Nunca invente outro dia da semana para hoje.`,
+            `# REGRA DE FERIADO\nSe hoje for feriado, nao assuma horario regular. Use horario de feriado somente se estiver explicito na base de conhecimento. Se nao houver horario de feriado explicito, informe que o horario pode ser especial e ofereca confirmacao com atendente humano.`,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,
         ];
