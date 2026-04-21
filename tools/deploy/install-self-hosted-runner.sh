@@ -42,7 +42,12 @@ fi
 
 if [ -f ".runner" ]; then
   echo "[runner] Existing runner configuration found. Replacing..."
-  ./config.sh remove --unattended --token "${GITHUB_RUNNER_TOKEN}" || true
+  if [ -f "./svc.sh" ]; then
+    sudo ./svc.sh stop || true
+    sudo ./svc.sh uninstall || true
+  fi
+  ./config.sh remove --token "${GITHUB_RUNNER_TOKEN}" || true
+  rm -f .runner .credentials .credentials_rsaparams || true
 fi
 
 echo "[runner] Configuring runner for ${GITHUB_REPO}..."
