@@ -9,6 +9,8 @@ import Index from "./pages/Index";
 import RadioPage from "./pages/RadioPage";
 import PontoPage from "./pages/PontoPage";
 import ConfiguracoesPage from "./pages/ConfiguracoesPage";
+import MatriculaPage from "./pages/MatriculaPage";
+import MatriculaSucessoPage from "./pages/MatriculaSucessoPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -20,6 +22,10 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
+          {/* Rotas públicas de checkout — sem autenticação */}
+          <Route path="/matricula" element={<MatriculaPage />} />
+          <Route path="/matricula/sucesso" element={<MatriculaSucessoPage />} />
+
           <Route
             element={
               <ProtectedRoute>
