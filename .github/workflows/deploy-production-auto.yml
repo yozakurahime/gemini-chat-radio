@@ -68,5 +68,6 @@ jobs:
           BRANCH: ${{ steps.target.outputs.branch }}
           RUN_TESTS_ON_SERVER: "0"
           NPM_TIMEOUT_SEC: "2400"
+          FORCE_BUILD_PANEL: "1"
         run: |
           bash tools/deploy/update-server.sh

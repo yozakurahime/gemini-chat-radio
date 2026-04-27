@@ -7,6 +7,8 @@ SERVER_TIMEZONE="${SERVER_TIMEZONE:-America/Sao_Paulo}"
 RUN_TESTS_ON_SERVER="${RUN_TESTS_ON_SERVER:-0}"
 NPM_TIMEOUT_SEC="${NPM_TIMEOUT_SEC:-1200}"
 INSTALL_ROOT_DEPS="${INSTALL_ROOT_DEPS:-0}"
+FORCE_BUILD_PANEL="${FORCE_BUILD_PANEL:-0}"
+FORCE_BUILD_LANDING="${FORCE_BUILD_LANDING:-0}"
 
 install_deps() {
   local prefix="$1"
@@ -93,6 +95,12 @@ if [ ! -d "apps/panel-v2/dist" ]; then
   should_build_panel=1
 fi
 if [ ! -d "apps/landing/dist" ]; then
+  should_build_landing=1
+fi
+if [ "${FORCE_BUILD_PANEL}" = "1" ]; then
+  should_build_panel=1
+fi
+if [ "${FORCE_BUILD_LANDING}" = "1" ]; then
   should_build_landing=1
 fi
 
