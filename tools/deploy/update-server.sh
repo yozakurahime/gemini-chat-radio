@@ -62,8 +62,11 @@ configure_timezone "$SERVER_TIMEZONE"
 echo "[deploy] Updating code from origin/${BRANCH}..."
 PREV_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
 git fetch --all --prune
-git checkout "${BRANCH}"
-git pull --ff-only origin "${BRANCH}"
+git checkout "${BRANCH}" || git checkout -B "${BRANCH}" "origin/${BRANCH}"
+if ! git pull --ff-only origin "${BRANCH}"; then
+  echo "[deploy] Fast-forward update failed; aligning local checkout with origin/${BRANCH}..."
+  git reset --hard "origin/${BRANCH}"
+fi
 NEXT_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
 
 should_install_root_deps=0
