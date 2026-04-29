@@ -204,6 +204,9 @@ type PanelDataContextValue = {
   setAttendanceToDate: (value: string) => void;
   refreshAttendanceCatalog: () => Promise<void>;
   refreshAttendanceTemplates: () => Promise<void>;
+  createAttendanceEmployee: (payload: { name: string; phone: string; roleActivityId?: number; notes?: string }) => Promise<boolean>;
+  updateAttendanceEmployee: (id: number, payload: { name?: string; phone?: string; roleActivityId?: number; role?: string; notes?: string; active?: boolean }) => Promise<boolean>;
+  deleteAttendanceEmployee: (id: number) => Promise<boolean>;
   createAttendanceCatalogItem: (payload: { type: "class" | "function"; name: string; defaultValue?: number; sortOrder?: number }) => Promise<boolean>;
   updateAttendanceCatalogItem: (id: number, payload: { type?: "class" | "function"; name?: string; defaultValue?: number; sortOrder?: number; active?: boolean }) => Promise<boolean>;
   deleteAttendanceCatalogItem: (id: number) => Promise<boolean>;
@@ -1533,6 +1536,62 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const createAttendanceEmployee = useCallback(async (payload: { name: string; phone: string; roleActivityId?: number; notes?: string }) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch("/admin/attendance/employees", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendance();
+      toast.success("Funcionario cadastrado");
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "phone_already_exists") toast.error("Esse WhatsApp ja esta cadastrado.");
+      else if (code === "cannot_use_bot_own_number") toast.error("Use um numero diferente do WhatsApp do bot.");
+      else if (code === "invalid_role_catalog") toast.error("Selecione uma funcao valida.");
+      else toast.error("Falha ao cadastrar funcionario");
+      return false;
+    }
+  }, [refreshAttendance, user?.role]);
+
+  const updateAttendanceEmployee = useCallback(async (id: number, payload: { name?: string; phone?: string; roleActivityId?: number; role?: string; notes?: string; active?: boolean }) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/employees/${id}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshAttendance();
+      toast.success("Funcionario atualizado");
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "phone_already_exists") toast.error("Esse WhatsApp ja esta cadastrado.");
+      else if (code === "cannot_use_bot_own_number") toast.error("Use um numero diferente do WhatsApp do bot.");
+      else if (code === "invalid_role_catalog") toast.error("Selecione uma funcao valida.");
+      else if (code === "not_found") toast.error("Funcionario nao encontrado.");
+      else toast.error("Falha ao atualizar funcionario");
+      return false;
+    }
+  }, [refreshAttendance, user?.role]);
+
+  const deleteAttendanceEmployee = useCallback(async (id: number) => {
+    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
+    try {
+      await apiFetch(`/admin/attendance/employees/${id}`, { method: "DELETE" });
+      await refreshAttendance();
+      toast.success("Funcionario removido do ponto");
+      return true;
+    } catch {
+      toast.error("Falha ao remover funcionario");
+      return false;
+    }
+  }, [refreshAttendance, user?.role]);
+
   const createAttendanceCatalogItem = useCallback(async (payload: { type: "class" | "function"; name: string; defaultValue?: number; sortOrder?: number }) => {
     if (user?.role !== "admin") return false;
     try {
@@ -1735,6 +1794,9 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setAttendanceToDate,
     refreshAttendanceCatalog,
     refreshAttendanceTemplates,
+    createAttendanceEmployee,
+    updateAttendanceEmployee,
+    deleteAttendanceEmployee,
     createAttendanceCatalogItem,
     updateAttendanceCatalogItem,
     deleteAttendanceCatalogItem,
@@ -1768,9 +1830,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     chats,
     connected,
     createAttendanceCatalogItem,
+    createAttendanceEmployee,
     createAttendanceTemplate,
     createAdCampaign,
     deleteAttendanceCatalogItem,
+    deleteAttendanceEmployee,
     deleteAttendanceTemplate,
     deleteAd,
     deleteAdCampaign,
@@ -1818,6 +1882,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     trackAdCampaignRun,
     updateAdCampaign,
     updateAdPlaybackState,
+    updateAttendanceEmployee,
     uploadAd,
     user,
   ]);

@@ -106,6 +106,15 @@ type EditTemplateState = {
   endTime: string;
 };
 
+type EditEmployeeState = {
+  id: number;
+  name: string;
+  phone: string;
+  roleActivityId: string;
+  notes: string;
+  active: boolean;
+};
+
 export default function PontoPage() {
   const {
     user,
@@ -121,6 +130,9 @@ export default function PontoPage() {
     setAttendanceSelectedEmployee,
     setAttendanceFromDate,
     setAttendanceToDate,
+    createAttendanceEmployee,
+    updateAttendanceEmployee,
+    deleteAttendanceEmployee,
     createAttendanceCatalogItem,
     updateAttendanceCatalogItem,
     deleteAttendanceCatalogItem,
@@ -132,13 +144,18 @@ export default function PontoPage() {
     refreshAttendance,
   } = usePanelData();
 
+  const activeAttendanceEmployees = useMemo(
+    () => attendanceEmployees.filter((employee) => Number(employee.active ?? 1) === 1),
+    [attendanceEmployees],
+  );
+
   const employeeOptions = useMemo(() => ([
     { id: "Todos", label: "Todos" },
-    ...attendanceEmployees.map((employee) => ({
+    ...activeAttendanceEmployees.map((employee) => ({
       id: String(employee.id),
       label: employee.name || `Funcionario ${employee.id}`,
     })),
-  ]), [attendanceEmployees]);
+  ]), [activeAttendanceEmployees]);
 
   const selectedEmployeeValue = employeeOptions.some((item) => item.id === attendanceSelectedEmployee)
     ? attendanceSelectedEmployee
@@ -156,8 +173,8 @@ export default function PontoPage() {
 
   const reportLinks = useMemo(() => {
     const selected = selectedEmployeeValue === "Todos"
-      ? attendanceEmployees[0]
-      : attendanceEmployees.find((employee) => String(employee.id) === String(selectedEmployeeValue));
+      ? activeAttendanceEmployees[0]
+      : activeAttendanceEmployees.find((employee) => String(employee.id) === String(selectedEmployeeValue));
     if (!selected) return { csv: "#", html: "#" };
     const { from, to } = resolvePeriod(attendanceFromDate, attendanceToDate);
     const query = new URLSearchParams({
@@ -169,7 +186,7 @@ export default function PontoPage() {
       csv: `/admin/attendance/export.csv?${query}`,
       html: `/admin/attendance/export.html?${query}`,
     };
-  }, [attendanceEmployees, attendanceFromDate, attendanceToDate, selectedEmployeeValue]);
+  }, [activeAttendanceEmployees, attendanceFromDate, attendanceToDate, selectedEmployeeValue]);
 
   const geoRecords = useMemo(() => (
     filteredRecords.filter((record) => Number.isFinite(Number(record.lat)) && Number.isFinite(Number(record.lng)) && !(Number(record.lat) === 0 && Number(record.lng) === 0))
@@ -205,9 +222,19 @@ export default function PontoPage() {
   const scheduleActivityOptions = scheduleType === "class" ? classActivities : functionActivities;
 
   const defaultEmployeeId = useMemo(
-    () => String(attendanceEmployees[0]?.id || ""),
-    [attendanceEmployees],
+    () => String(activeAttendanceEmployees[0]?.id || ""),
+    [activeAttendanceEmployees],
   );
+  const defaultRoleActivityId = useMemo(
+    () => String(functionActivities[0]?.id || ""),
+    [functionActivities],
+  );
+  const [employeeForm, setEmployeeForm] = useState({
+    name: "",
+    phone: "",
+    roleActivityId: "",
+    notes: "",
+  });
   const [newSchedule, setNewSchedule] = useState({
     employeeId: "",
     weekday: "1",
@@ -240,6 +267,7 @@ export default function PontoPage() {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
 
   const [editingSchedule, setEditingSchedule] = useState<EditScheduleState | null>(null);
+  const [editingEmployee, setEditingEmployee] = useState<EditEmployeeState | null>(null);
 
   useEffect(() => {
     if (!newSchedule.employeeId && defaultEmployeeId) {
@@ -249,6 +277,12 @@ export default function PontoPage() {
       setApplyEmployeeId(defaultEmployeeId);
     }
   }, [applyEmployeeId, defaultEmployeeId, newSchedule.employeeId]);
+
+  useEffect(() => {
+    if (!employeeForm.roleActivityId && defaultRoleActivityId) {
+      setEmployeeForm((prev) => ({ ...prev, roleActivityId: defaultRoleActivityId }));
+    }
+  }, [defaultRoleActivityId, employeeForm.roleActivityId]);
 
   useEffect(() => {
     if (!scheduleActivityOptions.length) {
@@ -270,6 +304,59 @@ export default function PontoPage() {
       setTemplateForm((prev) => ({ ...prev, activityId: String(classActivities[0].id) }));
     }
   }, [classActivities, templateForm.activityId]);
+
+  const submitEmployeeForm = async () => {
+    const ok = await createAttendanceEmployee({
+      name: employeeForm.name.trim(),
+      phone: employeeForm.phone.trim(),
+      roleActivityId: Number(employeeForm.roleActivityId),
+      notes: employeeForm.notes.trim(),
+    });
+    if (!ok) return;
+    setEmployeeForm({
+      name: "",
+      phone: "",
+      roleActivityId: defaultRoleActivityId,
+      notes: "",
+    });
+  };
+
+  const resolveEmployeeRoleActivityId = (role?: string) => {
+    const normalized = String(role || "").trim().toLowerCase();
+    const match = functionActivities.find((item) => String(item.name || "").trim().toLowerCase() === normalized);
+    return String(match?.id || defaultRoleActivityId || "");
+  };
+
+  const openEmployeeEdit = (employee: any) => {
+    setEditingEmployee({
+      id: Number(employee.id),
+      name: String(employee.name || ""),
+      phone: String(employee.whatsapp_phone || ""),
+      roleActivityId: resolveEmployeeRoleActivityId(employee.role),
+      notes: String(employee.notes || ""),
+      active: Number(employee.active ?? 1) === 1,
+    });
+  };
+
+  const saveEmployeeEdit = async () => {
+    if (!editingEmployee) return;
+    const ok = await updateAttendanceEmployee(editingEmployee.id, {
+      name: editingEmployee.name.trim(),
+      phone: editingEmployee.phone.trim(),
+      roleActivityId: Number(editingEmployee.roleActivityId),
+      notes: editingEmployee.notes.trim(),
+      active: editingEmployee.active,
+    });
+    if (ok) setEditingEmployee(null);
+  };
+
+  const removeEmployee = async (employee: any) => {
+    const employeeId = Number(employee.id);
+    if (!Number.isFinite(employeeId)) return;
+    if (!window.confirm(`Remover ${employee.name || "este funcionario"} do ponto? O historico sera mantido.`)) return;
+    const ok = await deleteAttendanceEmployee(employeeId);
+    if (ok && editingEmployee?.id === employeeId) setEditingEmployee(null);
+  };
 
   const createSchedule = async () => {
     try {
@@ -434,7 +521,7 @@ export default function PontoPage() {
       </Card>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {(attendanceSummary.length ? attendanceSummary : attendanceEmployees.slice(0, 3).map((employee) => ({
+        {(attendanceSummary.length ? attendanceSummary : activeAttendanceEmployees.slice(0, 3).map((employee) => ({
           employee: employee.name || `Funcionario ${employee.id}`,
           entradas: 0,
           saidas: 0,
@@ -469,6 +556,11 @@ export default function PontoPage() {
           <TabsTrigger value="schedules" className="gap-1">
             <ListChecks className="h-4 w-4" /> Escalas
           </TabsTrigger>
+          {isAdmin ? (
+            <TabsTrigger value="employees" className="gap-1">
+              <User className="h-4 w-4" /> Funcionarios
+            </TabsTrigger>
+          ) : null}
           <TabsTrigger value="map" className="gap-1">
             <MapPin className="h-4 w-4" /> Localizacao
           </TabsTrigger>
@@ -761,7 +853,7 @@ export default function PontoPage() {
                 <Select value={applyEmployeeId} onValueChange={setApplyEmployeeId}>
                   <SelectTrigger><SelectValue placeholder="Funcionario" /></SelectTrigger>
                   <SelectContent>
-                    {attendanceEmployees.map((employee) => (
+                    {activeAttendanceEmployees.map((employee) => (
                       <SelectItem key={employee.id} value={String(employee.id)}>{employee.name || `Funcionario ${employee.id}`}</SelectItem>
                     ))}
                   </SelectContent>
@@ -807,7 +899,7 @@ export default function PontoPage() {
                     <SelectValue placeholder="Funcionario" />
                   </SelectTrigger>
                   <SelectContent>
-                    {attendanceEmployees.map((employee) => (
+                    {activeAttendanceEmployees.map((employee) => (
                       <SelectItem key={employee.id} value={String(employee.id)}>
                         {employee.name || `Funcionario ${employee.id}`}
                       </SelectItem>
@@ -1020,6 +1112,160 @@ export default function PontoPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {isAdmin ? (
+          <TabsContent value="employees" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Cadastrar funcionario</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                  <Input
+                    value={employeeForm.name}
+                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, name: event.target.value }))}
+                    placeholder="Nome"
+                  />
+                  <Input
+                    value={employeeForm.phone}
+                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, phone: event.target.value }))}
+                    placeholder="WhatsApp com DDD"
+                  />
+                  <Select
+                    value={employeeForm.roleActivityId || defaultRoleActivityId}
+                    onValueChange={(value) => setEmployeeForm((prev) => ({ ...prev, roleActivityId: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Funcao" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {functionActivities.map((activity) => (
+                        <SelectItem key={activity.id} value={String(activity.id)}>
+                          {activity.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    value={employeeForm.notes}
+                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, notes: event.target.value }))}
+                    placeholder="Observacoes"
+                  />
+                  <Button
+                    onClick={submitEmployeeForm}
+                    className="gap-1"
+                    disabled={!employeeForm.name.trim() || !employeeForm.phone.trim() || !(employeeForm.roleActivityId || defaultRoleActivityId)}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Adicionar
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Funcionarios do ponto</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Nome</TableHead>
+                      <TableHead>WhatsApp</TableHead>
+                      <TableHead>Funcao</TableHead>
+                      <TableHead>Escalas</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Acoes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {attendanceEmployees.length ? attendanceEmployees.map((employee) => {
+                      const editing = editingEmployee?.id === Number(employee.id);
+                      return (
+                        <TableRow key={employee.id}>
+                          <TableCell className="font-medium">
+                            {editing ? (
+                              <Input
+                                value={editingEmployee?.name || ""}
+                                onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, name: event.target.value } : prev)}
+                              />
+                            ) : (employee.name || `Funcionario ${employee.id}`)}
+                          </TableCell>
+                          <TableCell>
+                            {editing ? (
+                              <Input
+                                value={editingEmployee?.phone || ""}
+                                onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, phone: event.target.value } : prev)}
+                              />
+                            ) : (employee.whatsapp_phone || "-")}
+                          </TableCell>
+                          <TableCell>
+                            {editing ? (
+                              <Select
+                                value={editingEmployee?.roleActivityId || defaultRoleActivityId}
+                                onValueChange={(value) => setEditingEmployee((prev) => prev ? { ...prev, roleActivityId: value } : prev)}
+                              >
+                                <SelectTrigger><SelectValue placeholder="Funcao" /></SelectTrigger>
+                                <SelectContent>
+                                  {functionActivities.map((activity) => (
+                                    <SelectItem key={activity.id} value={String(activity.id)}>
+                                      {activity.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (employee.role || "-")}
+                          </TableCell>
+                          <TableCell>{Number(employee.schedules_count || 0)}</TableCell>
+                          <TableCell>
+                            {editing ? (
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={!!editingEmployee?.active}
+                                  onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, active: event.target.checked } : prev)}
+                                />
+                                Ativo
+                              </label>
+                            ) : (
+                              <Badge variant={Number(employee.active ?? 1) === 1 ? "default" : "secondary"}>
+                                {Number(employee.active ?? 1) === 1 ? "Ativo" : "Inativo"}
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {editing ? (
+                              <div className="flex flex-wrap gap-2">
+                                <Button size="sm" onClick={saveEmployeeEdit}>Salvar</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingEmployee(null)}>Cancelar</Button>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button variant="ghost" size="icon" aria-label={`Editar ${employee.name || "funcionario"}`} onClick={() => openEmployeeEdit(employee)}>
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                                <Button variant="ghost" size="icon" aria-label={`Remover ${employee.name || "funcionario"}`} onClick={() => removeEmployee(employee)} disabled={Number(employee.active ?? 1) !== 1}>
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }) : (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                          Nenhum funcionario cadastrado.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="map" className="space-y-4">
           {selectedMapRecord ? (

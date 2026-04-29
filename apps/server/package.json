@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test tests/security.test.js tests/admin_flows.test.js",
+    "test": "node --test tests/app_paths.test.js tests/security.test.js tests/admin_flows.test.js",
     "health-check": "bash ../../tools/deploy/health-check.sh",
     "health-check:install-cron": "bash ../../tools/deploy/install-health-check-cron.sh",
     "sca:sync": "node scripts/sca_sync_worker.js",

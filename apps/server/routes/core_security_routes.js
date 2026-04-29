@@ -15,6 +15,10 @@ function registerCoreSecurityRoutes({
     conversationState,
     appVersion,
     appProfile,
+    tenantSlug = '',
+    tenantName = '',
+    isTenantMode = false,
+    dataRootDir = '',
     requirePanelAuth,
     requireAdmin,
     rateLimitLogin,
@@ -121,6 +125,10 @@ function registerCoreSecurityRoutes({
             service: 'himefit',
             version: appVersion,
             profile: appProfile,
+            tenantSlug,
+            tenantName,
+            tenantMode: Boolean(isTenantMode),
+            dataRoot: dataRootDir,
             ts: Date.now(),
             uptimeSec: Math.floor(process.uptime())
         });

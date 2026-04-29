@@ -43,12 +43,18 @@ try {
     console.log("[ok] IA Conectada.");
 } catch (e) { console.error("[warn] Crie 'ai_service.js'!"); }
 
+const {
+    createAttendanceActionPromptSender,
+    extractAttendanceInteractiveCommand
+} = require('./attendance_interactive_runtime');
+
 // IMPORTACOES BAILEYS (CJS + ESM compat)
 let makeWASocket = null;
 let useMultiFileAuthState = null;
 let downloadMediaMessage = null;
 let DisconnectReason = null;
 let fetchLatestBaileysVersion = null;
+let generateWAMessageFromContent = null;
 
 async function ensureBaileysLoaded() {
     if (makeWASocket && useMultiFileAuthState && downloadMediaMessage && DisconnectReason && fetchLatestBaileysVersion) {
@@ -69,6 +75,7 @@ async function ensureBaileysLoaded() {
     downloadMediaMessage = loaded?.downloadMediaMessage;
     DisconnectReason = loaded?.DisconnectReason;
     fetchLatestBaileysVersion = loaded?.fetchLatestBaileysVersion;
+    generateWAMessageFromContent = loaded?.generateWAMessageFromContent || null;
 
     if (!makeWASocket || !useMultiFileAuthState || !downloadMediaMessage || !DisconnectReason || !fetchLatestBaileysVersion) {
         throw new Error('baileys_load_failed');
@@ -243,6 +250,10 @@ const {
     IS_WINDOWS,
     APP_PROFILE,
     IS_COMMERCIAL_PROFILE,
+    TENANT_SLUG,
+    TENANT_NAME,
+    IS_TENANT_MODE,
+    PANEL_SESSION_COOKIE,
     DATA_ROOT_DIR,
     DATA_DIR,
     STORAGE_DIR,
@@ -514,7 +525,10 @@ const {
     setSessionCookie,
     clearSessionCookie,
     rateLimitLogin
-} = createPanelAuth({ db });
+} = createPanelAuth({
+    db,
+    sessionCookie: PANEL_SESSION_COOKIE
+});
 
 function getRadioSetting(key, fallback) {
     try {
@@ -5038,6 +5052,15 @@ function getAttendanceExitPreReminderMessage(employeeName, block) {
     return `Oi, ${safeName}! Seu horario termina as ${end}. Se quiser fechar manualmente, envie "saida" ate esse horario. Depois disso, o sistema encerra automaticamente.`;
 }
 
+async function sendAttendanceActionPrompt(targetJid, text, action) {
+    const sender = createAttendanceActionPromptSender({
+        getSock: () => sock,
+        getGenerateWAMessageFromContent: () => generateWAMessageFromContent,
+        logger: console
+    });
+    return sender(targetJid, text, action);
+}
+
 let attendanceReminderTimer = null;
 let attendanceReminderRunning = false;
 
@@ -5112,7 +5135,7 @@ async function runAttendanceReminderTick(nowMs = Date.now()) {
 
                     const text = getAttendanceReminderMessage(emp.name || 'Colaborador', block);
                     try {
-                        await sock.sendMessage(targetJid, { text });
+                        await sendAttendanceActionPrompt(targetJid, text, 'entry');
                         createAttendanceEvent(empId, 'reminder', 'system', now, text, noteKey);
                         console.log(`[attendance] reminder sent employee=${empId} date=${dateKey} start=${minutesToHHMM(block.start_min || 0)}`);
                         broadcast({
@@ -5172,7 +5195,7 @@ async function runAttendanceReminderTick(nowMs = Date.now()) {
                     const noteKey = attendanceExitPreReminderNoteKey(dateKey, empId, blockStartMin);
                     const text = getAttendanceExitPreReminderMessage(emp.name || 'Colaborador', block);
                     try {
-                        await sock.sendMessage(targetJid, { text });
+                        await sendAttendanceActionPrompt(targetJid, text, 'exit');
                         createAttendanceEvent(empId, 'exit_pre_reminder', 'system', now, text, noteKey);
                         console.log(`[attendance] exit pre-reminder sent employee=${empId} date=${dateKey} start=${minutesToHHMM(block.start_min || 0)} end=${minutesToHHMM(block.end_min || 0)}`);
                         broadcast({
@@ -5235,7 +5258,7 @@ async function runAttendanceReminderTick(nowMs = Date.now()) {
                     const noteKey = attendanceExitReminderNoteKey(dateKey, empId, blockStartMin);
                     const text = getAttendanceExitReminderMessage(emp.name || 'Colaborador', block);
                     try {
-                        await sock.sendMessage(targetJid, { text });
+                        await sendAttendanceActionPrompt(targetJid, text, 'exit');
                         createAttendanceEvent(empId, 'exit_reminder', 'system', now, text, noteKey);
                         console.log(`[attendance] exit reminder sent employee=${empId} date=${dateKey} start=${minutesToHHMM(block.start_min || 0)} end=${minutesToHHMM(block.end_min || 0)}`);
                         broadcast({
@@ -6989,6 +7012,10 @@ registerCoreSecurityRoutes({
     conversationState,
     appVersion: APP_VERSION,
     appProfile: APP_PROFILE,
+    tenantSlug: TENANT_SLUG,
+    tenantName: TENANT_NAME,
+    isTenantMode: IS_TENANT_MODE,
+    dataRootDir: DATA_ROOT_DIR,
     requirePanelAuth,
     requireAdmin,
     rateLimitLogin,
@@ -8255,6 +8282,10 @@ async function startBot() {
 
         const wrappedMessage = unwrapIncomingMessage(msg.message);
         let text = wrappedMessage.conversation || wrappedMessage.extendedTextMessage?.text || wrappedMessage.imageMessage?.caption;
+        const attendanceInteractiveCommand = extractAttendanceInteractiveCommand(wrappedMessage);
+        if (!text && attendanceInteractiveCommand) {
+            text = attendanceInteractiveCommand === 'entry' ? 'entrada' : 'saida';
+        }
         const isAudio = !!wrappedMessage.audioMessage;
         const incomingLocation = extractIncomingLocation(msg.message);
         const incomingImage = extractIncomingImage(msg.message);

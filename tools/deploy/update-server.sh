@@ -177,6 +177,11 @@ else
 fi
 
 echo "[deploy] Reloading PM2 process..."
+TENANTS_ROOT="${HIMEFIT_TENANTS_ROOT:-${APP_DIR}/runtime/tenants}"
+if [ "${HIMEFIT_KEEP_LEGACY_PM2:-0}" != "1" ] && [ -d "${TENANTS_ROOT}" ] && find "${TENANTS_ROOT}" -mindepth 2 -maxdepth 2 -name tenant.env -print -quit | grep -q .; then
+  echo "[deploy] Tenant env files detected; removing legacy PM2 process himefit-server if present..."
+  pm2 delete himefit-server >/dev/null 2>&1 || true
+fi
 pm2 startOrReload tools/deploy/ecosystem.config.cjs --update-env
 pm2 save
 

@@ -5,6 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const Database = require('better-sqlite3');
+const {
+  ATTENDANCE_INTERACTIVE_IDS,
+  commandFromAttendanceInteractiveId,
+  createAttendanceActionPromptSender,
+  extractAttendanceInteractiveCommand,
+} = require('../attendance_interactive_runtime');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -117,6 +123,125 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
 }
+
+test('attendance interactive runtime maps text and button commands', () => {
+  assert.equal(commandFromAttendanceInteractiveId('entrada'), 'entry');
+  assert.equal(commandFromAttendanceInteractiveId('saida'), 'exit');
+  assert.equal(commandFromAttendanceInteractiveId(ATTENDANCE_INTERACTIVE_IDS.entry), 'entry');
+  assert.equal(commandFromAttendanceInteractiveId(ATTENDANCE_INTERACTIVE_IDS.exit), 'exit');
+  assert.equal(commandFromAttendanceInteractiveId('Registrar entrada'), 'entry');
+  assert.equal(commandFromAttendanceInteractiveId('Registrar saida'), 'exit');
+});
+
+test('attendance interactive runtime extracts Baileys button replies', () => {
+  assert.equal(extractAttendanceInteractiveCommand({
+    buttonsResponseMessage: { selectedButtonId: ATTENDANCE_INTERACTIVE_IDS.entry },
+  }), 'entry');
+  assert.equal(extractAttendanceInteractiveCommand({
+    templateButtonReplyMessage: { selectedId: ATTENDANCE_INTERACTIVE_IDS.exit },
+  }), 'exit');
+  assert.equal(extractAttendanceInteractiveCommand({
+    listResponseMessage: { singleSelectReply: { selectedRowId: ATTENDANCE_INTERACTIVE_IDS.entry } },
+  }), 'entry');
+  assert.equal(extractAttendanceInteractiveCommand({
+    interactiveResponseMessage: {
+      nativeFlowResponseMessage: {
+        paramsJson: JSON.stringify({ id: ATTENDANCE_INTERACTIVE_IDS.exit }),
+      },
+    },
+  }), 'exit');
+});
+
+test('attendance interactive runtime falls back to text when button send fails', async () => {
+  const sent = [];
+  const sock = {
+    user: { id: '5511999999999@s.whatsapp.net' },
+    relayMessage: async () => {
+      throw new Error('interactive_unavailable');
+    },
+    sendMessage: async (jid, payload) => {
+      sent.push({ jid, payload });
+    },
+  };
+  const errors = [];
+  const sendAttendanceActionPrompt = createAttendanceActionPromptSender({
+    getSock: () => sock,
+    getGenerateWAMessageFromContent: () => () => ({
+      key: { id: 'msg-1' },
+      message: { buttonsMessage: {} },
+    }),
+    logger: { error: (...args) => errors.push(args) },
+  });
+
+  const result = await sendAttendanceActionPrompt('5511888888888@s.whatsapp.net', 'Envie entrada.', 'entry');
+  assert.deepEqual(result, { sent: true, interactive: false });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    jid: '5511888888888@s.whatsapp.net',
+    payload: { text: 'Envie entrada.' },
+  });
+  assert.equal(errors.length, 1);
+});
+
+test('tenant instance mode exposes metadata and isolates panel cookies/data roots', async (t) => {
+  const tenantsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'himefit-tenants-'));
+  const tenantADataRoot = path.join(tenantsRoot, 'academia-a');
+  const tenantBDataRoot = path.join(tenantsRoot, 'academia-b');
+  const serverA = await startServer({
+    dataRoot: tenantADataRoot,
+    port: randomPort(),
+    extraEnv: {
+      HIMEFIT_TENANT_SLUG: 'academia-a',
+      HIMEFIT_TENANT_NAME: 'Academia A',
+    },
+  });
+  const serverB = await startServer({
+    dataRoot: tenantBDataRoot,
+    port: randomPort(),
+    extraEnv: {
+      HIMEFIT_TENANT_SLUG: 'academia-b',
+      HIMEFIT_TENANT_NAME: 'Academia B',
+    },
+  });
+  t.after(async () => {
+    await stopServer(serverA);
+    await stopServer(serverB);
+    fs.rmSync(tenantsRoot, { recursive: true, force: true });
+  });
+
+  const healthA = await reqJson(serverA.baseUrl, '/api/health');
+  assert.equal(healthA.res.status, 200);
+  assert.equal(healthA.data.tenantSlug, 'academia-a');
+  assert.equal(healthA.data.tenantName, 'Academia A');
+  assert.equal(healthA.data.tenantMode, true);
+  assert.equal(path.resolve(healthA.data.dataRoot), path.resolve(tenantADataRoot));
+
+  const healthB = await reqJson(serverB.baseUrl, '/api/health');
+  assert.equal(healthB.res.status, 200);
+  assert.equal(healthB.data.tenantSlug, 'academia-b');
+  assert.equal(healthB.data.tenantName, 'Academia B');
+  assert.equal(path.resolve(healthB.data.dataRoot), path.resolve(tenantBDataRoot));
+
+  const authA = await login(serverA.baseUrl, serverA.panelUser, serverA.panelPass);
+  assert.equal(authA.res.status, 200);
+  assert.ok(authA.cookie.startsWith('panel_session_academia_a='));
+
+  const authB = await login(serverB.baseUrl, serverB.panelUser, serverB.panelPass);
+  assert.equal(authB.res.status, 200);
+  assert.ok(authB.cookie.startsWith('panel_session_academia_b='));
+
+  const crossTenantAuth = await reqJson(serverB.baseUrl, '/auth/me', {
+    cookie: authA.cookie,
+  });
+  assert.equal(crossTenantAuth.res.status, 401);
+
+  assert.ok(fs.existsSync(path.join(tenantADataRoot, 'data', 'himefit.db')));
+  assert.ok(fs.existsSync(path.join(tenantBDataRoot, 'data', 'himefit.db')));
+  assert.notEqual(
+    path.resolve(path.join(tenantADataRoot, 'data', 'himefit.db')),
+    path.resolve(path.join(tenantBDataRoot, 'data', 'himefit.db'))
+  );
+});
 
 test('admin endpoints: attendance cadastro flow works end-to-end', async (t) => {
   const server = await startServer({
