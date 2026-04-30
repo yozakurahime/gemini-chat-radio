@@ -10,6 +10,7 @@ const {
   commandFromAttendanceInteractiveId,
   createAttendanceActionPromptSender,
   extractAttendanceInteractiveCommand,
+  buildAttendanceNativeFlowMessageContent,
 } = require('../attendance_interactive_runtime');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -152,6 +153,39 @@ test('attendance interactive runtime extracts Baileys button replies', () => {
   }), 'exit');
 });
 
+test('attendance interactive runtime builds and sends native flow quick replies first', async () => {
+  const content = buildAttendanceNativeFlowMessageContent('Envie entrada.', 'entry');
+  const button = content.viewOnceMessage.message.interactiveMessage.nativeFlowMessage.buttons[0];
+  const params = JSON.parse(button.buttonParamsJson);
+  assert.equal(button.name, 'quick_reply');
+  assert.equal(params.id, ATTENDANCE_INTERACTIVE_IDS.entry);
+  assert.equal(params.display_text, 'Registrar entrada');
+
+  const relayed = [];
+  const sock = {
+    user: { id: '5511999999999@s.whatsapp.net' },
+    relayMessage: async (jid, message, options) => {
+      relayed.push({ jid, message, options });
+    },
+    sendMessage: async () => {
+      throw new Error('should_not_fallback');
+    },
+  };
+  const sendAttendanceActionPrompt = createAttendanceActionPromptSender({
+    getSock: () => sock,
+    getGenerateWAMessageFromContent: () => (jid, message) => ({
+      key: { id: `msg-${jid}` },
+      message,
+    }),
+    logger: { error: () => {} },
+  });
+
+  const result = await sendAttendanceActionPrompt('5511888888888@s.whatsapp.net', 'Envie entrada.', 'entry');
+  assert.deepEqual(result, { sent: true, interactive: true, method: 'native_flow' });
+  assert.equal(relayed.length, 1);
+  assert.equal(relayed[0].message.viewOnceMessage.message.interactiveMessage.nativeFlowMessage.buttons[0].name, 'quick_reply');
+});
+
 test('attendance interactive runtime falls back to text when button send fails', async () => {
   const sent = [];
   const sock = {
@@ -174,13 +208,13 @@ test('attendance interactive runtime falls back to text when button send fails',
   });
 
   const result = await sendAttendanceActionPrompt('5511888888888@s.whatsapp.net', 'Envie entrada.', 'entry');
-  assert.deepEqual(result, { sent: true, interactive: false });
+  assert.deepEqual(result, { sent: true, interactive: false, method: 'text' });
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], {
     jid: '5511888888888@s.whatsapp.net',
     payload: { text: 'Envie entrada.' },
   });
-  assert.equal(errors.length, 1);
+  assert.equal(errors.length, 2);
 });
 
 test('admin endpoints: attendance cadastro flow works end-to-end', async (t) => {

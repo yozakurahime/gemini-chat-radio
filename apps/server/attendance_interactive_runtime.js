@@ -104,6 +104,35 @@ function buildAttendanceButtonMessageContent(text, action) {
     };
 }
 
+function buildAttendanceNativeFlowMessageContent(text, action) {
+    const normalizedAction = action === 'exit' ? 'exit' : 'entry';
+    return {
+        viewOnceMessage: {
+            message: {
+                messageContextInfo: {
+                    deviceListMetadata: {},
+                    deviceListMetadataVersion: 2
+                },
+                interactiveMessage: {
+                    body: { text: String(text || '').trim() },
+                    footer: { text: 'Academia Oxigenio' },
+                    nativeFlowMessage: {
+                        buttons: [
+                            {
+                                name: 'quick_reply',
+                                buttonParamsJson: JSON.stringify({
+                                    display_text: getAttendanceActionButtonLabel(normalizedAction),
+                                    id: getAttendanceActionButtonId(normalizedAction)
+                                })
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    };
+}
+
 function createAttendanceActionPromptSender({
     getSock,
     getGenerateWAMessageFromContent,
@@ -119,21 +148,27 @@ function createAttendanceActionPromptSender({
 
         const sendTextFallback = async () => {
             await sock.sendMessage(targetJid, { text: messageText });
-            return { sent: true, interactive: false };
+            return { sent: true, interactive: false, method: 'text' };
         };
 
         if (generateWAMessageFromContent && typeof sock.relayMessage === 'function') {
-            try {
-                const content = buildAttendanceButtonMessageContent(messageText, action);
-                const waMessage = generateWAMessageFromContent(targetJid, content, {
-                    userJid: sock?.user?.id || undefined
-                });
-                await sock.relayMessage(targetJid, waMessage.message, {
-                    messageId: waMessage.key?.id
-                });
-                return { sent: true, interactive: true };
-            } catch (err) {
-                if (logger?.error) logger.error('[attendance] interactive prompt fallback:', err?.message || err);
+            const attempts = [
+                ['native_flow', () => buildAttendanceNativeFlowMessageContent(messageText, action)],
+                ['buttons_message', () => buildAttendanceButtonMessageContent(messageText, action)]
+            ];
+
+            for (const [method, buildContent] of attempts) {
+                try {
+                    const waMessage = generateWAMessageFromContent(targetJid, buildContent(), {
+                        userJid: sock?.user?.id || undefined
+                    });
+                    await sock.relayMessage(targetJid, waMessage.message, {
+                        messageId: waMessage.key?.id
+                    });
+                    return { sent: true, interactive: true, method };
+                } catch (err) {
+                    if (logger?.error) logger.error(`[attendance] ${method} prompt fallback:`, err?.message || err);
+                }
             }
         }
 
@@ -144,6 +179,7 @@ function createAttendanceActionPromptSender({
 module.exports = {
     ATTENDANCE_INTERACTIVE_IDS,
     buildAttendanceButtonMessageContent,
+    buildAttendanceNativeFlowMessageContent,
     commandFromAttendanceInteractiveId,
     createAttendanceActionPromptSender,
     extractAttendanceInteractiveCommand,
