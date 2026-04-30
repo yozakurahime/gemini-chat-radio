@@ -14,7 +14,6 @@ if exist "%ROOT%tools\\bin\\tool-env.cmd" (
 set "HIME_TUNNEL_TOKEN=eyJhIjoiZDFhZWUxZWNhZDY2ZjI4ZjI1OTc2YjU1NWQ3NmE2ZGEiLCJ0IjoiZGU2Nzc4NGItMGNjNC00NTMwLWE3ZGQtZmRjZWI3ZjFiODFhIiwicyI6InJzSTk3UkJFRjJUYVppVmN0cDA0L2pwcHl3ekM2eU4wdy9xdmZBQ3lDR2s9In0="
 set "SITE_URL=https://www.academiaoxigenio.com"
 set "PANEL_URL=https://www.academiaoxigenio.com/painel"
-set "RADIO_URL=https://radio.academiaoxigenio.com"
 set "SERVER_DIR=%ROOT%apps\\server"
 set "NODE_ENTRY=%SERVER_DIR%\\index.js"
 set "PANEL_DIST=%ROOT%apps\\panel-v2\\dist\\index.html"
@@ -177,8 +176,8 @@ if "%FEATURE_CHECK%"=="2" (
   )
 )
 
-echo [7/7] Validando roteamento por host (site/painel/radio)...
-powershell -NoProfile -Command "$ok=$true; try { $site=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($site.StatusCode -ne 200){$ok=$false}; $app=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($app.StatusCode -ne 200){$ok=$false}; $legacy=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel-legado -Headers @{ Host='www.academiaoxigenio.com' } -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction SilentlyContinue; if($legacy -and $legacy.StatusCode -ne 302){$ok=$false}; $radio=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='radio.academiaoxigenio.com' } -TimeoutSec 3; if($radio.StatusCode -ne 200){$ok=$false} } catch { $ok=$false }; if($ok){exit 0}else{exit 1}" >nul 2>nul
+echo [7/7] Validando roteamento por host (site/painel)...
+powershell -NoProfile -Command "$ok=$true; try { $site=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/ -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($site.StatusCode -ne 200){$ok=$false}; $app=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel -Headers @{ Host='www.academiaoxigenio.com' } -TimeoutSec 3; if($app.StatusCode -ne 200){$ok=$false}; $legacy=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3001/painel-legado -Headers @{ Host='www.academiaoxigenio.com' } -MaximumRedirection 0 -TimeoutSec 3 -ErrorAction SilentlyContinue; if($legacy -and $legacy.StatusCode -ne 302){$ok=$false} } catch { $ok=$false }; if($ok){exit 0}else{exit 1}" >nul 2>nul
 if errorlevel 1 (
   echo [AVISO] Falha ao validar roteamento por host neste momento.
 ) else (
@@ -192,7 +191,6 @@ echo   HIME FIT ONLINE (CANARY COM FALLBACK)
 echo ==========================================
 echo Site publico : %SITE_URL%
 echo Painel novo  : %PANEL_URL%
-echo Radio publico: %RADIO_URL%
 echo.
 echo ==========================================
 if "%AUTO_CLOSE%"=="1" (
@@ -214,3 +212,4 @@ echo.
 echo Pressione qualquer tecla para fechar esta janela...
 pause >nul
 exit /b 1
+

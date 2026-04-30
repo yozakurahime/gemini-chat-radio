@@ -1,26 +1,13 @@
-const fs = require('fs');
-const path = require('path');
-const RADIO_VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
-
 function registerCoreSecurityRoutes({
     app,
     db,
     rootDir,
     publicAssetsDir,
     publicMediaFileMap,
-    cacheDir,
-    adsDir,
-    upload,
-    radioState,
     conversationState,
     appVersion,
     appProfile,
-    tenantSlug = '',
-    tenantName = '',
-    isTenantMode = false,
-    dataRootDir = '',
     requirePanelAuth,
-    requireAdmin,
     rateLimitLogin,
     verifyPassword,
     hashPassword,
@@ -32,21 +19,9 @@ function registerCoreSecurityRoutes({
     sessionCookie,
     hashToken,
     clearSessionCookie,
-    getSafeFilename,
-    isPathInside,
     resolvePublicMediaPath,
-    sendSafeStaticFile,
-    broadcast
+    sendSafeStaticFile
 }) {
-    function sanitizePlaylistRows(rows) {
-        return (Array.isArray(rows) ? rows : []).filter((row) => (
-            row
-            && typeof row === 'object'
-            && RADIO_VIDEO_ID_RE.test(String(row.videoId || '').trim())
-            && ['pending', 'ready', 'error'].includes(String(row.status || '').trim())
-        ));
-    }
-
     app.get('/favicon.ico', (req, res) => res.status(204).end());
 
     app.get(/^\/media\/(.+)$/, (req, res) => {
@@ -58,27 +33,6 @@ function registerCoreSecurityRoutes({
         });
         if (!filePath) return res.status(404).json({ error: 'not_found' });
         return sendSafeStaticFile(res, filePath);
-    });
-
-    app.get(/^\/cache\/([^/]+)$/, (req, res) => {
-        const safeName = getSafeFilename(req.params[0], ['.mp3']);
-        if (!safeName) return res.status(400).json({ error: 'invalid_filename' });
-        const filePath = path.join(cacheDir, safeName);
-        if (!isPathInside(cacheDir, filePath) || !fs.existsSync(filePath)) {
-            return res.status(404).json({ error: 'not_found' });
-        }
-        return sendSafeStaticFile(res, filePath, 'public, max-age=3600');
-    });
-
-    app.get(/^\/ads\/([^/]+)$/, (req, res) => {
-        const user = requirePanelAuth(req, res); if (!user) return;
-        const safeName = getSafeFilename(req.params[0], ['.mp3']);
-        if (!safeName) return res.status(400).json({ error: 'invalid_filename' });
-        const filePath = path.join(adsDir, safeName);
-        if (!isPathInside(adsDir, filePath) || !fs.existsSync(filePath)) {
-            return res.status(404).json({ error: 'not_found' });
-        }
-        return sendSafeStaticFile(res, filePath, 'private, max-age=3600');
     });
 
     app.post('/auth/login', (req, res) => {
@@ -125,71 +79,9 @@ function registerCoreSecurityRoutes({
             service: 'himefit',
             version: appVersion,
             profile: appProfile,
-            tenantSlug,
-            tenantName,
-            tenantMode: Boolean(isTenantMode),
-            dataRoot: dataRootDir,
             ts: Date.now(),
             uptimeSec: Math.floor(process.uptime())
         });
-    });
-
-    app.get('/api/ads', (req, res) => {
-        const user = requirePanelAuth(req, res); if (!user) return;
-        try { res.json(fs.readdirSync(adsDir).filter((file) => file.endsWith('.mp3'))); }
-        catch { res.json([]); }
-    });
-
-    app.post('/api/upload-ad', (req, res) => {
-        const user = requireAdmin(req, res); if (!user) return;
-        upload.single('file')(req, res, (err) => {
-            if (err) return res.status(400).json({ error: 'invalid_upload' });
-            if (!req?.file?.filename) return res.status(400).json({ error: 'missing_file' });
-            const filename = req.file.filename;
-            try {
-                broadcast({ type: 'ads_files_updated', action: 'upload', file: filename, at: Date.now() });
-            } catch (_) {}
-            return res.json({ message: 'OK', file: filename });
-        });
-    });
-
-    app.post('/api/delete-ad', (req, res) => {
-        const user = requireAdmin(req, res); if (!user) return;
-        const filename = getSafeFilename(req.body?.filename, ['.mp3']);
-        if (!filename) return res.status(400).json({ error: 'invalid_filename' });
-        try {
-            const targetFile = path.join(adsDir, filename);
-            if (!isPathInside(adsDir, targetFile) || !fs.existsSync(targetFile)) {
-                return res.status(404).json({ error: 'not_found' });
-            }
-            fs.unlinkSync(targetFile);
-            try {
-                broadcast({ type: 'ads_files_updated', action: 'delete', file: filename, at: Date.now() });
-            } catch (_) {}
-            return res.json({ success: true });
-        } catch (_) {
-            return res.status(500).json({ error: true });
-        }
-    });
-
-    app.get('/api/playlist', (req, res) => {
-        const user = requirePanelAuth(req, res); if (!user) return;
-        const playlist = sanitizePlaylistRows(db.prepare('SELECT * FROM playlist ORDER BY id ASC').all());
-        const current = sanitizePlaylistRows([radioState.currentTrack])[0] || null;
-        res.json({ playlist, current });
-    });
-
-    app.get('/api/cache-files', (req, res) => {
-        const user = requireAdmin(req, res); if (!user) return;
-        try {
-            const files = fs.readdirSync(cacheDir).map((name) => ({
-                name,
-                size: fs.statSync(path.join(cacheDir, name)).size
-            }));
-            res.json({ success: true, files });
-        } catch (_) {
-            res.json({ success: false });
-        }
     });
 
     app.get('/api/conversations/:id/messages', (req, res) => {

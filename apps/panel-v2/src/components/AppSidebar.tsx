@@ -1,4 +1,4 @@
-import { MessageSquare, Radio, Clock, Settings, Dumbbell } from "lucide-react";
+﻿import { MessageSquare, Clock, Settings, Dumbbell } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useMemo } from "react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -18,7 +18,6 @@ import {
 
 const items = [
   { title: "Atendimento", url: "/", icon: MessageSquare },
-  { title: "Rádio", url: "/radio", icon: Radio },
   { title: "Ponto", url: "/ponto", icon: Clock },
   { title: "Configurações", url: "/configuracoes", icon: Settings },
 ];

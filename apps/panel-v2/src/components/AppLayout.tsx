@@ -4,8 +4,6 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { usePanelData } from "@/hooks/use-panel-data";
-import GlobalYouTubeRadio from "@/components/GlobalYouTubeRadio";
-import GlobalAdsController from "@/components/GlobalAdsController";
 import { formatDateFullBr, formatTimeWithSecondsBr, formatWeekdayBr } from "@/lib/date-time";
 
 export function AppLayout() {
@@ -24,8 +22,6 @@ export function AppLayout() {
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full">
-        <GlobalYouTubeRadio />
-        <GlobalAdsController />
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0">
           <header className="h-14 flex items-center border-b bg-card px-4 gap-4 shrink-0">

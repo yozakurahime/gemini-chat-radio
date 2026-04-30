@@ -567,66 +567,25 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   }, [sendWs]);
 
   const fetchPlaylist = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/playlist");
-      const data = await res.json();
-      const nextPlaylist = (Array.isArray(data.playlist) ? data.playlist : []).filter((track) => !!sanitizeRadioTrack(track));
-      const nextCurrent = sanitizeRadioTrack(data.current);
-      setPlaylist(nextPlaylist);
-      setRadio((prev) => ({ ...prev, currentTrack: nextCurrent || null }));
-    } catch {
-      /* auth or offline */
-    }
+    setPlaylist([]);
+    setRadio((prev) => ({ ...prev, isPlaying: false, currentTrack: null }));
   }, []);
 
   const refreshAds = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/ads");
-      const files = await res.json();
-      setAdFiles((Array.isArray(files) ? files : []).map((file) => toAdFile(String(file || ""))));
-    } catch {
-      setAdFiles([]);
-    }
+    setAdFiles([]);
   }, []);
 
   const refreshAdCampaigns = useCallback(async () => {
-    if (user?.role !== "admin") {
-      setAdCampaigns([]);
-      return;
-    }
-    try {
-      const res = await apiFetch("/admin/radio/ads/campaigns");
-      const data = await res.json();
-      setAdCampaigns(Array.isArray(data?.campaigns) ? data.campaigns : []);
-    } catch {
-      setAdCampaigns([]);
-    }
-  }, [user?.role]);
+    setAdCampaigns([]);
+  }, []);
 
   const refreshAdHistory = useCallback(async () => {
-    if (user?.role !== "admin") {
-      setAdHistory([]);
-      return;
-    }
-    try {
-      const res = await apiFetch("/admin/radio/ads/history?limit=30");
-      const data = await res.json();
-      setAdHistory((Array.isArray(data?.history) ? data.history : []).map((entry) => toAdHistoryEntry(entry)));
-    } catch {
-      setAdHistory([]);
-    }
-  }, [user?.role]);
+    setAdHistory([]);
+  }, []);
 
   const refreshNextAdState = useCallback(async () => {
-    try {
-      const res = await apiFetch("/admin/radio/ads/next");
-      const data = await res.json();
-      setNextAdState(data || null);
-      return (data || null) as NextAdState | null;
-    } catch {
-      setNextAdState(null);
-      return null;
-    }
+    setNextAdState(null);
+    return null;
   }, []);
 
   const refreshAttendanceCatalog = useCallback(async () => {
@@ -771,17 +730,12 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const refreshAll = useCallback(async () => {
     requestInitialLists();
     await Promise.all([
-      fetchPlaylist(),
-      refreshAds(),
-      refreshAdCampaigns(),
-      refreshAdHistory(),
-      refreshNextAdState(),
       refreshAttendance(),
       fetchKnowledge(),
       fetchGeoPolicy(),
       refreshSystemHealth(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, fetchPlaylist, refreshAdCampaigns, refreshAdHistory, refreshAds, refreshAttendance, refreshNextAdState, refreshSystemHealth, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -984,41 +938,10 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       case "system_health_update":
         setSystemHealth(payload.health || null);
         break;
-      case "radio_sync_update":
-        if (payload.state) {
-          const syncedTrack = sanitizeRadioTrack(payload.state.currentTrack) || null;
-          setRadio((prev) => ({
-            ...prev,
-            isPlaying: !!payload.state.isPlaying,
-            currentTrack: syncedTrack || prev.currentTrack,
-            musicVolume: Number(payload.state.musicVolume ?? prev.musicVolume),
-            adVolume: Number(payload.state.adVolume ?? prev.adVolume),
-            adFrequency: Number(payload.state.adFrequency ?? prev.adFrequency),
-            isShuffle: !!payload.state.isShuffle,
-            lastAdTime: Number(payload.state.lastAdTime ?? prev.lastAdTime ?? 0),
-          }));
-        }
-        break;
-      case "playlist_updated":
-        fetchPlaylist();
-        break;
-      case "ads_files_updated":
-        refreshAds();
-        break;
-      case "ads_campaigns_updated":
-        refreshAdCampaigns();
-        refreshNextAdState();
-        break;
-      case "ads_history_updated":
-        if (payload.entry) {
-          const entry = toAdHistoryEntry(payload.entry);
-          setAdHistory((prev) => [entry, ...prev.filter((item) => item.id !== entry.id)].slice(0, 30));
-        }
-        break;
       default:
         break;
     }
-  }, [fetchPlaylist, notifyUnreadMessage, refreshAdCampaigns, refreshAds, refreshNextAdState, updateChatMessage]);
+  }, [notifyUnreadMessage, updateChatMessage]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -1293,208 +1216,48 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const uploadAd = useCallback(async (file: File) => {
-    if (user?.role !== "admin") return false;
-    if (!file || !/\.mp3$/i.test(file.name)) {
-      toast.error("Envie um arquivo MP3");
-      return false;
-    }
-    try {
-      const body = new FormData();
-      body.append("file", file);
-      await apiFetch("/api/upload-ad", { method: "POST", body });
-      toast.success("Anúncio enviado");
-      await refreshAds();
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao enviar anúncio");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshAds, refreshNextAdState, user?.role]);
+  const uploadAd = useCallback(async (_file: File) => false, []);
 
-  const deleteAd = useCallback(async (filename: string) => {
-    if (user?.role !== "admin" || !filename) return false;
-    try {
-      await apiFetch("/api/delete-ad", {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify({ filename }),
-      });
-      toast.success("Anúncio removido");
-      await refreshAds();
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao remover anúncio");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshAds, refreshNextAdState, user?.role]);
+  const deleteAd = useCallback(async (_filename: string) => false, []);
 
-  const createAdCampaign = useCallback(async (payload: AdCampaignPayload) => {
-    if (user?.role !== "admin") return false;
-    try {
-      await apiFetch("/admin/radio/ads/campaigns", {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify(payload),
-      });
-      toast.success("Campanha criada");
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao criar campanha");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshNextAdState, user?.role]);
+  const createAdCampaign = useCallback(async (_payload: AdCampaignPayload) => false, []);
 
-  const updateAdCampaign = useCallback(async (id: number, payload: AdCampaignPayload) => {
-    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
-    try {
-      await apiFetch(`/admin/radio/ads/campaigns/${id}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify(payload),
-      });
-      toast.success("Campanha atualizada");
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao atualizar campanha");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshNextAdState, user?.role]);
+  const updateAdCampaign = useCallback(async (_id: number, _payload: AdCampaignPayload) => false, []);
 
-  const toggleAdCampaign = useCallback(async (id: number, active: boolean) => {
-    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
-    try {
-      await apiFetch(`/admin/radio/ads/campaigns/${id}/toggle`, {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify({ active }),
-      });
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao alterar campanha");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshNextAdState, user?.role]);
+  const toggleAdCampaign = useCallback(async (_id: number, _active: boolean) => false, []);
 
-  const deleteAdCampaign = useCallback(async (id: number) => {
-    if (user?.role !== "admin" || !Number.isFinite(id)) return false;
-    try {
-      await apiFetch(`/admin/radio/ads/campaigns/${id}`, { method: "DELETE" });
-      toast.success("Campanha removida");
-      await refreshAdCampaigns();
-      await refreshNextAdState();
-      return true;
-    } catch {
-      toast.error("Falha ao remover campanha");
-      return false;
-    }
-  }, [refreshAdCampaigns, refreshNextAdState, user?.role]);
+  const deleteAdCampaign = useCallback(async (_id: number) => false, []);
 
-  const emitAdsEvent = useCallback((event: string, data: Record<string, any> = {}) => {
-    sendWs({ type: "ads_event", event, data });
-  }, [sendWs]);
+  const emitAdsEvent = useCallback((_event: string, _data: Record<string, any> = {}) => {}, []);
 
-  const trackAdCampaignRun = useCallback(async ({ id, status, file, reason, meta }: { id: number; status: "played" | "error" | "skipped"; file?: string; reason?: string; meta?: Record<string, any> }) => {
-    if (!Number.isFinite(id)) return false;
-    try {
-      await apiFetch(`/admin/radio/ads/campaigns/${id}/track`, {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify({ status, file, reason, meta }),
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  const trackAdCampaignRun = useCallback(async (_input: { id: number; status: "played" | "error" | "skipped"; file?: string; reason?: string; meta?: Record<string, any> }) => false, []);
 
   const updateAdPlaybackState = useCallback((next: Partial<AdPlaybackState>) => {
-    setAdPlayback((prev) => ({ ...prev, ...next }));
+    setAdPlayback((prev) => ({ ...prev, ...next, isPlaying: false }));
   }, []);
 
-  const playAdNow = useCallback(async (input: AdPlayRequest | string) => {
-    const request = typeof input === "string"
-      ? { file: input, name: input.replace(/\.mp3$/i, ""), source: "manual" as const }
-      : {
-          ...input,
-          source: input.source || "manual",
-        };
-    if (user?.role !== "admin") return false;
-    if (!request.file) return false;
-    if (!radio.isPlaying) {
-      toast.error("Ligue a rádio antes de tocar um anúncio");
-      return false;
-    }
-    window.dispatchEvent(new CustomEvent(AD_PLAY_COMMAND_EVENT, { detail: request }));
-    if (adPlayback.isPlaying) toast.info("Anúncio adicionado à fila");
-    else toast.success("Anúncio acionado");
-    return true;
-  }, [adPlayback.isPlaying, radio.isPlaying, user?.role]);
+  const playAdNow = useCallback(async (_input: AdPlayRequest | string) => false, []);
 
   const sendRadioAction = useCallback(async (
-    action: "play" | "pause" | "skip",
-    track?: any,
-  ) => {
-    const socket = wsRef.current;
-    if (socket?.readyState === WebSocket.OPEN) {
-      if (action === "skip") sendWs({ type: "skip_track" });
-      else sendWs({ type: "radio_action", action, track });
-      return true;
-    }
-    try {
-      await apiFetch("/admin/radio/control", {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify({ action, track }),
-      });
-      return true;
-    } catch {
-      toast.error("Sem conexao com o servidor da radio");
-      return false;
-    }
-  }, [sendWs]);
+    _action: "play" | "pause" | "skip",
+    _track?: any,
+  ) => false, []);
 
   const toggleRadio = useCallback(() => {
-    const wasPlaying = !!radio.isPlaying;
-    const action = wasPlaying ? "pause" : "play";
-    setRadio((prev) => ({ ...prev, isPlaying: action === "play" }));
-    window.dispatchEvent(new CustomEvent(RADIO_COMMAND_EVENT, { detail: { action, track: radio.currentTrack || playlist[0] || null } }));
-    void sendRadioAction(action, radio.currentTrack || playlist[0] || null).then((ok) => {
-      if (!ok) {
-        setRadio((prev) => ({ ...prev, isPlaying: wasPlaying }));
-      }
-    });
-  }, [playlist, radio.currentTrack, radio.isPlaying, sendRadioAction]);
+    setRadio((prev) => ({ ...prev, isPlaying: false, currentTrack: null }));
+  }, []);
 
-  const skipTrack = useCallback(() => {
-    void sendRadioAction("skip");
-  }, [sendRadioAction]);
-  const playTrack = useCallback((track: any) => {
-    setRadio((prev) => ({ ...prev, currentTrack: track, isPlaying: true }));
-    window.dispatchEvent(new CustomEvent(RADIO_COMMAND_EVENT, { detail: { action: "play", track } }));
-    void sendRadioAction("play", track);
-  }, [sendRadioAction]);
-  const addTrack = useCallback((url: string) => url.trim() && sendWs({ type: "add_track", url: url.trim() }), [sendWs]);
-  const removeTrack = useCallback((id: string) => sendWs({ type: "remove_track", id }), [sendWs]);
+  const skipTrack = useCallback(() => {}, []);
+
+  const playTrack = useCallback((_track: any) => {}, []);
+
+  const addTrack = useCallback((_url: string) => false, []);
+
+  const removeTrack = useCallback((_id: string) => false, []);
+
   const updateRadioSettings = useCallback((next: Partial<RadioState>) => {
-    setRadio((prev) => ({ ...prev, ...next }));
-    sendWs({
-      type: "radio_settings_update",
-      musicVolume: next.musicVolume ?? radio.musicVolume,
-      adVolume: next.adVolume ?? radio.adVolume,
-      adFrequency: next.adFrequency ?? radio.adFrequency,
-    });
-  }, [radio.adFrequency, radio.adVolume, radio.musicVolume, sendWs]);
+    setRadio((prev) => ({ ...prev, ...next, isPlaying: false, currentTrack: null }));
+  }, []);
 
   const saveKnowledgeBase = useCallback(async (value: string) => {
     try {

@@ -23,7 +23,7 @@ const rootDir = path.resolve(__dirname, '..');
 const appPaths = resolveAppPaths(rootDir, process.env, process.platform);
 require('fs').mkdirSync(path.dirname(appPaths.DB_FILE), { recursive: true });
 const db = new Database(appPaths.DB_FILE);
-const { hashPassword } = createPanelAuth({ db, sessionCookie: appPaths.PANEL_SESSION_COOKIE });
+const { hashPassword } = createPanelAuth({ db });
 const now = Date.now();
 
 db.prepare(`CREATE TABLE IF NOT EXISTS panel_users (
@@ -64,8 +64,6 @@ console.log(JSON.stringify({
   ok: true,
   username,
   role,
-  tenantSlug: appPaths.TENANT_SLUG,
-  tenantMode: appPaths.IS_TENANT_MODE,
   dbFile: appPaths.DB_FILE,
   sessionsCleared: true
 }, null, 2));

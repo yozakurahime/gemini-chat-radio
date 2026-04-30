@@ -8,7 +8,6 @@ function registerPanelHostRoutes({
     updatesDir,
     panelV2Dist,
     landingDist,
-    radioPageFile,
     landingHosts,
     appPanelBaseUrl
 }) {
@@ -27,10 +26,6 @@ function registerPanelHostRoutes({
             : '';
         const hostCandidate = forwardedHost || String(req.get('host') || '').trim();
         return hostCandidate.split(':')[0].trim().toLowerCase();
-    }
-
-    function isRadioHost(host) {
-        return String(host || '').includes('radio');
     }
 
     function isLandingHost(host) {
@@ -66,7 +61,7 @@ function registerPanelHostRoutes({
             const panelIndex = path.join(panelV2Dist, 'index.html');
             if (fs.existsSync(panelIndex)) return res.sendFile(panelIndex);
         }
-        return res.sendFile(path.join(rootDir, 'atendimento.html'));
+        return res.status(503).send('Painel indisponivel. Gere o build do panel-v2 e tente novamente.');
     }
 
     function sendLandingIndex(res) {
@@ -117,14 +112,6 @@ function registerPanelHostRoutes({
         return candidates[0] || null;
     }
 
-    app.use((req, res, next) => {
-        const host = getRequestHost(req);
-        if (isRadioHost(host) && (req.path === '/' || req.path === '/index.html')) {
-            return res.sendFile(radioPageFile);
-        }
-        return next();
-    });
-
     if (fs.existsSync(landingDist)) {
         app.use('/landing-assets', express.static(landingDist));
     }
@@ -143,14 +130,13 @@ function registerPanelHostRoutes({
 
         app.use((req, res, next) => {
             const host = getRequestHost(req);
-            if (isRadioHost(host) || isLandingHost(host)) return next();
+            if (isLandingHost(host)) return next();
             return panelV2Static(req, res, next);
         });
     }
 
     app.get('/', (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         if (isLandingHost(host)) return sendLandingIndex(res);
         return sendPanelIndex(res);
@@ -158,67 +144,55 @@ function registerPanelHostRoutes({
 
     app.get('/painel', (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
 
     app.get(/^\/painel\/.+$/, (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
 
     app.get('/panel', (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
 
     app.get(/^\/panel\/.+$/, (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
 
     app.get('/painel-legado', (req, res) => {
-        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
         return redirectToPanel(req, res);
     });
 
     app.get(/^\/painel-legado\/.+$/, (req, res) => {
-        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
         return redirectToPanel(req, res);
     });
 
     app.get('/panel_legacy', (req, res) => {
-        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
         return redirectToPanel(req, res);
     });
 
     app.get(/^\/panel_legacy\/.+$/, (req, res) => {
-        if (isRadioHost(getRequestHost(req))) return res.sendFile(radioPageFile);
         return redirectToPanel(req, res);
     });
 
     app.get('/ponto', (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
 
     app.get(/^\/ponto\/.+$/, (req, res) => {
         const host = getRequestHost(req);
-        if (isRadioHost(host)) return res.sendFile(radioPageFile);
         if (isLandingHost(host) || isLegacyAppPanelHost(host)) return redirectToPanel(req, res);
         return sendPanelIndex(res);
     });
-
-    app.get('/radio', (req, res) => res.sendFile(radioPageFile));
 
     app.get(receptionPathAliases, (req, res) => {
         const file = resolveReceptionDownloadFile();

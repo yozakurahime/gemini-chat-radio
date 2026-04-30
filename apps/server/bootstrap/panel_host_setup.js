@@ -12,7 +12,6 @@ function registerPanelHostSetup({
     const appsDir = path.resolve(rootDir, '..');
     const panelV2Dist = path.join(appsDir, 'panel-v2', 'dist');
     const landingDist = path.join(appsDir, 'landing', 'dist');
-    const radioPageFile = path.join(rootDir, 'radio.html');
     const landingHosts = new Set([
         'www.academiaoxigenio.com',
         'academiaoxigenio.com',
@@ -28,7 +27,6 @@ function registerPanelHostSetup({
         updatesDir,
         panelV2Dist,
         landingDist,
-        radioPageFile,
         landingHosts,
         appPanelBaseUrl
     });

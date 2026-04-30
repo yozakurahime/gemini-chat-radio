@@ -7,7 +7,6 @@ import { AppLayout } from "@/components/AppLayout";
 import { PanelDataProvider, usePanelData } from "@/hooks/use-panel-data";
 import Index from "./pages/Index";
 import LoginPage from "./pages/LoginPage";
-import RadioPage from "./pages/RadioPage";
 import PontoPage from "./pages/PontoPage";
 import ConfiguracoesPage from "./pages/ConfiguracoesPage";
 import NotFound from "./pages/NotFound";
@@ -31,7 +30,6 @@ function AuthenticatedRoutes() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route path="/" element={<Index />} />
-        <Route path="/radio" element={<RadioPage />} />
         <Route path="/ponto" element={<PontoPage />} />
         <Route path="/configuracoes" element={<ConfiguracoesPage />} />
       </Route>

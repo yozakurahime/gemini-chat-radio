@@ -1,4 +1,4 @@
-import { MessageSquare, Radio, Clock, Settings, Dumbbell, LogOut } from "lucide-react";
+﻿import { MessageSquare, Clock, Settings, Dumbbell, LogOut } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -18,7 +18,6 @@ import {
 
 const items = [
   { title: "Atendimento", url: "/", icon: MessageSquare },
-  { title: "Rádio", url: "/radio", icon: Radio },
   { title: "Ponto", url: "/ponto", icon: Clock },
   { title: "Configurações", url: "/configuracoes", icon: Settings },
 ];

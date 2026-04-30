@@ -105,8 +105,6 @@ const { registerKnowledgeAdminRoutes } = require('./routes/knowledge_admin_route
 const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
-const { registerRadioAdminRoutes } = require('./routes/radio_admin_routes');
-const { registerRadioCommercialRoutes } = require('./routes/radio_commercial_routes');
 const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
 const { startRuntimeServices } = require('./bootstrap/runtime_startup');
 const {
@@ -250,10 +248,6 @@ const {
     IS_WINDOWS,
     APP_PROFILE,
     IS_COMMERCIAL_PROFILE,
-    TENANT_SLUG,
-    TENANT_NAME,
-    IS_TENANT_MODE,
-    PANEL_SESSION_COOKIE,
     DATA_ROOT_DIR,
     DATA_DIR,
     STORAGE_DIR,
@@ -526,8 +520,7 @@ const {
     clearSessionCookie,
     rateLimitLogin
 } = createPanelAuth({
-    db,
-    sessionCookie: PANEL_SESSION_COOKIE
+    db
 });
 
 function getRadioSetting(key, fallback) {
@@ -7005,19 +6998,10 @@ registerCoreSecurityRoutes({
     rootDir: ROOT_DIR,
     publicAssetsDir: PUBLIC_ASSETS_DIR,
     publicMediaFileMap: PUBLIC_MEDIA_FILE_MAP,
-    cacheDir: CACHE_DIR,
-    adsDir: ADS_DIR,
-    upload,
-    radioState,
     conversationState,
     appVersion: APP_VERSION,
     appProfile: APP_PROFILE,
-    tenantSlug: TENANT_SLUG,
-    tenantName: TENANT_NAME,
-    isTenantMode: IS_TENANT_MODE,
-    dataRootDir: DATA_ROOT_DIR,
     requirePanelAuth,
-    requireAdmin,
     rateLimitLogin,
     verifyPassword,
     hashPassword,
@@ -7029,31 +7013,8 @@ registerCoreSecurityRoutes({
     sessionCookie: SESSION_COOKIE,
     hashToken,
     clearSessionCookie,
-    getSafeFilename,
-    isPathInside,
     resolvePublicMediaPath,
-    sendSafeStaticFile,
-    broadcast
-});
-app.get('/api/radio/comments', (req, res) => {
-    try {
-        const limit = Math.max(1, Math.min(200, parseInt(req.query.limit || '40', 10)));
-        res.json({ ok: true, comments: getPublicRadioComments(limit) });
-    } catch (e) {
-        res.json({ ok: false, comments: [] });
-    }
-});
-app.post('/api/radio/comments', (req, res) => {
-    try {
-        const user = sanitizePublicText(req.body?.user, 40);
-        const comment = sanitizePublicText(req.body?.comment, 280);
-        if (!user || !comment) return res.status(400).json({ ok: false, error: 'invalid_payload' });
-        const entry = addPublicRadioComment(user, comment);
-        try { broadcast({ type: 'radio_comment_new', comment: entry }, true); } catch (e) {}
-        return res.json({ ok: true, comment: entry });
-    } catch (e) {
-        return res.status(500).json({ ok: false, error: 'comment_insert_failed' });
-    }
+    sendSafeStaticFile
 });
 
 registerChatAdminRoutes({
@@ -7500,48 +7461,6 @@ function storeAdsHistory(event, data, username) {
     return null;
 }
 
-// --- ADS SELF-TEST ---
-registerRadioAdminRoutes({
-    app,
-    db,
-    fs,
-    path,
-    ffmpeg,
-    ADS_DIR,
-    CACHE_DIR,
-    requirePanelAuth,
-    requireAdmin,
-    getCampaignsWithRuntime,
-    normalizeCampaignMode,
-    normalizeCampaignPayload,
-    logAdminAction,
-    broadcast,
-    pickNextDueCampaign,
-    pickNextUpcomingCampaign,
-    getReservedCampaignFiles,
-    runRadioCheck,
-    runRadioCheckScript,
-    resolveSafeMediaPath,
-    moveToRadioTrash,
-    safeJsonParse,
-    generateSeedAdDrafts,
-    generateCustomAdDraft,
-    synthesizeAdSpeech,
-    getAdsAICapabilities
-});
-
-registerRadioCommercialRoutes({
-    app,
-    db,
-    fs,
-    path,
-    ADS_DIR,
-    requirePanelAuth,
-    requireAdmin,
-    logAdminAction,
-    broadcast
-});
-
 function auditListRoutes() {
     if (!AUDIT_RUNTIME || !app._router || !app._router.stack) return;
     const routes = [];
@@ -7567,62 +7486,6 @@ function requireAdmin(req, res) {
     if (user.role !== 'admin') { res.status(403).json({ error: 'forbidden' }); return null; }
     return user;
 }
-
-app.post('/admin/radio/control', async (req, res) => {
-    const user = requirePanelAuth(req, res);
-    if (!user) return;
-    const action = String(req.body?.action || '').trim().toLowerCase();
-    if (!['play', 'pause', 'skip'].includes(action)) {
-        return res.status(400).json({ error: 'invalid_action' });
-    }
-
-    if (action === 'skip') {
-        playNextTrack();
-        return res.json({ ok: true, state: radioState });
-    }
-
-    if (action === 'pause') {
-        pauseRadioPlayback();
-        broadcast({ type: 'radio_sync_update', state: radioState }, true);
-        return res.json({ ok: true, state: radioState });
-    }
-
-    const requestedTrack = normalizeIncomingRadioTrack(req.body?.track || null);
-    if (requestedTrack) {
-        radioState.currentTrack = requestedTrack;
-        resetRadioPlaybackClock(Date.now());
-        radioState.serverDuration = (radioState.currentTrack.duration_sec || 180) * 1000;
-        startRadioTimer(radioState.serverDuration);
-        radioState.isPlaying = true;
-        saveRadioSettings();
-        broadcast({ type: 'radio_sync_update', state: radioState }, true);
-        return res.json({ ok: true, state: radioState });
-    }
-
-    if (!radioState.currentTrack) {
-        const total = db.prepare("SELECT COUNT(*) as c FROM playlist").get()?.c || 0;
-        if (total === 0) {
-            radioState.isPlaying = false;
-            saveRadioSettings();
-            broadcast({ type: 'radio_sync_update', state: radioState }, true);
-            return res.json({ ok: true, state: radioState });
-        }
-        radioState.isPlaying = true;
-        saveRadioSettings();
-        playNextTrack();
-        return res.json({ ok: true, state: radioState });
-    }
-
-    if (!radioState.isPlaying) {
-        resumeRadioPlayback();
-    } else {
-        radioState.isPlaying = true;
-        saveRadioSettings();
-        broadcast({ type: 'radio_sync_update', state: radioState }, true);
-    }
-
-    return res.json({ ok: true, state: radioState });
-});
 
 function getKnowledgePublished() {
     if (!fs.existsSync(KNOWLEDGE_PUBLISHED_FILE)) return { avisos: '' };
@@ -7667,97 +7530,10 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'system_health_update', health }));
         }
     }
-    ws.send(JSON.stringify({ type: 'radio_sync_update', state: radioState }));
     ws.on('message', async (msg) => {
         try {
             const data = JSON.parse(msg);
             if (AUDIT_RUNTIME && data && data.type) auditLog(`ws message type=${data.type}`);
-            
-            if (data.type === 'submit_suggestion') {
-                const now = Date.now();
-                if (ws.lastSuggestionAt && (now - ws.lastSuggestionAt) < 5000) {
-                    ws.send(JSON.stringify({ type: 'suggestion_result', ok: false, error: 'cooldown' }));
-                    return;
-                }
-                const user = sanitizePublicText(data.user, 40);
-                const song = sanitizePublicText(data.song, 120);
-                if (!user || !song) {
-                    ws.send(JSON.stringify({ type: 'suggestion_result', ok: false, error: 'invalid_payload' }));
-                    return;
-                }
-                ws.lastSuggestionAt = now;
-                db.prepare('INSERT INTO suggestions (user, song, created_at) VALUES (?, ?, ?)').run(user, song, now);
-                ws.send(JSON.stringify({ type: 'suggestion_result', ok: true }));
-                wss.clients.forEach(c => {
-                    if (c.isLogged) {
-                        c.send(JSON.stringify({ type: 'new_suggestion_alert', user }));
-                        c.send(JSON.stringify({ type: 'suggestions_list', list: db.prepare('SELECT id, user as user_name, song as song_name FROM suggestions').all() }));
-                    }
-                });
-                return;
-            }
-            if (data.type === 'get_public_comments') {
-                const limit = Math.max(1, Math.min(200, parseInt(data.limit || '60', 10)));
-                ws.send(JSON.stringify({ type: 'public_comments_list', list: getPublicRadioComments(limit) }));
-                return;
-            }
-            if (data.type === 'submit_comment') {
-                const now = Date.now();
-                if (ws.lastCommentAt && (now - ws.lastCommentAt) < 5000) {
-                    ws.send(JSON.stringify({ type: 'public_comment_result', ok: false, error: 'cooldown' }));
-                    return;
-                }
-                const user = sanitizePublicText(data.user, 40);
-                const comment = sanitizePublicText(data.comment, 280);
-                if (!user || !comment) {
-                    ws.send(JSON.stringify({ type: 'public_comment_result', ok: false, error: 'invalid_payload' }));
-                    return;
-                }
-                ws.lastCommentAt = now;
-                const entry = addPublicRadioComment(user, comment);
-                ws.send(JSON.stringify({ type: 'public_comment_result', ok: true, comment: entry }));
-                broadcast({ type: 'radio_comment_new', comment: entry }, true);
-                return;
-            }
-            if (data.type === 'radio_playback_error') {
-                const now = Date.now();
-                if (now - lastPlaybackErrorAt < 15000) return;
-                lastPlaybackErrorAt = now;
-                const current = radioState.currentTrack;
-                if (!current || (data.videoId && current.videoId !== data.videoId)) return;
-                const reason = String(data.reason || 'playback_error').trim() || 'playback_error';
-                console.warn('[radio] playback_error', reason, current.videoId);
-
-                if (RADIO_TRANSIENT_PLAYBACK_REASONS.has(reason)) {
-                    const key = String(current.videoId);
-                    const prev = radioTransientPlaybackErrors.get(key) || { count: 0, lastAt: 0 };
-                    const withinWindow = (now - Number(prev.lastAt || 0)) <= RADIO_TRANSIENT_ERROR_WINDOW_MS;
-                    const nextCount = withinWindow ? (Number(prev.count || 0) + 1) : 1;
-                    radioTransientPlaybackErrors.set(key, { count: nextCount, lastAt: now, reason });
-
-                    if (nextCount < RADIO_TRANSIENT_ERROR_LIMIT) {
-                        try {
-                            broadcast({
-                                type: 'radio_reload_track',
-                                videoId: current.videoId,
-                                reason,
-                                attempt: nextCount
-                            }, true);
-                        } catch (_) {}
-                        return;
-                    }
-                }
-
-                markTrackError(current, reason);
-                radioTransientPlaybackErrors.delete(String(current.videoId));
-                radioState.currentTrack = null;
-                radioState.startTime = 0;
-                radioState.serverDuration = 0;
-                radioState.pausedPositionMs = 0;
-                saveRadioSettings();
-                playNextTrack();
-                return;
-            }
             if (data.type === 'login') {
                 ws.send(JSON.stringify({ type: 'login_error', error: 'session_required' }));
                 return;
@@ -7765,7 +7541,6 @@ wss.on('connection', (ws, req) => {
             if (data.type === 'session_check') {
                 if (ws.isLogged) {
                     ws.send(JSON.stringify({ type: 'login_success', username: ws.username, isAdmin: ws.isAdmin, fullname: ws.fullname, avatar: ws.avatar }));
-                    ws.send(JSON.stringify({ type: 'radio_sync_update', state: radioState }));
                     if (ws.isAdmin) {
                         ws.send(JSON.stringify({ type: 'system_health_update', health: getOperationalHealthSnapshot() }));
                     }
@@ -7786,168 +7561,6 @@ wss.on('connection', (ws, req) => {
                     ws.send(JSON.stringify({ type: 'profile_updated_success' }));
                 } catch(e){}
             }
-            if (data.type === 'radio_action') {
-                if (data.action === 'shuffle_toggle') {
-                    radioState.isShuffle = !radioState.isShuffle;
-                    saveRadioSettings();
-                } else if (data.action === 'play') {
-                    if (data.track) {
-                        const requestedTrack = normalizeIncomingRadioTrack(data.track);
-                        if (!requestedTrack) {
-                            radioState.currentTrack = null;
-                            radioState.startTime = 0;
-                            radioState.serverDuration = 0;
-                            radioState.pausedPositionMs = 0;
-                            radioState.isPlaying = true;
-                            saveRadioSettings();
-                            broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                            playNextTrack();
-                            return;
-                        }
-                        const vid = requestedTrack.videoId;
-                        if (vid && !isCacheFileOk(vid)) {
-                            markTrackPending(requestedTrack, 'missing');
-                            radioState.currentTrack = null;
-                            radioState.startTime = 0;
-                            radioState.serverDuration = 0;
-                            radioState.pausedPositionMs = 0;
-                            radioState.isPlaying = true;
-                            saveRadioSettings();
-                            broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                            scheduleRadioRetry();
-                            return;
-                        }
-                        const validation = await validateTrackAudio(requestedTrack);
-                        if (!validation.ok) {
-                            markTrackError(requestedTrack, validation.reason || 'invalid_audio');
-                            radioState.currentTrack = null;
-                            radioState.startTime = 0;
-                            radioState.serverDuration = 0;
-                            radioState.pausedPositionMs = 0;
-                            radioState.isPlaying = true;
-                            saveRadioSettings();
-                            broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                            playNextTrack();
-                            return;
-                        }
-                        const playbackGain = resolveTrackPlaybackGain(validation);
-                        radioState.currentTrack = {
-                            ...requestedTrack,
-                            playbackGain: playbackGain.gain,
-                            playbackGainDb: playbackGain.gainDb,
-                            playbackGainMode: playbackGain.mode
-                        };
-                        resetRadioPlaybackClock(Date.now());
-                        radioState.serverDuration = (radioState.currentTrack.duration_sec || 180) * 1000;
-                        startRadioTimer(radioState.serverDuration);
-                        radioState.isPlaying = true;
-                    } else {
-                        if (!radioState.currentTrack) {
-                            const total = db.prepare("SELECT COUNT(*) as c FROM playlist").get()?.c || 0;
-                            if (total === 0) {
-                                radioState.isPlaying = false;
-                            } else {
-                                radioState.isPlaying = true;
-                                playNextTrack();
-                            }
-                        } else if (!radioState.isPlaying) {
-                            resumeRadioPlayback();
-                        } else {
-                            radioState.isPlaying = true;
-                        }
-                    }
-                } else if (data.action === 'pause') {
-                    pauseRadioPlayback();
-                }
-                broadcast({ type: 'radio_sync_update', state: radioState }, true);
-            }
-            if (data.type === 'radio_settings_update') { radioState.musicVolume = data.musicVolume; radioState.adVolume = data.adVolume; if (ws.isAdmin && data.adFrequency) radioState.adFrequency = data.adFrequency; saveRadioSettings(); broadcast({ type: 'radio_sync_update', state: radioState }, true); }
-            if (data.type === 'add_track') { const r = await addToPlaylist(data.url); if(r.success) broadcast({type:'playlist_updated'}, true); }
-            if (data.type === 'remove_track') { if(ws.isAdmin){ db.prepare('DELETE FROM playlist WHERE id=?').run(data.id); broadcast({type:'playlist_updated'}, true); } }
-            if (data.type === 'retry_failed_tracks') {
-                if (!ws.isAdmin) return;
-                const count = db.prepare("SELECT COUNT(*) as c FROM playlist WHERE status='error'").get()?.c || 0;
-                db.prepare("UPDATE playlist SET status='pending' WHERE status='error'").run();
-                logAdminAction('playlist.retry_failed', ws.username, '', { count }, ws._socket?.remoteAddress);
-                broadcast({ type: 'playlist_updated' }, true);
-                processDownloadQueue();
-            }
-            if (data.type === 'remove_error_tracks') {
-                if (!ws.isAdmin) return;
-                const list = db.prepare("SELECT videoId FROM playlist WHERE status='error'").all();
-                let removed = 0;
-                for (const row of list) {
-                    const res = removeTrackByVideoId(row.videoId, 'error_cleanup');
-                    if (res.removed) removed += 1;
-                }
-                logAdminAction('playlist.remove_errors', ws.username, '', { removed }, ws._socket?.remoteAddress);
-                broadcast({ type: 'playlist_error_removed', count: removed }, true);
-            }
-            if (data.type === 'clear_playlist') {
-                if (!ws.isAdmin) return;
-                const mode = (data.mode || 'trash').toString(); // db_only | trash | delete
-                const count = db.prepare('SELECT COUNT(*) as c FROM playlist').get()?.c || 0;
-                let moved = 0;
-                let deleted = 0;
-                if (mode === 'trash') {
-                    const manifest = movePlaylistCacheToTrash();
-                    moved = manifest.count || 0;
-                } else if (mode === 'delete') {
-                    deleted = deletePlaylistCache();
-                }
-                db.prepare('DELETE FROM playlist').run();
-                radioState.currentTrack = null;
-                radioState.isPlaying = false;
-                radioState.startTime = 0;
-                radioState.serverDuration = 0;
-                radioState.pausedPositionMs = 0;
-                if (radioTimer) clearTimeout(radioTimer);
-                radioTimer = null;
-                saveRadioSettings();
-                logAdminAction('playlist.clear', ws.username, '', { count, mode, moved, deleted }, ws._socket?.remoteAddress);
-                broadcast({ type: 'playlist_updated' }, true);
-                broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                broadcast({ type: 'playlist_cleared', count, mode, moved, deleted }, true);
-            }
-            if (data.type === 'restore_playlist') {
-                if (!ws.isAdmin) return;
-                const result = restoreLastPlaylistTrash();
-                logAdminAction('playlist.restore', ws.username, '', { restored: result.restored }, ws._socket?.remoteAddress);
-                broadcast({ type: 'playlist_updated' }, true);
-                broadcast({ type: 'playlist_restored', restored: result.restored }, true);
-            }
-            if (data.type === 'skip_track') playNextTrack(); 
-            if (data.type === 'get_suggestions') { ws.send(JSON.stringify({ type: 'suggestions_list', list: db.prepare('SELECT id, user as user_name, song as song_name FROM suggestions').all() })); }
-            if (data.type === 'resolve_suggestion') { if(data.action === 'approve') { await addToPlaylist(data.song); broadcast({type:'playlist_updated'}, true); } db.prepare('DELETE FROM suggestions WHERE id = ?').run(data.id); const list = db.prepare('SELECT id, user as user_name, song as song_name FROM suggestions').all(); wss.clients.forEach(c => { if(c.isLogged) c.send(JSON.stringify({type: 'suggestions_list', list})); }); }
-            if (data.type === 'ads_event') {
-                try { console.log(`[ads] ${data.event}`, data.data || {}); } catch(e) {}
-                let histEntry = null;
-                try { histEntry = storeAdsHistory(data.event, data.data || {}, ws.username || ''); } catch(e) {}
-                try {
-                    if (histEntry) {
-                        broadcast({ type: 'ads_history_updated', entry: histEntry });
-                    }
-                } catch(e) {}
-                try {
-                    const ev = (data.event || '').toString();
-                    if (ev === 'ads.play.start') {
-                        const ts = Date.now();
-                        radioState.lastAdTime = ts;
-                        saveRadioSettings();
-                        setRadioSetting('lastAdTime', ts);
-                        broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                    } else if (ev === 'ads.play.rollback') {
-                        const restore = Number(data?.data?.restoreLastAdTime || 0);
-                        if (Number.isFinite(restore) && restore >= 0) {
-                            radioState.lastAdTime = restore;
-                            saveRadioSettings();
-                            setRadioSetting('lastAdTime', restore);
-                            broadcast({ type: 'radio_sync_update', state: radioState }, true);
-                        }
-                    }
-                } catch(e) {}
-            }
-
             if (data.type === 'request_initial_lists') { 
                 const chats = Object.entries(conversationState).map(([id, s]) => ({
                     id,

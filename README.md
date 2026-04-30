@@ -1,6 +1,6 @@
-# Himefit Modular
+﻿# Himefit Modular
 
-Projeto modular com backend Node (WhatsApp/radio/ponto), painel React (`apps/panel-v2`), landing pública e desktop Electron.
+Projeto modular com backend Node (WhatsApp/ponto), painel React (`apps/panel-v2`), landing pÃºblica e desktop Electron.
 
 ## Fonte oficial do painel
 
@@ -9,7 +9,7 @@ Projeto modular com backend Node (WhatsApp/radio/ponto), painel React (`apps/pan
 
 ## Toolchain local (portable)
 
-Sem depender de instalação global, use:
+Sem depender de instalaÃ§Ã£o global, use:
 
 - `tools/bootstrap-tools.ps1`
 - Wrappers em `tools/bin`: `node`, `npm`, `npx`, `git`, `rg`
@@ -37,19 +37,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\bootstrap-tools.ps1
 - `npm run deploy:oracle:manual`
 - `npm run check:all`
 
-## Validação full em 1 comando
+## ValidaÃ§Ã£o full em 1 comando
 
 - `validar_sistema.bat`
 
-Esse comando executa bootstrap de ferramentas, instalações, testes e builds de ponta a ponta.
+Esse comando executa bootstrap de ferramentas, instalaÃ§Ãµes, testes e builds de ponta a ponta.
 
-## Inicialização do sistema
+## InicializaÃ§Ã£o do sistema
 
 - `iniciar_sistema.bat`
 - `reiniciar_sistema.bat`
 - `parar_sistema.bat`
 
-## Sincronização SCA (CSV)
+## SincronizaÃ§Ã£o SCA (CSV)
 
 - Configure `apps/server/.env`:
   - `SCA_SYNC_ENABLED=1`
@@ -57,31 +57,31 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
   - `SCA_EXPORT_DIR=C:\caminho\do\export\sca`
 - Execute manualmente:
   - `npm run sca:sync:run`
-- Execução agendada (Windows):
+- ExecuÃ§Ã£o agendada (Windows):
   - `tools\sca-sync\run_sca_sync.ps1`
 
-## Sincronização SCA (Banco local - recepção)
+## SincronizaÃ§Ã£o SCA (Banco local - recepÃ§Ã£o)
 
-- Configure `apps/server/.env` (ou `.env.recepcao.example` na recepção):
+- Configure `apps/server/.env` (ou `.env.recepcao.example` na recepÃ§Ã£o):
   - `SCA_SYNC_ENABLED=1`
   - `SCA_SYNC_MODE=db`
   - `SCA_SYNC_TOKEN=seu_token`
   - `SCA_SYNC_API_URL=https://www.academiaoxigenio.com/admin/sca/sync/batch`
   - `SCA_DB_DIR=C:\SistemaSCA`
   - `SCA_DB_ENGINE=auto`
-- Execução manual:
+- ExecuÃ§Ã£o manual:
   - `npm run sca:db:sync:run`
   - `tools\sca-sync\run_sca_db_sync.bat`
 - Agendar a cada 5 min (Windows):
   - `tools\sca-sync\install_task_scheduler.bat`
 - Instalacao rapida no PC da recepcao:
   - `tools\sca-sync\instalar_recepcao.bat`
-- Gerar pacote ZIP para PC da recepção:
+- Gerar pacote ZIP para PC da recepÃ§Ã£o:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File tools\sca-sync\build_recepcao_package.ps1`
-  - Esse comando também publica automaticamente em `updates/reception` e `runtime/updates/reception`.
-- Link público direto:
+  - Esse comando tambÃ©m publica automaticamente em `updates/reception` e `runtime/updates/reception`.
+- Link pÃºblico direto:
   - `https://www.academiaoxigenio.com/LINKDEDOWNLOADRECEPCAO`
-  - Alias estável: `https://www.academiaoxigenio.com/updates/reception/sca-sync-recepcao-latest.zip`
+  - Alias estÃ¡vel: `https://www.academiaoxigenio.com/updates/reception/sca-sync-recepcao-latest.zip`
 
 ## Hospedagem 24x7 (free tier)
 
@@ -121,3 +121,4 @@ Esse comando executa bootstrap de ferramentas, instalações, testes e builds de
    - Se CI passar, workflow `Deploy Production (Auto)` roda dentro da propria VM (sem SSH externo) e executa `tools/deploy/update-server.sh`
 4. Fallback manual:
    - `Actions > Deploy Production (Auto) > Run workflow` (branch `main`, `app_dir=/opt/himefit`)
+

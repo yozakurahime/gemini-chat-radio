@@ -6,7 +6,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/AppLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import Index from "./pages/Index";
-import RadioPage from "./pages/RadioPage";
 import PontoPage from "./pages/PontoPage";
 import ConfiguracoesPage from "./pages/ConfiguracoesPage";
 import MatriculaPage from "./pages/MatriculaPage";
@@ -34,7 +33,6 @@ const App = () => (
             }
           >
             <Route path="/" element={<Index />} />
-            <Route path="/radio" element={<RadioPage />} />
             <Route path="/ponto" element={<PontoPage />} />
             <Route path="/configuracoes" element={<ConfiguracoesPage />} />
           </Route>

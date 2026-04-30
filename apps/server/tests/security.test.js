@@ -125,9 +125,15 @@ test('security hardening protects public and private routes', async (t) => {
     assert.equal(res.status, 401);
   }
 
+  const auth = await login(server.baseUrl, 'admin', 'Admin#12345');
+  assert.equal(auth.res.status, 200);
+  assert.ok(auth.cookie.startsWith('panel_session='));
+
   {
-    const res = await fetch(`${server.baseUrl}/api/playlist`, { signal: AbortSignal.timeout(5000) });
-    assert.equal(res.status, 401);
+    const res = await fetch(`${server.baseUrl}/api/playlist`, {
+      signal: AbortSignal.timeout(5000)
+    });
+    assert.equal(res.status, 404);
   }
 
   {
@@ -135,40 +141,7 @@ test('security hardening protects public and private routes', async (t) => {
       method: 'POST',
       signal: AbortSignal.timeout(5000)
     });
-    assert.equal(res.status, 401);
-  }
-
-  const auth = await login(server.baseUrl, 'admin', 'Admin#12345');
-  assert.equal(auth.res.status, 200);
-  assert.ok(auth.cookie.startsWith('panel_session='));
-
-  {
-    const res = await fetch(`${server.baseUrl}/api/playlist`, {
-      headers: { cookie: auth.cookie },
-      signal: AbortSignal.timeout(5000)
-    });
-    assert.equal(res.status, 200);
-  }
-
-  {
-    const res = await fetch(`${server.baseUrl}/api/ads`, {
-      headers: { cookie: auth.cookie },
-      signal: AbortSignal.timeout(5000)
-    });
-    assert.equal(res.status, 200);
-  }
-
-  {
-    const res = await fetch(`${server.baseUrl}/api/delete-ad`, {
-      method: 'POST',
-      headers: {
-        cookie: auth.cookie,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ filename: '..\\index.js' }),
-      signal: AbortSignal.timeout(5000)
-    });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 404);
   }
 });
 

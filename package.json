@@ -1,7 +1,7 @@
 {
   "name": "himefit-modular",
   "version": "5.0.0",
-  "description": "HimeFit - Sistema de gestão para academia com rádio, ponto e WhatsApp",
+  "description": "HimeFit - Sistema de gestão para academia com atendimento, ponto e WhatsApp",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,14 +16,13 @@
     "landing:dev": "tools\\bin\\npm.cmd --prefix apps\\landing run dev",
     "landing:build": "tools\\bin\\npm.cmd --prefix apps\\landing run build",
     "server:start": "tools\\bin\\node.cmd apps\\server\\index.js",
-    "server:test": "tools\\bin\\node.cmd --test apps\\server\\tests\\app_paths.test.js apps\\server\\tests\\security.test.js apps\\server\\tests\\admin_flows.test.js",
+    "server:test": "tools\\bin\\node.cmd --test apps\\server\\tests\\security.test.js apps\\server\\tests\\admin_flows.test.js",
     "server:health-check": "bash tools/deploy/health-check.sh",
     "server:timezone:set": "bash tools/deploy/set-timezone-brasilia.sh",
     "server:health-check:install-cron": "bash tools/deploy/install-health-check-cron.sh",
     "sca:sync:run": "tools\\bin\\node.cmd apps\\server\\scripts\\sca_sync_worker.js",
     "sca:db:sync:run": "tools\\bin\\node.cmd apps\\server\\scripts\\sca_db_sync_worker.js",
     "sca:db:package": "powershell -NoProfile -ExecutionPolicy Bypass -File tools\\sca-sync\\build_recepcao_package.ps1",
-    "tenant:create": "tools\\bin\\node.cmd tools\\tenants\\create-tenant.cjs",
     "deploy:oracle:manual": "powershell -NoProfile -ExecutionPolicy Bypass -File tools\\deploy\\deploy_oracle_manual.ps1",
     "check:all": "tools\\bin\\npm.cmd run bootstrap:tools && tools\\bin\\npm.cmd run install:all && tools\\bin\\npm.cmd run panel_v2:test && tools\\bin\\npm.cmd run server:test && tools\\bin\\npm.cmd run panel_v2:build && tools\\bin\\npm.cmd run landing:build",
     "dev": "tools\\bin\\npm.cmd run panel_v2:dev",
@@ -122,7 +121,6 @@
       "apps/server/runtime_storage.js",
       "apps/server/bootstrap/**/*",
       "apps/server/routes/**/*",
-      "apps/server/radio.html",
       "apps/server/notify.wav",
       "apps/server/contexto_academia.txt",
       "apps/server/assets/**/*",
@@ -133,10 +131,6 @@
       "package.json"
     ],
     "extraResources": [
-      {
-        "from": "apps/server/yt-dlp.exe",
-        "to": "yt-dlp.exe"
-      }
     ],
     "win": {
       "target": [
