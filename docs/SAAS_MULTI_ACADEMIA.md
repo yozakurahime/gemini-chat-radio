@@ -45,6 +45,8 @@ HIMEFIT_TENANT_NAME="Academia Oxigenio"
 
 Depois, em uma janela de manutencao, os dados podem ser movidos para `/opt/himefit/runtime/tenants/academia-oxigenio` usando backup validado.
 
+No deploy atual da Academia Oxigenio, o fallback do PM2 ja sobe o processo legado com esses metadados e com `HIMEFIT_DATA_ROOT=/opt/himefit/runtime`, entao a ativacao do tenant nao move nem recria banco.
+
 ## Proxy
 
 Cada subdominio deve encaminhar para a porta configurada no `tenant.env`. Exemplo conceitual:

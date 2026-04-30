@@ -3,6 +3,12 @@ const path = require("path");
 
 const APP_DIR = process.env.APP_DIR || "/opt/himefit";
 const TENANTS_ROOT = process.env.HIMEFIT_TENANTS_ROOT || path.join(APP_DIR, "runtime", "tenants");
+const DEFAULT_SINGLE_TENANT_ENV = {
+  HIMEFIT_TENANT_SLUG: process.env.HIMEFIT_TENANT_SLUG || "academia-oxigenio",
+  HIMEFIT_TENANT_NAME: process.env.HIMEFIT_TENANT_NAME || "Academia Oxigenio",
+  HIMEFIT_DATA_ROOT: process.env.HIMEFIT_DATA_ROOT || path.join(APP_DIR, "runtime"),
+  APP_PANEL_BASE_URL: process.env.APP_PANEL_BASE_URL || "https://www.academiaoxigenio.com/painel",
+};
 
 function parseEnvFile(file) {
   const env = {};
@@ -59,6 +65,6 @@ const tenantApps = loadTenantApps();
 
 module.exports = {
   apps: tenantApps.length ? tenantApps : [
-    makeApp("himefit-server", {}),
+    makeApp("himefit-server", DEFAULT_SINGLE_TENANT_ENV),
   ],
 };
