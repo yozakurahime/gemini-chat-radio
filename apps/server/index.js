@@ -47,6 +47,11 @@ const {
     createAttendanceActionPromptSender,
     extractAttendanceInteractiveCommand
 } = require('./attendance_interactive_runtime');
+const {
+    applyOwnerWhatsappReplyToConversation,
+    extractOwnerWhatsappReplyText,
+    isIgnoredOwnerWhatsappReplyJid
+} = require('./owner_whatsapp_reply_runtime');
 
 // IMPORTACOES BAILEYS (CJS + ESM compat)
 let makeWASocket = null;
@@ -6190,6 +6195,58 @@ function resolveCanonicalContactId(senderJid, pushName) {
     }
     return senderJid;
 }
+
+const APP_OUTBOUND_ECHO_TTL_MS = 2 * 60 * 1000;
+const appOutboundMessageIds = new Map();
+
+function cleanupAppOutboundEchoIds(now = Date.now()) {
+    for (const [key, expiresAt] of appOutboundMessageIds.entries()) {
+        if (Number(expiresAt || 0) <= now) appOutboundMessageIds.delete(key);
+    }
+}
+
+function appOutboundEchoKey(jid, messageId) {
+    const target = String(jid || '').trim();
+    const id = String(messageId || '').trim();
+    if (!target || !id) return '';
+    return `${target}|${id}`;
+}
+
+function rememberAppOutboundMessage(jid, result) {
+    const messageId = result?.key?.id || result?.messageId || '';
+    const key = appOutboundEchoKey(jid, messageId);
+    if (!key) return;
+    const now = Date.now();
+    cleanupAppOutboundEchoIds(now);
+    appOutboundMessageIds.set(key, now + APP_OUTBOUND_ECHO_TTL_MS);
+}
+
+function isAppOutboundEcho(jid, messageId) {
+    const key = appOutboundEchoKey(jid, messageId);
+    if (!key) return false;
+    cleanupAppOutboundEchoIds();
+    const expiresAt = Number(appOutboundMessageIds.get(key) || 0);
+    if (!expiresAt) return false;
+    appOutboundMessageIds.delete(key);
+    return expiresAt > Date.now();
+}
+
+function instrumentSocketOutboundTracking(socket) {
+    if (!socket || socket.__himefitOutboundTracked || typeof socket.sendMessage !== 'function') return socket;
+    const originalSendMessage = socket.sendMessage.bind(socket);
+    socket.sendMessage = async (jid, payload, ...rest) => {
+        const result = await originalSendMessage(jid, payload, ...rest);
+        try { rememberAppOutboundMessage(jid, result); } catch (_) {}
+        return result;
+    };
+    Object.defineProperty(socket, '__himefitOutboundTracked', {
+        value: true,
+        enumerable: false,
+        configurable: false
+    });
+    return socket;
+}
+
 function mergeConversation(targetId, sourceId) {
     if (targetId === sourceId) return;
     const source = conversationState[sourceId];
@@ -7724,6 +7781,54 @@ function scheduleBotResume(contactId) {
     }, 30 * 60000);
 }
 
+function getMessageTimestampMs(msg) {
+    const raw = msg?.messageTimestamp;
+    if (typeof raw === 'number') return raw > 9999999999 ? raw : (raw * 1000);
+    if (raw?.low) return Number(raw.low) * 1000;
+    return Date.now();
+}
+
+async function handleOwnerWhatsappReplyMessage(msg, senderRaw, msgTimestampMs) {
+    if (!msg?.key?.fromMe) return false;
+    if (isIgnoredOwnerWhatsappReplyJid(senderRaw)) return true;
+    if (isAppOutboundEcho(senderRaw, msg?.key?.id)) return true;
+
+    const wrappedMessage = unwrapIncomingMessage(msg.message);
+    const reply = extractOwnerWhatsappReplyText(wrappedMessage);
+    if (!reply?.text) return true;
+
+    const contactId = resolveCanonicalContactId(senderRaw, msg.pushName);
+    if (contactId !== senderRaw && isPhoneJid(contactId)) {
+        setContactAlias(senderRaw, contactId, 'owner_reply');
+    }
+
+    const convo = applyOwnerWhatsappReplyToConversation({
+        conversationState,
+        contactId,
+        routeJid: senderRaw,
+        pushName: msg.pushName || '',
+        text: reply.text,
+        timestamp: msgTimestampMs,
+        senderName: 'Atendente WhatsApp',
+        clearPendingHumanHandoff,
+        broadcastHumanHandoffStatus,
+        appendHistoryEntry,
+        saveChat,
+        broadcast,
+        scheduleBotResume,
+        acknowledgeConversationAttention
+    });
+
+    if (convo) {
+        console.log('[human] owner_whatsapp_reply', {
+            contactId,
+            kind: reply.kind || 'text',
+            pausedByHuman: !!convo.pausedByHuman
+        });
+    }
+    return true;
+}
+
 // --- 8. BAILEYS ---
 let sock;
 let whatsappConnected = false;
@@ -7779,7 +7884,7 @@ async function startBot() {
     } catch (e) {
         console.log('[baileys] nao foi possivel obter versao WA mais recente, usando fallback');
     }
-    const currentSock = makeWASocket({ logger: pino({ level: 'silent' }), printQRInTerminal: false, auth: state, browser: ['HimeFit', 'Chrome', '10.0'], connectTimeoutMs: 60000, syncFullHistory: false, version: waVersion });
+    const currentSock = instrumentSocketOutboundTracking(makeWASocket({ logger: pino({ level: 'silent' }), printQRInTerminal: false, auth: state, browser: ['HimeFit', 'Chrome', '10.0'], connectTimeoutMs: 60000, syncFullHistory: false, version: waVersion }));
     sock = currentSock;
     
     if (!server.listening) server.listen(PORT, () => {
@@ -7885,9 +7990,14 @@ async function startBot() {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (!LEGACY_CHAT_ENABLED && !ATTENDANCE_ENABLED) return;
         if (type !== 'notify') return; const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return;
         const senderRaw = msg.key.remoteJid;
         if (senderRaw === 'status@broadcast' || senderRaw.includes('@broadcast') || senderRaw.includes('@newsletter') || senderRaw.includes('@g.us')) return;
+        const msgTimestampMs = getMessageTimestampMs(msg);
+        if (msg.key.fromMe) {
+            await handleOwnerWhatsappReplyMessage(msg, senderRaw, msgTimestampMs);
+            return;
+        }
         const sender = resolveCanonicalContactId(senderRaw, msg.pushName);
         if (sender !== senderRaw && isPhoneJid(sender)) {
             setContactAlias(senderRaw, sender, 'upsert_resolve');
@@ -7905,10 +8015,6 @@ async function startBot() {
         const incomingSticker = extractIncomingSticker(msg.message);
         if (!text && !isAudio && !incomingLocation && !incomingImage && !incomingSticker) return;
         console.log(`[msg] ${sender.split('@')[0]}`);
-        const msgTsRaw = msg.messageTimestamp;
-        const msgTimestampMs = typeof msgTsRaw === 'number'
-            ? (msgTsRaw > 9999999999 ? msgTsRaw : (msgTsRaw * 1000))
-            : (msgTsRaw?.low ? Number(msgTsRaw.low) * 1000 : Date.now());
 
         if (!conversationState[sender]) conversationState[sender] = { history: [], messageBuffer: [], typingTimer: null, pausedByHuman: false, pendingHumanHandoff: null, name: msg.pushName || sender.split('@')[0], lastActivityTimestamp: Date.now(), tags: [], notes: "", status: 'active', routeJid: senderRaw, slaPendingSince: 0, slaStatus: 'ok', slaUpdatedAt: Date.now() };
         const user = conversationState[sender]; user.lastActivityTimestamp = Date.now(); user.status = 'active'; user.routeJid = senderRaw;

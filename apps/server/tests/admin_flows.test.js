@@ -12,6 +12,11 @@ const {
   extractAttendanceInteractiveCommand,
   buildAttendanceNativeFlowMessageContent,
 } = require('../attendance_interactive_runtime');
+const {
+  applyOwnerWhatsappReplyToConversation,
+  extractOwnerWhatsappReplyText,
+  isIgnoredOwnerWhatsappReplyJid,
+} = require('../owner_whatsapp_reply_runtime');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -215,6 +220,56 @@ test('attendance interactive runtime falls back to text when button send fails',
     payload: { text: 'Envie entrada.' },
   });
   assert.equal(errors.length, 2);
+});
+
+test('owner whatsapp reply runtime extracts text/media and ignores non-chat targets', () => {
+  assert.equal(isIgnoredOwnerWhatsappReplyJid('status@broadcast'), true);
+  assert.equal(isIgnoredOwnerWhatsappReplyJid('120363000000000000@g.us'), true);
+  assert.equal(isIgnoredOwnerWhatsappReplyJid('5511888888888@s.whatsapp.net'), false);
+
+  assert.deepEqual(extractOwnerWhatsappReplyText({
+    conversation: 'Pode vir hoje as 18h.',
+  }), { text: 'Pode vir hoje as 18h.', kind: 'text' });
+
+  assert.deepEqual(extractOwnerWhatsappReplyText({
+    imageMessage: { caption: 'Olha esse horario' },
+  }), { text: 'Olha esse horario', kind: 'text' });
+
+  assert.deepEqual(extractOwnerWhatsappReplyText({
+    audioMessage: { seconds: 3 },
+  }), { text: '[Audio enviado pelo atendimento via WhatsApp]', kind: 'audio' });
+});
+
+test('owner whatsapp reply runtime pauses IA and schedules bot resume', () => {
+  const conversationState = {};
+  const broadcasts = [];
+  const saved = [];
+  const resumed = [];
+  const acknowledged = [];
+  const convo = applyOwnerWhatsappReplyToConversation({
+    conversationState,
+    contactId: '5511888888888@s.whatsapp.net',
+    routeJid: '5511888888888@s.whatsapp.net',
+    pushName: 'Cliente QA',
+    text: 'Ja te respondi pelo WhatsApp.',
+    timestamp: 1770000000000,
+    clearPendingHumanHandoff: (user) => { user.pendingHumanHandoff = null; },
+    broadcastHumanHandoffStatus: (payload) => broadcasts.push(payload),
+    appendHistoryEntry: (history, sender, text, timestamp) => history.push(`[ts=${timestamp}] ${sender}: ${text}`),
+    saveChat: (id) => saved.push(id),
+    broadcast: (payload) => broadcasts.push(payload),
+    scheduleBotResume: (id) => resumed.push(id),
+    acknowledgeConversationAttention: (id, payload) => acknowledged.push({ id, payload }),
+  });
+
+  assert.equal(convo.pausedByHuman, true);
+  assert.equal(convo.status, 'active');
+  assert.equal(convo.history[0], '[ts=1770000000000] Atendente WhatsApp: Ja te respondi pelo WhatsApp.');
+  assert.deepEqual(saved, ['5511888888888@s.whatsapp.net']);
+  assert.deepEqual(resumed, ['5511888888888@s.whatsapp.net']);
+  assert.equal(broadcasts.some((event) => event.type === 'admin_reply_success' && event.isPaused === true), true);
+  assert.equal(broadcasts.some((event) => event.type === 'chat_ia_state_updated' && event.isPaused === true), true);
+  assert.equal(acknowledged[0].payload.reason, 'owner_whatsapp_reply');
 });
 
 test('admin endpoints: attendance cadastro flow works end-to-end', async (t) => {
