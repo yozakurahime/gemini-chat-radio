@@ -19,4 +19,12 @@ describe("parsePanelMessage", () => {
     expect(parsed.content).toBe("Mensagem antiga");
     expect(parsed.timestamp).toBe("");
   });
+
+  it("renders WhatsApp owner replies as operator messages", () => {
+    const parsed = parsePanelMessage("[ts=1713484800000] Atendente WhatsApp: Respondi pelo celular");
+
+    expect(parsed.sender).toBe("operator");
+    expect(parsed.senderName).toBe("Atendente WhatsApp");
+    expect(parsed.content).toBe("Respondi pelo celular");
+  });
 });
