@@ -120,6 +120,7 @@
       "apps/server/panel_auth.js",
       "apps/server/runtime_storage.js",
       "apps/server/attendance_interactive_runtime.js",
+      "apps/server/knowledge_context_profile.js",
       "apps/server/owner_whatsapp_reply_runtime.js",
       "apps/server/bootstrap/**/*",
       "apps/server/routes/**/*",

@@ -17,6 +17,10 @@ const {
   extractOwnerWhatsappReplyText,
   isIgnoredOwnerWhatsappReplyJid,
 } = require('../owner_whatsapp_reply_runtime');
+const {
+  generateContextFromProfile,
+  normalizeContextProfile,
+} = require('../knowledge_context_profile');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -272,6 +276,23 @@ test('owner whatsapp reply runtime pauses IA and schedules bot resume', () => {
   assert.equal(acknowledged[0].payload.reason, 'owner_whatsapp_reply');
 });
 
+test('knowledge context profile runtime generates structured IA context', () => {
+  const profile = normalizeContextProfile({
+    academy: { name: 'Academia Oxigenio', whatsapp: '(62) 99999-0000' },
+    hours: 'Segunda a sexta: 06h as 22h',
+    modalities: 'Hidroginastica: 3 vezes por semana',
+    plans: 'Plano mensal: R$ 150',
+    policies: 'Reposicao somente com aviso previo.',
+    service: { humanHandoff: 'Chamar humano quando pedirem valores nao informados.' },
+  });
+  const context = generateContextFromProfile(profile);
+  assert.match(context, /Academia Oxigenio/);
+  assert.match(context, /Funcionamento/);
+  assert.match(context, /Hidroginastica/);
+  assert.match(context, /Plano mensal/);
+  assert.match(context, /Reposicao/);
+});
+
 test('admin endpoints: attendance cadastro flow works end-to-end', async (t) => {
   const server = await startServer({
     dataRoot: makeTempDataRoot(),
@@ -446,6 +467,12 @@ test('knowledge admin endpoints persist base context updates', async (t) => {
   assert.equal(current.res.status, 200);
   const currentBase = String(current.data.base_context || '');
 
+  const profileBefore = await reqJson(server.baseUrl, '/admin/knowledge/profile', {
+    cookie: auth.cookie,
+  });
+  assert.equal(profileBefore.res.status, 200);
+  assert.equal(profileBefore.data.profile, null);
+
   const marker = `QA_NATACAO_ADULTO_${Date.now()}`;
   const fallbackBase = [
     '# CONTEXTO BASE QA',
@@ -461,6 +488,37 @@ test('knowledge admin endpoints persist base context updates', async (t) => {
   });
   assert.equal(save.res.status, 200);
   assert.equal(save.data.success, true);
+
+  const profileSave = await reqJson(server.baseUrl, '/admin/knowledge/profile/save', {
+    method: 'POST',
+    cookie: auth.cookie,
+    body: {
+      profile: {
+        academy: {
+          name: 'Academia Oxigenio QA',
+          whatsapp: '62999990000',
+        },
+        hours: 'Segunda a sexta: 06h as 22h',
+        modalities: `Natacao Adulto: ${marker}`,
+        plans: 'Plano QA mensal',
+        policies: 'Reposicao com aviso previo.',
+        service: {
+          tone: 'Atencioso e objetivo.',
+          humanHandoff: 'Chamar humano quando faltar informacao.',
+        },
+      },
+    },
+  });
+  assert.equal(profileSave.res.status, 200);
+  assert.equal(profileSave.data.success, true);
+  assert.ok(String(profileSave.data.base_context || '').includes('Academia Oxigenio QA'));
+  assert.ok(String(profileSave.data.base_context || '').includes(marker));
+
+  const profileAfter = await reqJson(server.baseUrl, '/admin/knowledge/profile', {
+    cookie: auth.cookie,
+  });
+  assert.equal(profileAfter.res.status, 200);
+  assert.equal(profileAfter.data.profile?.academy?.name, 'Academia Oxigenio QA');
 
   const currentAfter = await reqJson(server.baseUrl, '/admin/knowledge/current', {
     cookie: auth.cookie,

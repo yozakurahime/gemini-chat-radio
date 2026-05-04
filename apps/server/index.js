@@ -7559,6 +7559,7 @@ registerKnowledgeAdminRoutes({
     app,
     db,
     fs,
+    knowledgeDir: KNOWLEDGE_DIR,
     baseContextFile: BASE_CONTEXT_FILE,
     requirePanelAuth,
     requireAdmin,

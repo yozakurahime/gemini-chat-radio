@@ -46,6 +46,33 @@ type OpsAlertsConfig = {
   updatedAt?: number;
 };
 
+type ContextProfile = {
+  version?: number;
+  academy: {
+    name: string;
+    unit: string;
+    address: string;
+    phone: string;
+    whatsapp: string;
+    instagram: string;
+    website: string;
+  };
+  hours: string;
+  holidayRules: string;
+  modalities: string;
+  plans: string;
+  enrollment: string;
+  policies: string;
+  service: {
+    tone: string;
+    humanHandoff: string;
+    objections: string;
+    faqs: string;
+  };
+  extraInfo: string;
+  importedContext: string;
+};
+
 const OPS_ALERTS_DEFAULT: OpsAlertsConfig = {
   enabled: true,
   whatsappDestinations: [],
@@ -61,6 +88,49 @@ const OPS_ALERTS_DEFAULT: OpsAlertsConfig = {
     chatSlaCriticalMin: 15,
   },
 };
+
+const EMPTY_CONTEXT_PROFILE: ContextProfile = {
+  version: 1,
+  academy: {
+    name: "",
+    unit: "",
+    address: "",
+    phone: "",
+    whatsapp: "",
+    instagram: "",
+    website: "",
+  },
+  hours: "",
+  holidayRules: "",
+  modalities: "",
+  plans: "",
+  enrollment: "",
+  policies: "",
+  service: {
+    tone: "Responda de forma clara, acolhedora e objetiva. Quando nao tiver certeza, chame um atendente humano.",
+    humanHandoff: "Chame um atendente humano quando o cliente pedir atendimento humano, quando faltar informacao no contexto, quando houver reclamacao ou quando o assunto envolver pagamento/contrato sensivel.",
+    objections: "",
+    faqs: "",
+  },
+  extraInfo: "",
+  importedContext: "",
+};
+
+function mergeContextProfile(raw: any, importedContext = ""): ContextProfile {
+  return {
+    ...EMPTY_CONTEXT_PROFILE,
+    ...(raw || {}),
+    academy: {
+      ...EMPTY_CONTEXT_PROFILE.academy,
+      ...(raw?.academy || {}),
+    },
+    service: {
+      ...EMPTY_CONTEXT_PROFILE.service,
+      ...(raw?.service || {}),
+    },
+    importedContext: String(raw?.importedContext ?? importedContext ?? ""),
+  };
+}
 
 function authErrorMessage(code: string) {
   switch (code) {
@@ -98,6 +168,10 @@ export default function ConfiguracoesPage() {
   const isAdmin = user?.role === "admin";
 
   const [aiContext, setAiContext] = useState("");
+  const [contextProfile, setContextProfile] = useState<ContextProfile>(() => mergeContextProfile(null));
+  const [loadingContextProfile, setLoadingContextProfile] = useState(false);
+  const [savingContextProfile, setSavingContextProfile] = useState(false);
+  const [hasSavedContextProfile, setHasSavedContextProfile] = useState(false);
   const [testMessage, setTestMessage] = useState("");
   const [testResponse, setTestResponse] = useState("");
   const [isTestLoading, setIsTestLoading] = useState(false);
@@ -168,6 +242,27 @@ export default function ConfiguracoesPage() {
       setLoadingOpsConfig(false);
     }
   }, [isAdmin]);
+
+  const loadContextProfile = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingContextProfile(true);
+    try {
+      const res = await apiFetch("/admin/knowledge/profile");
+      const data = await res.json();
+      const baseContext = String(data?.base_context || knowledgeBase || "");
+      const profile = data?.profile
+        ? mergeContextProfile(data.profile)
+        : mergeContextProfile(null, baseContext);
+      setContextProfile(profile);
+      setHasSavedContextProfile(!!data?.profile);
+      if (baseContext) setAiContext(baseContext);
+    } catch {
+      setContextProfile(mergeContextProfile(null, knowledgeBase || ""));
+      setHasSavedContextProfile(false);
+    } finally {
+      setLoadingContextProfile(false);
+    }
+  }, [isAdmin, knowledgeBase]);
 
   const updateOpsThreshold = (key: keyof OpsAlertsConfig["thresholds"], value: string) => {
     const parsed = Number(value);
@@ -240,8 +335,54 @@ export default function ConfiguracoesPage() {
     loadOpsConfig();
   }, [isAdmin, loadOpsConfig]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadContextProfile();
+  }, [isAdmin, loadContextProfile]);
+
   const handleSaveContext = () => {
     saveKnowledgeBase(aiContext);
+  };
+
+  const updateProfileAcademy = (key: keyof ContextProfile["academy"], value: string) => {
+    setContextProfile((prev) => ({
+      ...prev,
+      academy: { ...prev.academy, [key]: value },
+    }));
+  };
+
+  const updateProfileService = (key: keyof ContextProfile["service"], value: string) => {
+    setContextProfile((prev) => ({
+      ...prev,
+      service: { ...prev.service, [key]: value },
+    }));
+  };
+
+  const updateProfileField = (key: "hours" | "holidayRules" | "modalities" | "plans" | "enrollment" | "policies" | "extraInfo" | "importedContext", value: string) => {
+    setContextProfile((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleSaveProfile = async () => {
+    if (!isAdmin || savingContextProfile) return;
+    setSavingContextProfile(true);
+    try {
+      const res = await apiFetch("/admin/knowledge/profile/save", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ profile: contextProfile }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) throw new Error(String(data?.error || "save_failed"));
+      setContextProfile(mergeContextProfile(data.profile || contextProfile));
+      setHasSavedContextProfile(true);
+      setAiContext(String(data.base_context || ""));
+      toast.success("Contexto guiado salvo.");
+    } catch (error: any) {
+      const code = String(error?.message || "");
+      toast.error(code === "too_short" ? "Preencha pelo menos algumas informacoes da academia." : "Falha ao salvar formulario de contexto.");
+    } finally {
+      setSavingContextProfile(false);
+    }
   };
 
   const handleTestAI = async () => {
@@ -365,37 +506,167 @@ export default function ConfiguracoesPage() {
         </TabsList>
 
         <TabsContent value="ai" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <Bot className="h-4 w-4" /> Contexto da IA
-              </CardTitle>
-              <CardDescription>
-                Este texto e salvo na base de conhecimento atual do sistema e usado pelo atendimento automatico.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Textarea
-                value={aiContext}
-                onChange={(event) => setAiContext(event.target.value)}
-                className="min-h-[400px] font-mono text-sm"
-                placeholder="Digite aqui todas as informacoes da academia..."
-              />
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
-                  {aiContext.length} caracteres
-                </p>
-                <div className="flex gap-2">
-                  <Button variant="outline" className="gap-1" onClick={() => setAiContext("")}>
-                    <RotateCcw className="h-4 w-4" /> Limpar
-                  </Button>
-                  <Button className="gap-1" onClick={handleSaveContext}>
-                    <Save className="h-4 w-4" /> Salvar contexto
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <Tabs defaultValue="guided" className="space-y-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <TabsList>
+                <TabsTrigger value="guided" className="gap-1">
+                  <Bot className="h-4 w-4" /> Formulario guiado
+                </TabsTrigger>
+                <TabsTrigger value="advanced" className="gap-1">
+                  <Settings className="h-4 w-4" /> Texto avancado
+                </TabsTrigger>
+              </TabsList>
+              {isAdmin && (!hasSavedContextProfile || aiContext.trim().length < 80) ? (
+                <Badge variant="secondary">Setup inicial recomendado</Badge>
+              ) : null}
+            </div>
+
+            <TabsContent value="guided" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Bot className="h-4 w-4" /> Formulario para montar o contexto
+                  </CardTitle>
+                  <CardDescription>
+                    Preencha os campos principais. O sistema monta um texto organizado para a IA usar no atendimento.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {!isAdmin ? (
+                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                      Apenas administradores podem alterar o contexto da IA.
+                    </div>
+                  ) : null}
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Nome da academia</Label>
+                      <Input value={contextProfile.academy.name} onChange={(event) => updateProfileAcademy("name", event.target.value)} placeholder="Academia Oxigenio" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Unidade</Label>
+                      <Input value={contextProfile.academy.unit} onChange={(event) => updateProfileAcademy("unit", event.target.value)} placeholder="Matriz, bairro ou cidade" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Endereco</Label>
+                      <Textarea value={contextProfile.academy.address} onChange={(event) => updateProfileAcademy("address", event.target.value)} placeholder="Rua, numero, bairro, cidade e ponto de referencia" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Telefone</Label>
+                      <Input value={contextProfile.academy.phone} onChange={(event) => updateProfileAcademy("phone", event.target.value)} placeholder="(00) 0000-0000" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>WhatsApp</Label>
+                      <Input value={contextProfile.academy.whatsapp} onChange={(event) => updateProfileAcademy("whatsapp", event.target.value)} placeholder="(00) 00000-0000" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Instagram</Label>
+                      <Input value={contextProfile.academy.instagram} onChange={(event) => updateProfileAcademy("instagram", event.target.value)} placeholder="@academia" disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Site</Label>
+                      <Input value={contextProfile.academy.website} onChange={(event) => updateProfileAcademy("website", event.target.value)} placeholder="https://..." disabled={!isAdmin} />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Horarios de funcionamento</Label>
+                      <Textarea className="min-h-[140px]" value={contextProfile.hours} onChange={(event) => updateProfileField("hours", event.target.value)} placeholder={"Segunda a sexta: 06h as 22h\nSabado: 08h as 12h"} disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Feriados e horarios especiais</Label>
+                      <Textarea className="min-h-[140px]" value={contextProfile.holidayRules} onChange={(event) => updateProfileField("holidayRules", event.target.value)} placeholder="Explique se abre em feriados, recessos ou horarios especiais." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Modalidades, aulas e frequencia</Label>
+                      <Textarea className="min-h-[160px]" value={contextProfile.modalities} onChange={(event) => updateProfileField("modalities", event.target.value)} placeholder={"Musculacao: acesso livre conforme plano\nHidroginastica: 3 vezes por semana\nPilates: mediante agendamento"} disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Planos e valores</Label>
+                      <Textarea className="min-h-[140px]" value={contextProfile.plans} onChange={(event) => updateProfileField("plans", event.target.value)} placeholder="Liste planos, valores, recorrencia e o que esta incluso." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Matricula e pagamento</Label>
+                      <Textarea className="min-h-[140px]" value={contextProfile.enrollment} onChange={(event) => updateProfileField("enrollment", event.target.value)} placeholder="Documentos, taxa de matricula, formas de pagamento e vencimentos." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Regras e politicas</Label>
+                      <Textarea className="min-h-[140px]" value={contextProfile.policies} onChange={(event) => updateProfileField("policies", event.target.value)} placeholder="Cancelamento, reposicao, atestado, convidados, aula experimental e faltas." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Tom de atendimento da IA</Label>
+                      <Textarea className="min-h-[130px]" value={contextProfile.service.tone} onChange={(event) => updateProfileService("tone", event.target.value)} disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Quando chamar humano</Label>
+                      <Textarea className="min-h-[130px]" value={contextProfile.service.humanHandoff} onChange={(event) => updateProfileService("humanHandoff", event.target.value)} disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Objecoes comuns</Label>
+                      <Textarea className="min-h-[130px]" value={contextProfile.service.objections} onChange={(event) => updateProfileService("objections", event.target.value)} placeholder="Ex: esta caro, quero desconto, tenho pouco tempo..." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Perguntas frequentes</Label>
+                      <Textarea className="min-h-[130px]" value={contextProfile.service.faqs} onChange={(event) => updateProfileService("faqs", event.target.value)} placeholder="Pergunta: ...\nResposta: ..." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Informacoes importantes adicionais</Label>
+                      <Textarea className="min-h-[120px]" value={contextProfile.extraInfo} onChange={(event) => updateProfileField("extraInfo", event.target.value)} placeholder="Qualquer detalhe importante que nao entrou nos campos acima." disabled={!isAdmin} />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Informacoes atuais/importadas</Label>
+                      <Textarea className="min-h-[120px]" value={contextProfile.importedContext} onChange={(event) => updateProfileField("importedContext", event.target.value)} placeholder="Contexto antigo preservado quando ainda nao existe formulario salvo." disabled={!isAdmin} />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {loadingContextProfile ? "Carregando formulario..." : hasSavedContextProfile ? "Formulario salvo e reutilizavel." : "Ainda nao ha formulario estruturado salvo."}
+                    </p>
+                    <Button className="gap-1" onClick={handleSaveProfile} disabled={!isAdmin || savingContextProfile}>
+                      <Save className="h-4 w-4" /> {savingContextProfile ? "Salvando..." : "Salvar formulario e gerar contexto"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="advanced" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Settings className="h-4 w-4" /> Texto avancado da IA
+                  </CardTitle>
+                  <CardDescription>
+                    Este texto final e salvo na base de conhecimento atual do sistema e usado pelo atendimento automatico.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Textarea
+                    value={aiContext}
+                    onChange={(event) => setAiContext(event.target.value)}
+                    className="min-h-[400px] font-mono text-sm"
+                    placeholder="Digite aqui todas as informacoes da academia..."
+                    disabled={!isAdmin}
+                  />
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {aiContext.length} caracteres
+                    </p>
+                    <div className="flex gap-2">
+                      <Button variant="outline" className="gap-1" onClick={() => setAiContext("")} disabled={!isAdmin}>
+                        <RotateCcw className="h-4 w-4" /> Limpar
+                      </Button>
+                      <Button className="gap-1" onClick={handleSaveContext} disabled={!isAdmin}>
+                        <Save className="h-4 w-4" /> Salvar texto
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
 
           <Card>
             <CardHeader>
