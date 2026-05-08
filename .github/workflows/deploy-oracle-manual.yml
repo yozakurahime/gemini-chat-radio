@@ -95,6 +95,8 @@ jobs:
 
       - name: Run remote deploy
         env:
+          SCA_SYNC_ENABLED: ${{ secrets.SCA_SYNC_ENABLED }}
+          SCA_SYNC_TOKEN: ${{ secrets.SCA_SYNC_TOKEN }}
           ASAAS_ENV: ${{ secrets.ASAAS_ENV }}
           ASAAS_API_KEY: ${{ secrets.ASAAS_API_KEY }}
           ASAAS_WEBHOOK_TOKEN: ${{ secrets.ASAAS_WEBHOOK_TOKEN }}
@@ -106,6 +108,8 @@ jobs:
               set -euo pipefail; \
               cd '${{ inputs.app_dir }}'; \
               export BRANCH='${{ inputs.branch }}'; \
+              export SCA_SYNC_ENABLED='${SCA_SYNC_ENABLED}'; \
+              export SCA_SYNC_TOKEN='${SCA_SYNC_TOKEN}'; \
               export ASAAS_ENV='${ASAAS_ENV}'; \
               export ASAAS_API_KEY='${ASAAS_API_KEY}'; \
               export ASAAS_WEBHOOK_TOKEN='${ASAAS_WEBHOOK_TOKEN}'; \

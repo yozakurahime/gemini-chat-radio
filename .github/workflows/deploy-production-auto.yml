@@ -69,6 +69,8 @@ jobs:
           RUN_TESTS_ON_SERVER: "0"
           NPM_TIMEOUT_SEC: "2400"
           FORCE_BUILD_PANEL: "1"
+          SCA_SYNC_ENABLED: ${{ secrets.SCA_SYNC_ENABLED }}
+          SCA_SYNC_TOKEN: ${{ secrets.SCA_SYNC_TOKEN }}
           ASAAS_ENV: ${{ secrets.ASAAS_ENV }}
           ASAAS_API_KEY: ${{ secrets.ASAAS_API_KEY }}
           ASAAS_WEBHOOK_TOKEN: ${{ secrets.ASAAS_WEBHOOK_TOKEN }}
