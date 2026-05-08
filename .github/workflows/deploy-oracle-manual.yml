@@ -94,12 +94,23 @@ jobs:
           exit 1
 
       - name: Run remote deploy
+        env:
+          ASAAS_ENV: ${{ secrets.ASAAS_ENV }}
+          ASAAS_API_KEY: ${{ secrets.ASAAS_API_KEY }}
+          ASAAS_WEBHOOK_TOKEN: ${{ secrets.ASAAS_WEBHOOK_TOKEN }}
+          ASAAS_BASE_URL: ${{ secrets.ASAAS_BASE_URL }}
+          PIX_EXPIRES_HOURS: ${{ secrets.PIX_EXPIRES_HOURS }}
         run: |
           for attempt in 1 2 3 4; do
             if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o ConnectionAttempts=3 -p "${{ steps.secrets_check.outputs.ssh_port }}" "${{ steps.secrets_check.outputs.ssh_user }}@${{ steps.secrets_check.outputs.ssh_host }}" "\
               set -euo pipefail; \
               cd '${{ inputs.app_dir }}'; \
               export BRANCH='${{ inputs.branch }}'; \
+              export ASAAS_ENV='${ASAAS_ENV}'; \
+              export ASAAS_API_KEY='${ASAAS_API_KEY}'; \
+              export ASAAS_WEBHOOK_TOKEN='${ASAAS_WEBHOOK_TOKEN}'; \
+              export ASAAS_BASE_URL='${ASAAS_BASE_URL}'; \
+              export PIX_EXPIRES_HOURS='${PIX_EXPIRES_HOURS}'; \
               bash tools/deploy/update-server.sh"; then
               echo "Remote deploy succeeded on attempt ${attempt}."
               exit 0

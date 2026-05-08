@@ -69,5 +69,10 @@ jobs:
           RUN_TESTS_ON_SERVER: "0"
           NPM_TIMEOUT_SEC: "2400"
           FORCE_BUILD_PANEL: "1"
+          ASAAS_ENV: ${{ secrets.ASAAS_ENV }}
+          ASAAS_API_KEY: ${{ secrets.ASAAS_API_KEY }}
+          ASAAS_WEBHOOK_TOKEN: ${{ secrets.ASAAS_WEBHOOK_TOKEN }}
+          ASAAS_BASE_URL: ${{ secrets.ASAAS_BASE_URL }}
+          PIX_EXPIRES_HOURS: ${{ secrets.PIX_EXPIRES_HOURS }}
         run: |
           bash tools/deploy/update-server.sh
