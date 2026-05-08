@@ -1,0 +1,11 @@
+{
+  "name": "sca-web-exporter",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "playwright-core": "^1.54.2",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -22,6 +22,10 @@ function registerPanelHostRoutes({
         '/programarecepcao',
         '/programa-recepcao'
     ];
+    const receptionWebExporterPathAliases = [
+        '/programarecepcaoweb',
+        '/programa-recepcao-web'
+    ];
 
     function getRequestHost(req) {
         const forwardedHostRaw = String(req.get('x-forwarded-host') || '').trim();
@@ -152,6 +156,41 @@ function registerPanelHostRoutes({
         return candidates[0] || null;
     }
 
+    function resolveReceptionWebExporterDownloadFile() {
+        const candidates = [];
+        const updatesBaseDir = updatesDir && String(updatesDir).trim()
+            ? path.resolve(updatesDir)
+            : path.join(rootDir, 'updates');
+        const updatesReceptionDir = path.join(updatesBaseDir, 'reception');
+        const distReceptionDir = path.resolve(rootDir, '..', '..', 'dist-recepcao');
+        const bundledFallback = path.join(rootDir, 'assets', 'reception', 'sca-web-exporter-latest.zip');
+        const preferredLatest = path.join(updatesReceptionDir, 'sca-web-exporter-latest.zip');
+        if (fs.existsSync(preferredLatest)) {
+            try {
+                const stat = fs.statSync(preferredLatest);
+                candidates.push({
+                    fullPath: preferredLatest,
+                    name: 'sca-web-exporter-latest.zip',
+                    mtimeMs: Number(stat.mtimeMs || 0)
+                });
+            } catch (_) {}
+        }
+        if (fs.existsSync(bundledFallback)) {
+            try {
+                const stat = fs.statSync(bundledFallback);
+                candidates.push({
+                    fullPath: bundledFallback,
+                    name: 'sca-web-exporter-latest.zip',
+                    mtimeMs: Number(stat.mtimeMs || 0)
+                });
+            } catch (_) {}
+        }
+        candidates.push(...listZipCandidates(updatesReceptionDir, /^sca-web-exporter-.*\.zip$/i));
+        candidates.push(...listZipCandidates(distReceptionDir, /^sca-web-exporter-.*\.zip$/i));
+        candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        return candidates[0] || null;
+    }
+
     if (fs.existsSync(landingDist)) {
         app.use('/landing-assets', express.static(landingDist));
     }
@@ -247,6 +286,15 @@ function registerPanelHostRoutes({
         const file = resolveReceptionMdbReaderDownloadFile();
         if (!file) {
             return res.status(404).send('Pacote do programa de recepcao nao encontrado. Gere o ZIP sca-mdb-reader primeiro.');
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        return res.download(file.fullPath, file.name);
+    });
+
+    app.get(receptionWebExporterPathAliases, (req, res) => {
+        const file = resolveReceptionWebExporterDownloadFile();
+        if (!file) {
+            return res.status(404).send('Pacote do programa de exportacao web nao encontrado. Gere o ZIP sca-web-exporter primeiro.');
         }
         res.setHeader('Cache-Control', 'no-store');
         return res.download(file.fullPath, file.name);
