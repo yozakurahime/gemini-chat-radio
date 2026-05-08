@@ -124,12 +124,23 @@ function registerPanelHostRoutes({
             : path.join(rootDir, 'updates');
         const updatesReceptionDir = path.join(updatesBaseDir, 'reception');
         const distReceptionDir = path.resolve(rootDir, '..', '..', 'dist-recepcao');
+        const bundledFallback = path.join(rootDir, 'assets', 'reception', 'sca-mdb-reader-latest.zip');
         const preferredLatest = path.join(updatesReceptionDir, 'sca-mdb-reader-latest.zip');
         if (fs.existsSync(preferredLatest)) {
             try {
                 const stat = fs.statSync(preferredLatest);
                 candidates.push({
                     fullPath: preferredLatest,
+                    name: 'sca-mdb-reader-latest.zip',
+                    mtimeMs: Number(stat.mtimeMs || 0)
+                });
+            } catch (_) {}
+        }
+        if (fs.existsSync(bundledFallback)) {
+            try {
+                const stat = fs.statSync(bundledFallback);
+                candidates.push({
+                    fullPath: bundledFallback,
                     name: 'sca-mdb-reader-latest.zip',
                     mtimeMs: Number(stat.mtimeMs || 0)
                 });
