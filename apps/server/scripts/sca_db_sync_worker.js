@@ -337,7 +337,7 @@ function buildOdbcConnectionCandidates(engine, dbFile, drivers) {
     const pass = DB_PASSWORD || 'masterkey';
     if (engine === 'access') {
         const preferred = DB_ODBC_DRIVER || 'Microsoft Access Driver (*.mdb, *.accdb)';
-        const list = [preferred, ...drivers.filter((d) => /access/i.test(d))];
+        const list = [preferred, ...drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')))];
         const unique = [...new Set(list.filter(Boolean))];
         return unique.map((driver) => `Driver={${driver}};Dbq=${dbFile};Uid=${DB_USER};Pwd=${DB_PASSWORD};`);
     }
@@ -535,6 +535,12 @@ class OdbcAdapter {
     open() {
         const drivers = getOdbcDrivers();
         const candidates = buildOdbcConnectionCandidates(this.engine, this.dbFile, drivers);
+        if (this.engine === 'access' && !DB_CONNECTION_STRING) {
+            const accessDrivers = drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')));
+            if (!accessDrivers.length) {
+                throw new Error(`Nenhum driver ODBC Access instalado. Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'}`);
+            }
+        }
         if (!candidates.length) {
             throw new Error(`Nenhum connection string ODBC disponivel para engine=${this.engine}.`);
         }
@@ -551,7 +557,7 @@ class OdbcAdapter {
                 lastError = String(error?.message || error);
             }
         }
-        throw new Error(`Falha ao conectar via ODBC (${this.engine}). ${lastError || ''}`.trim());
+        throw new Error(`Falha ao conectar via ODBC (${this.engine}). Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | ${lastError || ''}`.trim());
     }
 
     close() {}

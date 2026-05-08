@@ -437,7 +437,8 @@ function buildSelectSql(profile) {
 function buildOdbcConnectionCandidates(dbFile, drivers) {
     if (DB_CONNECTION_STRING) return [DB_CONNECTION_STRING];
     const preferred = DB_ODBC_DRIVER || 'Microsoft Access Driver (*.mdb, *.accdb)';
-    const list = [preferred, ...drivers.filter((d) => /access/i.test(d))];
+    const accessDrivers = drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')));
+    const list = [preferred, ...accessDrivers];
     const unique = [...new Set(list.filter(Boolean))];
     return unique.map((driver) => `Driver={${driver}};Dbq=${dbFile};Uid=;Pwd=;`);
 }
@@ -483,8 +484,12 @@ async function run() {
     }
 
     const drivers = getOdbcDrivers();
+    const accessDrivers = drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')));
     const connCandidates = buildOdbcConnectionCandidates(selectedFile, drivers);
     if (!connCandidates.length) throw new Error('Nenhum driver ODBC do Access foi encontrado.');
+    if (!DB_CONNECTION_STRING && !accessDrivers.length) {
+        throw new Error(`Nenhum driver ODBC Access instalado. Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'}`);
+    }
 
     let conn = '';
     let schema = null;
@@ -501,7 +506,9 @@ async function run() {
             lastConnError = String(error?.message || error);
         }
     }
-    if (!conn) throw new Error(`Falha ao conectar no .mdb via ODBC. ${lastConnError || ''}`.trim());
+    if (!conn) {
+        throw new Error(`Falha ao conectar no .mdb via ODBC. Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | erro: ${lastConnError || 'desconhecido'}`);
+    }
 
     let profile = readJsonFile(PROFILE_FILE, null);
     if (!profile || path.resolve(String(profile.db_file || '')) !== path.resolve(selectedFile) || !profile.columns?.event_at) {
