@@ -226,31 +226,28 @@ function getOdbcDrivers() {
 $ErrorActionPreference = 'Stop'
 $rows = @()
 try {
-  Add-Type -AssemblyName System.Data -ErrorAction Stop
-} catch {}
-try {
-  $schema = [System.Data.Odbc.OdbcEnumerator]::GetEnumerator().GetSchema('Drivers')
-  foreach ($r in $schema.Rows) {
-    $name = [string]$r['Name']
-    if ($name) { $rows += $name }
+  $odbcCmd = Get-Command Get-OdbcDriver -ErrorAction SilentlyContinue
+  if ($odbcCmd) {
+    $odbcRows = Get-OdbcDriver -ErrorAction SilentlyContinue
+    foreach ($d in $odbcRows) {
+      if ($d -and $d.Name) { $rows += [string]$d.Name }
+    }
   }
 } catch {}
-if (-not $rows.Count) {
-  $regPaths = @(
-    'HKLM:\\SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Drivers',
-    'HKLM:\\SOFTWARE\\WOW6432Node\\ODBC\\ODBCINST.INI\\ODBC Drivers'
-  )
-  foreach ($regPath in $regPaths) {
-    try {
-      $item = Get-ItemProperty -Path $regPath -ErrorAction Stop
-      foreach ($prop in $item.PSObject.Properties) {
-        if ($prop.Name -match '^PS(.*)') { continue }
-        if ([string]$prop.Value -match 'Installed') {
-          $rows += [string]$prop.Name
-        }
+$regPaths = @(
+  'HKLM:\\SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Drivers',
+  'HKLM:\\SOFTWARE\\WOW6432Node\\ODBC\\ODBCINST.INI\\ODBC Drivers'
+)
+foreach ($regPath in $regPaths) {
+  try {
+    $item = Get-ItemProperty -Path $regPath -ErrorAction Stop
+    foreach ($prop in $item.PSObject.Properties) {
+      if ($prop.Name -match '^PS(.*)') { continue }
+      if ([string]$prop.Value -match 'Installed') {
+        $rows += [string]$prop.Name
       }
-    } catch {}
-  }
+    }
+  } catch {}
 }
 $rows = $rows | Where-Object { $_ } | Sort-Object -Unique
 @{ drivers = $rows } | ConvertTo-Json -Compress -Depth 4
