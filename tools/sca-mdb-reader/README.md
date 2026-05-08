@@ -22,6 +22,7 @@ Worker separado para ler `.mdb/.accdb` do SCA na recepcao e sincronizar eventos 
    - `SCA_SYNC_TOKEN`
    - `SCA_SYNC_API_URL`
    - `SCA_DB_DIR` (ou `SCA_DB_FILE`)
+   - se o `.mdb` tiver senha: `SCA_DB_USER` (normalmente `Admin`) e `SCA_DB_PASSWORD`
 4. Rode `run_now.bat` para validar a primeira sincronizacao.
 
 ## Publicacao no site

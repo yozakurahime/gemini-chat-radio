@@ -38,6 +38,8 @@ const PROFILE_FILE = process.env.SCA_DB_PROFILE_FILE
 
 const DB_DIR = process.env.SCA_DB_DIR ? path.resolve(process.env.SCA_DB_DIR) : 'C:\\SistemaSCA';
 const DB_FILE_OVERRIDE = process.env.SCA_DB_FILE ? path.resolve(process.env.SCA_DB_FILE) : '';
+const DB_USER = String(process.env.SCA_DB_USER || 'Admin').trim();
+const DB_PASSWORD = String(process.env.SCA_DB_PASSWORD || '').trim();
 const DB_ODBC_DRIVER = String(process.env.SCA_DB_ODBC_DRIVER || '').trim();
 const DB_CONNECTION_STRING = String(process.env.SCA_DB_CONNECTION_STRING || '').trim();
 const API_URL = process.env.SCA_SYNC_API_URL || 'https://www.academiaoxigenio.com/admin/sca/sync/batch';
@@ -458,13 +460,34 @@ function buildSelectSql(profile) {
     return `SELECT TOP ${FETCH_WINDOW} ${projection} FROM ${table} ORDER BY ${orderByKey} DESC`;
 }
 
+function formatOdbcValue(value) {
+    const text = String(value === undefined || value === null ? '' : value);
+    if (!text) return '';
+    if (!/[;{}]/.test(text) && text.trim() === text) return text;
+    return '{' + text.replace(/}/g, '}}') + '}';
+}
+
 function buildOdbcConnectionCandidates(dbFile, drivers) {
     if (DB_CONNECTION_STRING) return [DB_CONNECTION_STRING];
     const preferred = DB_ODBC_DRIVER || 'Microsoft Access Driver (*.mdb, *.accdb)';
     const accessDrivers = drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')));
     const list = [preferred, ...accessDrivers];
     const unique = [...new Set(list.filter(Boolean))];
-    return unique.map((driver) => `Driver={${driver}};Dbq=${dbFile};Uid=;Pwd=;`);
+    const dbq = formatOdbcValue(dbFile);
+    const uid = formatOdbcValue(DB_USER || 'Admin');
+    const pwd = formatOdbcValue(DB_PASSWORD);
+    const candidates = [];
+    for (const driver of unique) {
+        const driverSafe = formatOdbcValue(driver);
+        if (DB_PASSWORD) {
+            candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Pwd=${pwd};`);
+            candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Database Password=${pwd};`);
+            candidates.push(`Driver=${driverSafe};Dbq=${dbq};Pwd=${pwd};`);
+        }
+        candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Pwd=;`);
+        candidates.push(`Driver=${driverSafe};Dbq=${dbq};`);
+    }
+    return [...new Set(candidates)];
 }
 
 async function postBatch(events, connector) {
@@ -531,7 +554,10 @@ async function run() {
         }
     }
     if (!conn) {
-        throw new Error(`Falha ao conectar no .mdb via ODBC. Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | erro: ${lastConnError || 'desconhecido'}`);
+        const hint = /senha inv|not a valid password|invalid password/i.test(lastConnError)
+            ? ' Dica: configure SCA_DB_PASSWORD (e opcionalmente SCA_DB_USER=Admin) no .env.'
+            : '';
+        throw new Error(`Falha ao conectar no .mdb via ODBC. Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | erro: ${lastConnError || 'desconhecido'}${hint}`);
     }
 
     let profile = readJsonFile(PROFILE_FILE, null);

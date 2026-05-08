@@ -355,15 +355,36 @@ try {
     });
 }
 
+function formatOdbcValue(value) {
+    const text = String(value === undefined || value === null ? '' : value);
+    if (!text) return '';
+    if (!/[;{}]/.test(text) && text.trim() === text) return text;
+    return '{' + text.replace(/}/g, '}}') + '}';
+}
+
 function buildOdbcConnectionCandidates(engine, dbFile, drivers) {
     if (DB_CONNECTION_STRING) return [DB_CONNECTION_STRING];
-    const user = DB_USER || 'SYSDBA';
-    const pass = DB_PASSWORD || 'masterkey';
+    const user = formatOdbcValue(DB_USER || 'SYSDBA');
+    const pass = formatOdbcValue(DB_PASSWORD || 'masterkey');
     if (engine === 'access') {
         const preferred = DB_ODBC_DRIVER || 'Microsoft Access Driver (*.mdb, *.accdb)';
         const list = [preferred, ...drivers.filter((d) => /access|ace|mdb|accdb/i.test(String(d || '')))];
         const unique = [...new Set(list.filter(Boolean))];
-        return unique.map((driver) => `Driver={${driver}};Dbq=${dbFile};Uid=${DB_USER};Pwd=${DB_PASSWORD};`);
+        const dbq = formatOdbcValue(dbFile);
+        const uid = formatOdbcValue(DB_USER || 'Admin');
+        const pwd = formatOdbcValue(DB_PASSWORD);
+        const candidates = [];
+        for (const driver of unique) {
+            const driverSafe = formatOdbcValue(driver);
+            if (DB_PASSWORD) {
+                candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Pwd=${pwd};`);
+                candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Database Password=${pwd};`);
+                candidates.push(`Driver=${driverSafe};Dbq=${dbq};Pwd=${pwd};`);
+            }
+            candidates.push(`Driver=${driverSafe};Dbq=${dbq};Uid=${uid};Pwd=;`);
+            candidates.push(`Driver=${driverSafe};Dbq=${dbq};`);
+        }
+        return [...new Set(candidates)];
     }
     if (engine === 'firebird') {
         const preferred = DB_ODBC_DRIVER || '';
@@ -581,7 +602,10 @@ class OdbcAdapter {
                 lastError = String(error?.message || error);
             }
         }
-        throw new Error(`Falha ao conectar via ODBC (${this.engine}). Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | ${lastError || ''}`.trim());
+        const hint = /senha inv|not a valid password|invalid password/i.test(lastError)
+            ? ' Dica: configure SCA_DB_PASSWORD (e opcionalmente SCA_DB_USER=Admin).'
+            : '';
+        throw new Error(`Falha ao conectar via ODBC (${this.engine}). Drivers detectados: ${drivers.length ? drivers.join(', ') : '(nenhum)'} | ${(lastError || '').trim()}${hint}`.trim());
     }
 
     close() {}
