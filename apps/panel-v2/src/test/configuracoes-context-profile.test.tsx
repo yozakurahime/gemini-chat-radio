@@ -21,6 +21,14 @@ vi.mock("@/hooks/use-panel-data", () => ({
     geoPolicy: null,
     saveGeoPolicy: mocks.saveGeoPolicy,
     systemHealth: null,
+    pixPlans: [],
+    pixCharges: [],
+    refreshPixPlans: vi.fn().mockResolvedValue(undefined),
+    createPixPlan: vi.fn().mockResolvedValue(true),
+    updatePixPlan: vi.fn().mockResolvedValue(true),
+    deletePixPlan: vi.fn().mockResolvedValue(true),
+    refreshPixCharges: vi.fn().mockResolvedValue(undefined),
+    confirmPixScaDone: vi.fn().mockResolvedValue(true),
   }),
 }));
 

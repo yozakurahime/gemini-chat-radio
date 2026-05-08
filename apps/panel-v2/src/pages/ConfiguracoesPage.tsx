@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
-import { Activity, Bot, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, UserPlus, Users } from "lucide-react";
+import { Activity, Bot, CreditCard, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
@@ -71,6 +71,13 @@ type ContextProfile = {
   };
   extraInfo: string;
   importedContext: string;
+};
+
+type PixPlan = {
+  id: number;
+  name: string;
+  amount_cents: number;
+  active: number;
 };
 
 const OPS_ALERTS_DEFAULT: OpsAlertsConfig = {
@@ -164,7 +171,19 @@ function statusBadgeClass(status?: string): "default" | "secondary" | "destructi
 }
 
 export default function ConfiguracoesPage() {
-  const { user, knowledgeBase, saveKnowledgeBase, geoPolicy, saveGeoPolicy, systemHealth } = usePanelData();
+  const {
+    user,
+    knowledgeBase,
+    saveKnowledgeBase,
+    geoPolicy,
+    saveGeoPolicy,
+    systemHealth,
+    pixPlans,
+    refreshPixPlans,
+    createPixPlan,
+    updatePixPlan,
+    deletePixPlan,
+  } = usePanelData();
   const isAdmin = user?.role === "admin";
 
   const [aiContext, setAiContext] = useState("");
@@ -196,6 +215,12 @@ export default function ConfiguracoesPage() {
     role: "user" as "admin" | "user",
     password: "",
   });
+  const [pixPlanName, setPixPlanName] = useState("");
+  const [pixPlanAmount, setPixPlanAmount] = useState("");
+  const [pixSaving, setPixSaving] = useState(false);
+  const [pixEditingId, setPixEditingId] = useState<number>(0);
+  const [pixEditingName, setPixEditingName] = useState("");
+  const [pixEditingAmount, setPixEditingAmount] = useState("");
 
   const sortedUsers = useMemo(
     () => [...managedUsers].sort((a, b) => {
@@ -340,6 +365,18 @@ export default function ConfiguracoesPage() {
     loadContextProfile();
   }, [isAdmin, loadContextProfile]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    refreshPixPlans();
+  }, [isAdmin, refreshPixPlans]);
+
+  const parsePixAmountToCents = (rawValue: string) => {
+    const normalized = String(rawValue || "").replace(/\./g, "").replace(",", ".").trim();
+    const value = Number(normalized);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.round(value * 100);
+  };
+
   const handleSaveContext = () => {
     saveKnowledgeBase(aiContext);
   };
@@ -478,6 +515,74 @@ export default function ConfiguracoesPage() {
     }
   };
 
+  const createPixPlanEntry = async () => {
+    const name = String(pixPlanName || "").trim();
+    const amountCents = parsePixAmountToCents(pixPlanAmount);
+    if (!name) {
+      toast.error("Informe o nome do plano.");
+      return;
+    }
+    if (!amountCents) {
+      toast.error("Informe um valor valido.");
+      return;
+    }
+    setPixSaving(true);
+    try {
+      const ok = await createPixPlan({ name, amount_cents: amountCents, active: true });
+      if (!ok) return;
+      setPixPlanName("");
+      setPixPlanAmount("");
+      toast.success("Plano Pix cadastrado.");
+    } finally {
+      setPixSaving(false);
+    }
+  };
+
+  const startPixEdit = (item: PixPlan) => {
+    setPixEditingId(Number(item.id || 0));
+    setPixEditingName(String(item.name || ""));
+    setPixEditingAmount((Number(item.amount_cents || 0) / 100).toFixed(2).replace(".", ","));
+  };
+
+  const savePixEdit = async () => {
+    if (!pixEditingId) return;
+    const name = String(pixEditingName || "").trim();
+    const amountCents = parsePixAmountToCents(pixEditingAmount);
+    if (!name || !amountCents) {
+      toast.error("Preencha nome e valor validos.");
+      return;
+    }
+    setPixSaving(true);
+    try {
+      const ok = await updatePixPlan(pixEditingId, { name, amount_cents: amountCents });
+      if (!ok) return;
+      setPixEditingId(0);
+      setPixEditingName("");
+      setPixEditingAmount("");
+      toast.success("Plano Pix atualizado.");
+    } finally {
+      setPixSaving(false);
+    }
+  };
+
+  const disablePixPlan = async (id: number) => {
+    if (!id) return;
+    if (!window.confirm("Deseja desativar este plano Pix?")) return;
+    setPixSaving(true);
+    try {
+      const ok = await deletePixPlan(id);
+      if (!ok) return;
+      if (pixEditingId === id) {
+        setPixEditingId(0);
+        setPixEditingName("");
+        setPixEditingAmount("");
+      }
+      toast.success("Plano Pix desativado.");
+    } finally {
+      setPixSaving(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-2">
@@ -496,6 +601,11 @@ export default function ConfiguracoesPage() {
           {isAdmin ? (
             <TabsTrigger value="operacao" className="gap-1">
               <Activity className="h-4 w-4" /> Operacao
+            </TabsTrigger>
+          ) : null}
+          {isAdmin ? (
+            <TabsTrigger value="pix" className="gap-1">
+              <CreditCard className="h-4 w-4" /> Pix
             </TabsTrigger>
           ) : null}
           {isAdmin ? (
@@ -862,6 +972,74 @@ export default function ConfiguracoesPage() {
                   <Button className="gap-1" onClick={saveOpsConfig} disabled={savingOpsConfig || loadingOpsConfig}>
                     <Save className="h-4 w-4" /> Salvar alertas
                   </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
+
+        {isAdmin ? (
+          <TabsContent value="pix" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CreditCard className="h-4 w-4" /> Planos para cobranca Pix
+                </CardTitle>
+                <CardDescription>
+                  Cadastre os planos que o bot pode cobrar via Pix no WhatsApp.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_auto] gap-3">
+                  <Input
+                    placeholder="Ex: Musculacao Mensal"
+                    value={pixPlanName}
+                    onChange={(event) => setPixPlanName(event.target.value)}
+                    disabled={pixSaving}
+                  />
+                  <Input
+                    placeholder="Ex: 129,90"
+                    value={pixPlanAmount}
+                    onChange={(event) => setPixPlanAmount(event.target.value)}
+                    disabled={pixSaving}
+                  />
+                  <Button className="gap-1" onClick={createPixPlanEntry} disabled={pixSaving}>
+                    <Save className="h-4 w-4" /> Adicionar
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {(pixPlans || []).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum plano Pix cadastrado.</p>
+                  ) : (
+                    (pixPlans as PixPlan[]).map((item) => {
+                      const isEditing = pixEditingId === Number(item.id || 0);
+                      return (
+                        <div key={item.id} className="rounded-lg border p-3 space-y-2">
+                          {isEditing ? (
+                            <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_auto_auto] gap-2">
+                              <Input value={pixEditingName} onChange={(event) => setPixEditingName(event.target.value)} disabled={pixSaving} />
+                              <Input value={pixEditingAmount} onChange={(event) => setPixEditingAmount(event.target.value)} disabled={pixSaving} />
+                              <Button size="sm" onClick={savePixEdit} disabled={pixSaving}>Salvar</Button>
+                              <Button size="sm" variant="outline" onClick={() => setPixEditingId(0)} disabled={pixSaving}>Cancelar</Button>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-medium">{item.name}</p>
+                                <p className="text-xs text-muted-foreground">{(Number(item.amount_cents || 0) / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {Number(item.active || 0) === 1 ? <Badge>Ativo</Badge> : <Badge variant="secondary">Inativo</Badge>}
+                                <Button size="sm" variant="outline" onClick={() => startPixEdit(item)} disabled={pixSaving}>Editar</Button>
+                                <Button size="sm" variant="outline" onClick={() => disablePixPlan(Number(item.id || 0))} disabled={pixSaving || Number(item.active || 0) !== 1}>Desativar</Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </CardContent>
             </Card>

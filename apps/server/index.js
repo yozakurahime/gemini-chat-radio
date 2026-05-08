@@ -110,8 +110,29 @@ const { registerKnowledgeAdminRoutes } = require('./routes/knowledge_admin_route
 const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
+const { registerPixAdminRoutes } = require('./routes/pix_admin_routes');
 const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
 const { startRuntimeServices } = require('./bootstrap/runtime_startup');
+const {
+    asaasStatusToInternal,
+    createOrReuseAsaasCustomer,
+    createPixCharge,
+    extractWebhookPaymentId,
+    extractWebhookStatus,
+    fetchPayment,
+    fetchPixQrCode,
+    resolveAsaasConfig,
+    sanitizePhoneDigits,
+    verifyAsaasWebhookToken
+} = require('./payments/asaas_pix_runtime');
+const {
+    buildPlanListText,
+    detectPixMonthlyIntent,
+    formatCurrencyBRLFromCents,
+    isCancelMessage,
+    normalizePlanLookupKey,
+    parseYesNo
+} = require('./payments/pix_chat_runtime');
 const {
     ensureDir,
     isPathInside,
@@ -132,6 +153,7 @@ const FFMPEG_LOCAL_PATH = ffmpegPath;
 const APP_PACKAGE = require('./package.json');
 const APP_VERSION = String(APP_PACKAGE?.version || '0.0.0');
 const PORT = process.env.PORT || 3001;
+const ASAAS_CONFIG = resolveAsaasConfig(process.env);
 const NOME_DO_USUARIO_PAINEL = process.env.PAINEL_USER || 'admin';
 const RAW_PAINEL_PASS = process.env.PAINEL_PASS;
 if (!RAW_PAINEL_PASS || RAW_PAINEL_PASS.trim() === '' || RAW_PAINEL_PASS.toLowerCase() === 'admin' || RAW_PAINEL_PASS === 'trocar-esta-senha') {
@@ -1412,6 +1434,36 @@ db.prepare(`CREATE TABLE IF NOT EXISTS sca_sync_connector_status (
     meta_json TEXT DEFAULT '{}',
     updated_at INTEGER
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS pix_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    active INTEGER DEFAULT 1,
+    created_at INTEGER,
+    updated_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS pix_charges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id TEXT NOT NULL,
+    contact_name TEXT DEFAULT '',
+    student_full_name TEXT NOT NULL,
+    plan_id INTEGER NOT NULL,
+    plan_name_snapshot TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    asaas_customer_id TEXT DEFAULT '',
+    asaas_payment_id TEXT DEFAULT '',
+    asaas_txid TEXT DEFAULT '',
+    pix_copy_paste TEXT DEFAULT '',
+    pix_qr_payload TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    sca_manual_status TEXT DEFAULT 'pending',
+    sca_done_by TEXT DEFAULT '',
+    sca_done_at INTEGER DEFAULT 0,
+    paid_at INTEGER DEFAULT 0,
+    expires_at INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER
+)`).run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_events_employee_at ON attendance_events(employee_id, event_at)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_schedules_employee_weekday ON attendance_schedules(employee_id, weekday)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_catalog_type_active ON attendance_activity_catalog(type, active, sort_order)').run();
@@ -1431,6 +1483,11 @@ db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_phone ON sca_people(phone)
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_runs_finished ON sca_sync_runs(finished_at)').run();
 db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_connector_source ON sca_sync_connector_status(source)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_updated ON sca_sync_connector_status(updated_at)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_plans_active_name ON pix_plans(active, name)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_status ON pix_charges(status)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_contact ON pix_charges(contact_id)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_sca_manual_status ON pix_charges(sca_manual_status)').run();
+db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uniq_pix_charges_asaas_payment_id ON pix_charges(asaas_payment_id) WHERE asaas_payment_id <> ''").run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_conversation_created ON ai_feedback_events(conversation_id, created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback_events(created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_advertisers_segment_status ON advertisers(segment_id, status)').run();
@@ -6919,6 +6976,585 @@ async function processDownloadQueue() {
 
 async function convertAndSaveAudio(buffer) { const ts=Date.now(); const i=path.join(__dirname, `t_${ts}.ogg`); const o=path.join(__dirname, `t_${ts}.mp3`); await writeFile(i, buffer); return new Promise((r,j)=>{ ffmpeg(i).toFormat('mp3').on('end',async()=>{try{await unlink(i)}catch{} r(o)}).on('error',async()=>{try{await unlink(i)}catch{} j()}).save(o) }); }
 
+const PIX_SCA_CONFIRM_MESSAGE = 'Pagamento confirmado com sucesso, {{nome}}! Ja realizamos a baixa da sua mensalidade no sistema da academia. Se precisar de comprovante ou ajuda com seu plano, estou por aqui.';
+const PIX_PENDING_STATUSES = new Set(['pending', 'overdue']);
+const PIX_WEBHOOK_EVENTS_PAID = new Set(['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_UPDATED']);
+const pixConversationState = Object.create(null);
+
+function sanitizePixStudentName(value) {
+    return String(value || '')
+        .replace(/\u0000/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+}
+
+function sanitizePixDisplayName(value) {
+    const name = sanitizePixStudentName(value);
+    if (!name) return 'Aluno';
+    return name.split(' ')[0];
+}
+
+function listPixPlans({ activeOnly = false } = {}) {
+    const where = activeOnly ? 'WHERE active=1' : '';
+    return db.prepare(`
+        SELECT id, name, amount_cents, active, created_at, updated_at
+        FROM pix_plans
+        ${where}
+        ORDER BY active DESC, name COLLATE NOCASE ASC
+    `).all();
+}
+
+function getPixPlanById(id) {
+    return db.prepare(`
+        SELECT id, name, amount_cents, active, created_at, updated_at
+        FROM pix_plans
+        WHERE id=?
+    `).get(id);
+}
+
+function createPixPlan({ name, amountCents, active = 1 }) {
+    const now = Date.now();
+    const result = db.prepare(`
+        INSERT INTO pix_plans (name, amount_cents, active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+    `).run(name, amountCents, active ? 1 : 0, now, now);
+    return getPixPlanById(result.lastInsertRowid);
+}
+
+function updatePixPlan(id, patch = {}) {
+    const current = getPixPlanById(id);
+    if (!current) return null;
+    const nextName = patch.name !== undefined ? patch.name : current.name;
+    const nextAmount = patch.amountCents !== undefined ? Number(patch.amountCents) : Number(current.amount_cents);
+    const nextActive = patch.active !== undefined ? (patch.active ? 1 : 0) : Number(current.active || 0);
+    const now = Date.now();
+    db.prepare(`
+        UPDATE pix_plans
+           SET name=?,
+               amount_cents=?,
+               active=?,
+               updated_at=?
+         WHERE id=?
+    `).run(nextName, nextAmount, nextActive, now, id);
+    return getPixPlanById(id);
+}
+
+function deactivatePixPlan(id) {
+    const current = getPixPlanById(id);
+    if (!current) return null;
+    db.prepare('UPDATE pix_plans SET active=0, updated_at=? WHERE id=?').run(Date.now(), id);
+    return getPixPlanById(id);
+}
+
+function createPixChargeRow({
+    contactId,
+    contactName,
+    studentFullName,
+    plan,
+    asaasCustomerId,
+    asaasPaymentId,
+    asaasTxid,
+    pixCopyPaste,
+    pixQrPayload,
+    status = 'pending',
+    expiresAt = 0
+}) {
+    const now = Date.now();
+    const result = db.prepare(`
+        INSERT INTO pix_charges (
+            contact_id, contact_name, student_full_name, plan_id, plan_name_snapshot,
+            amount_cents, asaas_customer_id, asaas_payment_id, asaas_txid,
+            pix_copy_paste, pix_qr_payload, status, sca_manual_status,
+            created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `).run(
+        contactId,
+        contactName || '',
+        studentFullName,
+        Number(plan.id || 0),
+        String(plan.name || ''),
+        Number(plan.amount_cents || 0),
+        asaasCustomerId || '',
+        asaasPaymentId || '',
+        asaasTxid || '',
+        pixCopyPaste || '',
+        pixQrPayload || '',
+        status,
+        now,
+        now,
+        Number(expiresAt || 0)
+    );
+    return getPixChargeById(result.lastInsertRowid);
+}
+
+function getPixChargeById(id) {
+    return db.prepare(`
+        SELECT *
+        FROM pix_charges
+        WHERE id=?
+    `).get(id);
+}
+
+function getPixChargeByAsaasPaymentId(paymentId) {
+    return db.prepare(`
+        SELECT *
+        FROM pix_charges
+        WHERE asaas_payment_id=?
+    `).get(String(paymentId || ''));
+}
+
+function listPixCharges({ status = '', scaManualStatus = '', contact = '' } = {}) {
+    const where = [];
+    const params = [];
+    if (status) {
+        where.push('status=?');
+        params.push(status);
+    }
+    if (scaManualStatus) {
+        where.push('sca_manual_status=?');
+        params.push(scaManualStatus);
+    }
+    if (contact) {
+        where.push('(contact_id LIKE ? OR contact_name LIKE ? OR student_full_name LIKE ?)');
+        params.push(`%${contact}%`, `%${contact}%`, `%${contact}%`);
+    }
+    const sql = `
+        SELECT *
+        FROM pix_charges
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY created_at DESC
+        LIMIT 400
+    `;
+    return db.prepare(sql).all(...params);
+}
+
+function getLatestPendingScaChargeByContact(contactId) {
+    return db.prepare(`
+        SELECT *
+        FROM pix_charges
+        WHERE contact_id=?
+          AND status='paid'
+          AND sca_manual_status='pending'
+        ORDER BY paid_at DESC, updated_at DESC
+        LIMIT 1
+    `).get(contactId);
+}
+
+function getLatestOpenChargeByContact(contactId) {
+    return db.prepare(`
+        SELECT *
+        FROM pix_charges
+        WHERE contact_id=?
+          AND status IN ('pending', 'overdue')
+          AND sca_manual_status='pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+    `).get(contactId);
+}
+
+function setPixState(contactId, patch = {}) {
+    const current = pixConversationState[contactId] && typeof pixConversationState[contactId] === 'object'
+        ? pixConversationState[contactId]
+        : { step: 'idle' };
+    pixConversationState[contactId] = { ...current, ...patch, updatedAt: Date.now() };
+    return pixConversationState[contactId];
+}
+
+function clearPixState(contactId) {
+    delete pixConversationState[contactId];
+}
+
+function getPixState(contactId) {
+    return pixConversationState[contactId] || { step: 'idle' };
+}
+
+function findPixPlanFromInput(rawInput, plans = []) {
+    const input = String(rawInput || '').trim();
+    if (!input) return null;
+    if (/^\d{1,2}$/.test(input)) {
+        const idx = Number(input) - 1;
+        if (idx >= 0 && idx < plans.length) return plans[idx];
+    }
+    const key = normalizePlanLookupKey(input);
+    return plans.find((plan) => normalizePlanLookupKey(plan.name || '') === key)
+        || plans.find((plan) => normalizePlanLookupKey(plan.name || '').includes(key))
+        || null;
+}
+
+async function sendPixBotReply({ sender, user, text, timestamp = Date.now(), markPaused = false }) {
+    if (!text) return;
+    if (markPaused) user.pausedByHuman = true;
+    if (sock) await sock.sendMessage(getSendTarget(sender), { text });
+    appendHistoryEntry(user.history, 'Hime', text, timestamp);
+    saveChat(sender);
+    broadcast({
+        type: 'bot_reply',
+        from: sender,
+        text,
+        timestamp
+    });
+    if (markPaused) {
+        broadcast({
+            type: 'chat_ia_state_updated',
+            from: sender,
+            isPaused: true
+        });
+    }
+}
+
+function buildPixChargeSummary(plan, studentFullName) {
+    return [
+        'Perfeito. Confirme os dados para gerar o Pix:',
+        `Aluno: ${studentFullName}`,
+        `Plano: ${plan.name}`,
+        `Valor: ${formatCurrencyBRLFromCents(plan.amount_cents)}`,
+        '',
+        'Responda SIM para gerar o Pix ou NAO para cancelar.'
+    ].join('\n');
+}
+
+async function generatePixChargeForConversation({ sender, user, studentFullName, plan }) {
+    const phoneDigits = sanitizePhoneDigits(sender);
+    const customer = await createOrReuseAsaasCustomer(ASAAS_CONFIG, {
+        studentFullName,
+        contactId: sender,
+        contactPhoneDigits: phoneDigits
+    });
+    const dueAt = Date.now() + (ASAAS_CONFIG.pixExpiresHours * 3600 * 1000);
+    const payment = await createPixCharge(ASAAS_CONFIG, {
+        customerId: String(customer?.id || ''),
+        amountCents: Number(plan.amount_cents || 0),
+        description: `Mensalidade ${plan.name} - ${studentFullName}`,
+        externalReference: `himefit:${sender}:${Date.now()}`,
+        dueDateTs: dueAt
+    });
+    const qr = await fetchPixQrCode(ASAAS_CONFIG, payment?.id);
+    const copyPaste = String(qr?.payload || qr?.encodedImage || qr?.qrCode || payment?.pixQrCode || '').trim();
+    const qrPayload = String(qr?.encodedImage || qr?.qrCodeImage || '').trim();
+    const status = asaasStatusToInternal(payment?.status || 'PENDING');
+    const txid = String(qr?.expirationDate || payment?.transactionReceiptUrl || '').trim();
+    const row = createPixChargeRow({
+        contactId: sender,
+        contactName: user?.name || '',
+        studentFullName,
+        plan,
+        asaasCustomerId: String(customer?.id || ''),
+        asaasPaymentId: String(payment?.id || ''),
+        asaasTxid: txid,
+        pixCopyPaste: copyPaste,
+        pixQrPayload: qrPayload,
+        status,
+        expiresAt: dueAt
+    });
+    return row;
+}
+
+function buildPixInitialPrompt() {
+    return 'Perfeito. Quer pagar sua mensalidade agora via Pix? Responda SIM ou NAO.';
+}
+
+async function handlePixConversationMessage({ sender, user, text, msgTimestampMs }) {
+    if (!ASAAS_CONFIG.enabled) return { consumed: false };
+    const input = String(text || '').trim();
+    if (!input || user.pausedByHuman) return { consumed: false };
+    const state = getPixState(sender);
+    const plans = listPixPlans({ activeOnly: true });
+
+    if (!plans.length) return { consumed: false };
+
+    if (isCancelMessage(input)) {
+        if (state.step && state.step !== 'idle') {
+            clearPixState(sender);
+            const reply = 'Tudo bem, cancelei este fluxo de pagamento por Pix. Quando quiser tentar de novo, me avise.';
+            await sendPixBotReply({ sender, user, text: reply });
+            return { consumed: true };
+        }
+        return { consumed: false };
+    }
+
+    if (!state.step || state.step === 'idle') {
+        if (!detectPixMonthlyIntent(input)) return { consumed: false };
+        const openCharge = getLatestOpenChargeByContact(sender);
+        if (openCharge && String(openCharge.pix_copy_paste || '').trim()) {
+            const dueLabel = openCharge.expires_at ? new Date(Number(openCharge.expires_at)).toLocaleString('pt-BR') : '-';
+            await sendPixBotReply({
+                sender,
+                user,
+                text: [
+                    `Ja existe uma cobranca Pix em aberto para ${openCharge.student_full_name}.`,
+                    `Plano: ${openCharge.plan_name_snapshot}`,
+                    `Valor: ${formatCurrencyBRLFromCents(openCharge.amount_cents)}`,
+                    `Vencimento: ${dueLabel}`,
+                    '',
+                    'Pix copia e cola:',
+                    String(openCharge.pix_copy_paste || '').trim(),
+                ].join('\n')
+            });
+            setPixState(sender, { step: 'waiting_payment', chargeId: Number(openCharge.id || 0) });
+            return { consumed: true };
+        }
+        setPixState(sender, { step: 'awaiting_confirm_start' });
+        await sendPixBotReply({ sender, user, text: buildPixInitialPrompt() });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_confirm_start') {
+        const yesNo = parseYesNo(input);
+        if (yesNo === 'no') {
+            clearPixState(sender);
+            await sendPixBotReply({ sender, user, text: 'Sem problemas. Quando quiser pagar via Pix, me chame aqui.' });
+            return { consumed: true };
+        }
+        if (yesNo !== 'yes') {
+            await sendPixBotReply({ sender, user, text: 'Para continuar, responda SIM para gerar Pix ou NAO para cancelar.' });
+            return { consumed: true };
+        }
+        setPixState(sender, { step: 'awaiting_student_name' });
+        await sendPixBotReply({ sender, user, text: 'Perfeito. Me informe o nome completo do aluno para quem vamos lançar este plano.' });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_student_name') {
+        const studentFullName = sanitizePixStudentName(input);
+        if (studentFullName.length < 6 || studentFullName.split(' ').length < 2) {
+            await sendPixBotReply({ sender, user, text: 'Preciso do nome completo do aluno (nome e sobrenome) para seguir com a cobrança.' });
+            return { consumed: true };
+        }
+        setPixState(sender, {
+            step: 'awaiting_plan',
+            studentFullName
+        });
+        const plansText = buildPlanListText(plans);
+        await sendPixBotReply({
+            sender,
+            user,
+            text: `Obrigado. Agora me diga qual plano sera pago.\n\nPlanos disponiveis:\n${plansText}\n\nVoce pode responder com o nome do plano ou o numero da lista.`
+        });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_plan') {
+        const pickedPlan = findPixPlanFromInput(input, plans);
+        if (!pickedPlan) {
+            await sendPixBotReply({
+                sender,
+                user,
+                text: `Nao encontrei esse plano. Escolha um plano valido:\n${buildPlanListText(plans)}`
+            });
+            return { consumed: true };
+        }
+        setPixState(sender, {
+            step: 'awaiting_confirm_charge',
+            planId: Number(pickedPlan.id),
+            planName: String(pickedPlan.name || ''),
+            planAmountCents: Number(pickedPlan.amount_cents || 0)
+        });
+        await sendPixBotReply({
+            sender,
+            user,
+            text: buildPixChargeSummary(pickedPlan, state.studentFullName || '')
+        });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_confirm_charge') {
+        const yesNo = parseYesNo(input);
+        if (yesNo === 'no') {
+            clearPixState(sender);
+            await sendPixBotReply({ sender, user, text: 'Combinado. Nao gerei a cobranca. Quando quiser, posso montar o Pix novamente.' });
+            return { consumed: true };
+        }
+        if (yesNo !== 'yes') {
+            await sendPixBotReply({ sender, user, text: 'Responda SIM para gerar o Pix ou NAO para cancelar.' });
+            return { consumed: true };
+        }
+        const plan = plans.find((item) => Number(item.id) === Number(state.planId));
+        if (!plan) {
+            clearPixState(sender);
+            await sendPixBotReply({ sender, user, text: 'Este plano nao esta mais disponivel. Vou reiniciar o processo para voce.' });
+            return { consumed: true };
+        }
+        try {
+            const charge = await generatePixChargeForConversation({
+                sender,
+                user,
+                studentFullName: state.studentFullName || '',
+                plan
+            });
+            setPixState(sender, {
+                step: 'waiting_payment',
+                chargeId: Number(charge.id || 0)
+            });
+            const expiresLabel = charge.expires_at ? new Date(Number(charge.expires_at)).toLocaleString('pt-BR') : '-';
+            const copyPaste = String(charge.pix_copy_paste || '').trim();
+            const message = [
+                `Pix gerado com sucesso para ${state.studentFullName || 'o aluno'}.`,
+                `Plano: ${plan.name}`,
+                `Valor: ${formatCurrencyBRLFromCents(plan.amount_cents)}`,
+                `Vencimento: ${expiresLabel}`,
+                '',
+                'Pix copia e cola:',
+                copyPaste || '(indisponivel no momento)',
+                '',
+                'Assim que o pagamento for confirmado, eu aviso aqui.'
+            ].join('\n');
+            await sendPixBotReply({ sender, user, text: message });
+            return { consumed: true };
+        } catch (error) {
+            console.error('[pix] erro ao gerar cobranca:', error?.message || error);
+            clearPixState(sender);
+            await sendPixBotReply({ sender, user, text: 'Nao consegui gerar o Pix agora. Vou chamar um atendente para te ajudar.' });
+            return { consumed: true };
+        }
+    }
+
+    if (state.step === 'waiting_payment') {
+        const charge = getPixChargeById(Number(state.chargeId || 0));
+        if (!charge) {
+            clearPixState(sender);
+            return { consumed: false };
+        }
+        if (String(charge.status || '') === 'paid') {
+            await sendPixBotReply({
+                sender,
+                user,
+                text: 'Seu pagamento ja foi confirmado. Nossa equipe vai realizar a baixa no SCA e te avisar por aqui.',
+                markPaused: true
+            });
+            return { consumed: true };
+        }
+        if (PIX_PENDING_STATUSES.has(String(charge.status || ''))) {
+            await sendPixBotReply({
+                sender,
+                user,
+                text: 'Ainda estou aguardando a confirmacao do Pix. Quando confirmar, eu aviso aqui automaticamente.'
+            });
+            return { consumed: true };
+        }
+    }
+
+    return { consumed: false };
+}
+
+async function notifyPixPaidAndPauseConversation(charge) {
+    if (!charge || !charge.contact_id) return;
+    const contactId = String(charge.contact_id || '');
+    const convo = conversationState[contactId];
+    if (!convo) return;
+    convo.pausedByHuman = true;
+    convo.status = 'active';
+    convo.lastActivityTimestamp = Date.now();
+    const msg = `Pagamento do plano ${charge.plan_name_snapshot} confirmado para ${charge.student_full_name}. Nossa equipe vai realizar a baixa manual no SCA e te avisar em seguida.`;
+    if (sock) await sock.sendMessage(getSendTarget(contactId), { text: msg });
+    appendHistoryEntry(convo.history, 'Hime', msg, Date.now());
+    saveChat(contactId);
+    broadcast({ type: 'bot_reply', from: contactId, text: msg, timestamp: Date.now() });
+    broadcast({ type: 'chat_ia_state_updated', from: contactId, isPaused: true, source: 'pix_paid' });
+    broadcast({
+        type: 'pix_charge_paid_pending_sca',
+        from: contactId,
+        chargeId: Number(charge.id || 0),
+        studentFullName: charge.student_full_name || '',
+        planName: charge.plan_name_snapshot || '',
+        amountCents: Number(charge.amount_cents || 0),
+        paidAt: Number(charge.paid_at || Date.now())
+    });
+    setPixState(contactId, { step: 'waiting_sca_manual', chargeId: Number(charge.id || 0) });
+}
+
+async function processAsaasWebhook({ headers, body }) {
+    if (!verifyAsaasWebhookToken(headers, ASAAS_CONFIG.webhookToken)) {
+        return { ok: false, error: 'unauthorized' };
+    }
+    const eventName = String(body?.event || '').trim();
+    if (!eventName) return { ok: false, error: 'invalid_event' };
+    if (!PIX_WEBHOOK_EVENTS_PAID.has(eventName)) return { ok: false, error: 'ignored' };
+    const paymentId = extractWebhookPaymentId(body);
+    if (!paymentId) return { ok: false, error: 'invalid_payment_id' };
+
+    const dbCharge = getPixChargeByAsaasPaymentId(paymentId);
+    if (!dbCharge) return { ok: false, error: 'ignored' };
+    if (String(dbCharge.status || '') === 'paid') return { ok: true, ignored: true };
+
+    let asaasPayment = null;
+    try {
+        asaasPayment = await fetchPayment(ASAAS_CONFIG, paymentId);
+    } catch (error) {
+        console.error('[pix] webhook fetch payment error:', error?.message || error);
+        return { ok: false, error: 'payment_lookup_failed' };
+    }
+
+    const asaasStatus = extractWebhookStatus({ payment: asaasPayment }) || extractWebhookStatus(body);
+    const internalStatus = asaasStatusToInternal(asaasStatus);
+    const now = Date.now();
+    db.prepare(`
+        UPDATE pix_charges
+           SET status=?,
+               paid_at=CASE WHEN ?='paid' AND paid_at<=0 THEN ? ELSE paid_at END,
+               updated_at=?
+         WHERE id=?
+    `).run(internalStatus, internalStatus, now, now, Number(dbCharge.id));
+    const updated = getPixChargeById(Number(dbCharge.id));
+    if (updated && String(updated.status || '') === 'paid') {
+        await notifyPixPaidAndPauseConversation(updated);
+    }
+    return { ok: true };
+}
+
+async function confirmPixChargeScaDone({ id, actor, actorUsername, ip }) {
+    const charge = getPixChargeById(id);
+    if (!charge) throw new Error('charge_not_found');
+    if (String(charge.sca_manual_status || '') === 'done') return charge;
+    const now = Date.now();
+    db.prepare(`
+        UPDATE pix_charges
+           SET sca_manual_status='done',
+               sca_done_by=?,
+               sca_done_at=?,
+               updated_at=?
+         WHERE id=?
+    `).run(String(actor || actorUsername || 'Atendente'), now, now, id);
+    const updated = getPixChargeById(id);
+    logAdminAction('pix.charge.sca_done', actorUsername || actor || 'atendente', String(id), {
+        paymentStatus: updated?.status || '',
+        contactId: updated?.contact_id || ''
+    }, ip);
+
+    const contactId = String(updated?.contact_id || '');
+    const convo = conversationState[contactId];
+    if (convo) {
+        const firstName = sanitizePixDisplayName(updated?.student_full_name || convo.name || '');
+        const finalText = PIX_SCA_CONFIRM_MESSAGE.replace('{{nome}}', firstName);
+        if (sock) await sock.sendMessage(getSendTarget(contactId), { text: finalText });
+        appendHistoryEntry(convo.history, String(actor || 'Atendente'), `Baixa SCA concluida para ${updated.plan_name_snapshot}.`, now);
+        appendHistoryEntry(convo.history, 'Hime', finalText, now + 1);
+        convo.pausedByHuman = false;
+        saveChat(contactId);
+        broadcast({
+            type: 'admin_reply_success',
+            from: contactId,
+            text: `Baixa SCA concluida para ${updated.plan_name_snapshot}.`,
+            senderName: String(actor || 'Atendente'),
+            isPaused: false,
+            timestamp: now
+        });
+        broadcast({
+            type: 'bot_reply',
+            from: contactId,
+            text: finalText,
+            timestamp: now + 1
+        });
+        broadcast({ type: 'chat_ia_state_updated', from: contactId, isPaused: false, source: 'sca_done' });
+        clearPixState(contactId);
+    }
+    return updated;
+}
+
+function getPendingPixForContact(contactId) {
+    return getLatestPendingScaChargeByContact(contactId);
+}
+
 // --- SERVIDOR ---
 const app = express();
 const server = http.createServer(app);
@@ -7103,6 +7739,22 @@ registerChatAdminRoutes({
     getAiContextPreviewForConversation: buildAiContextPreviewForConversation,
     registerAiFeedbackForConversation,
     listAiFeedbackEvents
+});
+
+registerPixAdminRoutes({
+    app,
+    requirePanelAuth,
+    requireAdmin,
+    sanitizePublicText,
+    logAdminAction,
+    listPixPlans,
+    createPixPlan,
+    updatePixPlan,
+    deactivatePixPlan,
+    listPixCharges,
+    getPixChargeById,
+    confirmPixChargeScaDone,
+    processAsaasWebhook
 });
 
 // --- ATTENDANCE (PONTO) ---
@@ -7620,23 +8272,33 @@ wss.on('connection', (ws, req) => {
                 } catch(e){}
             }
             if (data.type === 'request_initial_lists') { 
-                const chats = Object.entries(conversationState).map(([id, s]) => ({
-                    id,
-                    name: s.name,
-                    lastMessage: s.history.slice(-1)[0],
-                    timestamp: s.lastActivityTimestamp,
-                    tags: s.tags,
-                    notes: s.notes,
-                    status: s.status,
-                    pausedByHuman: s.pausedByHuman,
-                    pendingHuman: !!s.pendingHumanHandoff,
-                    slaStatus: normalizeChatSlaStatus(s.slaStatus),
-                    slaPendingSince: Number(s.slaPendingSince || 0)
-                })).sort((a, b) => b.timestamp - a.timestamp); 
+                const chats = Object.entries(conversationState).map(([id, s]) => {
+                    const pendingPix = getPendingPixForContact(id);
+                    return {
+                        id,
+                        name: s.name,
+                        lastMessage: s.history.slice(-1)[0],
+                        timestamp: s.lastActivityTimestamp,
+                        tags: s.tags,
+                        notes: s.notes,
+                        status: s.status,
+                        pausedByHuman: s.pausedByHuman,
+                        pendingHuman: !!s.pendingHumanHandoff,
+                        slaStatus: normalizeChatSlaStatus(s.slaStatus),
+                        slaPendingSince: Number(s.slaPendingSince || 0),
+                        pixPendingSca: pendingPix ? {
+                            chargeId: Number(pendingPix.id || 0),
+                            studentFullName: pendingPix.student_full_name || '',
+                            planName: pendingPix.plan_name_snapshot || '',
+                            amountCents: Number(pendingPix.amount_cents || 0),
+                            paidAt: Number(pendingPix.paid_at || 0)
+                        } : null
+                    };
+                }).sort((a, b) => b.timestamp - a.timestamp); 
                 ws.send(JSON.stringify({ type: 'active_chat_list', chats })); 
             }
-            if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u) ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff })); }
-            if (data.type === 'request_chat_meta') { const u = conversationState[data.contactId]; if (u) ws.send(JSON.stringify({ type: 'chat_meta_response', from: data.contactId, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff })); }
+            if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u){ const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
+            if (data.type === 'request_chat_meta') { const u = conversationState[data.contactId]; if (u) { const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_meta_response', from: data.contactId, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
             if (data.type === 'update_contact_data') { const u=conversationState[data.contactId]; if(u){ u.tags=data.tags; u.notes=data.notes; saveChat(data.contactId); broadcast({type:'contact_data_updated', contactId:data.contactId, tags:u.tags, notes:u.notes}); } }
             if (data.type === 'admin_reply') {
                 const u = conversationState[data.to];
@@ -8293,6 +8955,13 @@ async function startBot() {
                 saveChat(sender);
                 broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
             }
+            const pixResult = await handlePixConversationMessage({
+                sender,
+                user,
+                text,
+                msgTimestampMs
+            });
+            if (pixResult?.consumed) return;
             if (user.pausedByHuman || isAttendanceContact) return;
         } else {
             if (isAttendanceContact) {

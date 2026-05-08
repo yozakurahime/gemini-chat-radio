@@ -122,6 +122,7 @@
       "apps/server/attendance_interactive_runtime.js",
       "apps/server/knowledge_context_profile.js",
       "apps/server/owner_whatsapp_reply_runtime.js",
+      "apps/server/payments/**/*",
       "apps/server/bootstrap/**/*",
       "apps/server/routes/**/*",
       "apps/server/notify.wav",

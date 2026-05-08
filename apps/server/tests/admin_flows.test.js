@@ -21,6 +21,15 @@ const {
   generateContextFromProfile,
   normalizeContextProfile,
 } = require('../knowledge_context_profile');
+const {
+  detectPixMonthlyIntent,
+  normalizePlanLookupKey,
+  parseYesNo,
+} = require('../payments/pix_chat_runtime');
+const {
+  asaasStatusToInternal,
+  verifyAsaasWebhookToken,
+} = require('../payments/asaas_pix_runtime');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -291,6 +300,22 @@ test('knowledge context profile runtime generates structured IA context', () => 
   assert.match(context, /Hidroginastica/);
   assert.match(context, /Plano mensal/);
   assert.match(context, /Reposicao/);
+});
+
+test('pix chat runtime detects payment intent and confirmation answers', () => {
+  assert.equal(detectPixMonthlyIntent('Quero pagar a mensalidade no pix'), true);
+  assert.equal(detectPixMonthlyIntent('Qual o horario de hoje?'), false);
+  assert.equal(parseYesNo('sim'), 'yes');
+  assert.equal(parseYesNo('nao'), 'no');
+  assert.equal(normalizePlanLookupKey('Hidroginástica Mensal'), 'hidroginastica mensal');
+});
+
+test('asaas pix runtime maps statuses and validates webhook token', () => {
+  assert.equal(asaasStatusToInternal('RECEIVED'), 'paid');
+  assert.equal(asaasStatusToInternal('OVERDUE'), 'overdue');
+  assert.equal(asaasStatusToInternal('PENDING'), 'pending');
+  assert.equal(verifyAsaasWebhookToken({ 'asaas-access-token': 'abc' }, 'abc'), true);
+  assert.equal(verifyAsaasWebhookToken({ 'x-asaas-access-token': 'xyz' }, 'abc'), false);
 });
 
 test('admin endpoints: attendance cadastro flow works end-to-end', async (t) => {

@@ -4,6 +4,37 @@ import { apiFetch, jsonHeaders } from "@/lib/panel-api";
 import { BR_TIMEZONE } from "@/lib/date-time";
 
 type User = { username: string; fullname?: string; role?: string; avatar?: string };
+type PixPendingSca = {
+  chargeId: number;
+  studentFullName: string;
+  planName: string;
+  amountCents: number;
+  paidAt: number;
+};
+type PixPlan = {
+  id: number;
+  name: string;
+  amount_cents: number;
+  active: number;
+  created_at?: number;
+  updated_at?: number;
+};
+type PixCharge = {
+  id: number;
+  contact_id: string;
+  contact_name: string;
+  student_full_name: string;
+  plan_id: number;
+  plan_name_snapshot: string;
+  amount_cents: number;
+  status: string;
+  sca_manual_status: string;
+  paid_at?: number;
+  sca_done_by?: string;
+  sca_done_at?: number;
+  created_at?: number;
+  updated_at?: number;
+};
 type Chat = {
   id: string;
   name: string;
@@ -20,6 +51,7 @@ type Chat = {
   needsHuman?: boolean;
   tags?: string[];
   notes?: string;
+  pixPendingSca?: PixPendingSca | null;
 };
 type AiContextPreview = {
   conversation?: {
@@ -221,6 +253,14 @@ type PanelDataContextValue = {
   geoPolicy: any;
   saveGeoPolicy: (policy: { academyLat: string; academyLng: string; radiusM: string }) => Promise<boolean>;
   systemHealth: SystemHealthSnapshot | null;
+  pixPlans: PixPlan[];
+  pixCharges: PixCharge[];
+  refreshPixPlans: () => Promise<void>;
+  createPixPlan: (payload: { name: string; amount_cents: number; active?: boolean }) => Promise<boolean>;
+  updatePixPlan: (id: number, payload: { name?: string; amount_cents?: number; active?: boolean }) => Promise<boolean>;
+  deletePixPlan: (id: number) => Promise<boolean>;
+  refreshPixCharges: (filters?: { status?: string; sca_manual_status?: string; contact?: string }) => Promise<void>;
+  confirmPixScaDone: (chargeId: number) => Promise<boolean>;
 };
 
 const PanelDataContext = createContext<PanelDataContextValue | null>(null);
@@ -515,6 +555,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [geoPolicy, setGeoPolicy] = useState<any>(null);
   const [systemHealth, setSystemHealth] = useState<SystemHealthSnapshot | null>(null);
+  const [pixPlans, setPixPlans] = useState<PixPlan[]>([]);
+  const [pixCharges, setPixCharges] = useState<PixCharge[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selectedChatRef = useRef<string | null>(null);
@@ -727,6 +769,94 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user?.role]);
 
+  const refreshPixPlans = useCallback(async () => {
+    try {
+      const res = await apiFetch("/admin/pix/plans");
+      const data = await res.json();
+      setPixPlans(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setPixPlans([]);
+    }
+  }, []);
+
+  const createPixPlan = useCallback(async (payload: { name: string; amount_cents: number; active?: boolean }) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch("/admin/pix/plans", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshPixPlans();
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      toast.error(code === "plan_exists" ? "Ja existe um plano com esse nome." : "Falha ao criar plano Pix.");
+      return false;
+    }
+  }, [refreshPixPlans, user?.role]);
+
+  const updatePixPlan = useCallback(async (id: number, payload: { name?: string; amount_cents?: number; active?: boolean }) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch(`/admin/pix/plans/${encodeURIComponent(String(id))}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload),
+      });
+      await refreshPixPlans();
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      toast.error(code === "plan_exists" ? "Ja existe um plano com esse nome." : "Falha ao atualizar plano Pix.");
+      return false;
+    }
+  }, [refreshPixPlans, user?.role]);
+
+  const deletePixPlan = useCallback(async (id: number) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch(`/admin/pix/plans/${encodeURIComponent(String(id))}`, {
+        method: "DELETE",
+      });
+      await refreshPixPlans();
+      return true;
+    } catch {
+      toast.error("Falha ao desativar plano Pix.");
+      return false;
+    }
+  }, [refreshPixPlans, user?.role]);
+
+  const refreshPixCharges = useCallback(async (filters: { status?: string; sca_manual_status?: string; contact?: string } = {}) => {
+    try {
+      const params = new URLSearchParams();
+      if (filters.status) params.set("status", String(filters.status));
+      if (filters.sca_manual_status) params.set("sca_manual_status", String(filters.sca_manual_status));
+      if (filters.contact) params.set("contact", String(filters.contact));
+      const res = await apiFetch(`/admin/pix/charges${params.toString() ? `?${params.toString()}` : ""}`);
+      const data = await res.json();
+      setPixCharges(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setPixCharges([]);
+    }
+  }, []);
+
+  const confirmPixScaDone = useCallback(async (chargeId: number) => {
+    if (!chargeId) return false;
+    try {
+      await apiFetch(`/admin/pix/charges/${encodeURIComponent(String(chargeId))}/sca-done`, {
+        method: "POST",
+      });
+      await Promise.all([refreshPixCharges(), refreshSystemHealth()]);
+      requestInitialLists();
+      toast.success("Baixa SCA confirmada e cliente notificado.");
+      return true;
+    } catch {
+      toast.error("Falha ao confirmar baixa manual no SCA.");
+      return false;
+    }
+  }, [refreshPixCharges, refreshSystemHealth, requestInitialLists]);
+
   const refreshAll = useCallback(async () => {
     requestInitialLists();
     await Promise.all([
@@ -734,8 +864,10 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       fetchKnowledge(),
       fetchGeoPolicy(),
       refreshSystemHealth(),
+      refreshPixPlans(),
+      refreshPixCharges(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -770,6 +902,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             attentionSince: shouldAttention ? now : (isSelected ? undefined : chat.attentionSince),
             slaStatus: extra?.slaStatus || chat.slaStatus || "ok",
             slaPendingSince: extra?.slaPendingSince ?? chat.slaPendingSince,
+            pixPendingSca: chat.pixPendingSca || null,
           };
         });
       }
@@ -786,6 +919,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
         attentionSince: shouldAttention ? now : undefined,
         slaStatus: extra?.slaStatus || "ok",
         slaPendingSince: extra?.slaPendingSince ?? 0,
+        pixPendingSca: null,
       }, ...prev];
     });
 
@@ -809,6 +943,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           pendingHuman: !!chat.pendingHuman,
           slaStatus: (chat.slaStatus || "ok") as "ok" | "atrasando" | "critico",
           slaPendingSince: Number(chat.slaPendingSince || 0),
+          pixPendingSca: chat.pixPendingSca || null,
         }));
         setChats((prev) => {
           const prevMap = new Map(prev.map((chat) => [chat.id, chat]));
@@ -820,6 +955,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             attentionSince: prevMap.get(chat.id)?.attentionSince,
             slaStatus: (chat.slaStatus || prevMap.get(chat.id)?.slaStatus || "ok") as "ok" | "atrasando" | "critico",
             slaPendingSince: Number(chat.slaPendingSince || prevMap.get(chat.id)?.slaPendingSince || 0),
+            pixPendingSca: chat.pixPendingSca || prevMap.get(chat.id)?.pixPendingSca || null,
           }));
         });
         break;
@@ -832,6 +968,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             notes: payload.notes || "",
             pausedByHuman: !!payload.isPaused,
             pendingHuman: !!payload.pendingHuman,
+            pixPendingSca: payload.pixPendingSca || chat.pixPendingSca || null,
           } : chat));
         }
         break;
@@ -900,7 +1037,28 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             ...chat,
             pausedByHuman: false,
             pendingHuman: false,
+            pixPendingSca: payload.source === "sca_done" ? null : chat.pixPendingSca || null,
           } : chat));
+        }
+        break;
+      case "pix_charge_paid_pending_sca":
+        if (payload.from) {
+          const pendingInfo = {
+            chargeId: Number(payload.chargeId || 0),
+            studentFullName: String(payload.studentFullName || ""),
+            planName: String(payload.planName || ""),
+            amountCents: Number(payload.amountCents || 0),
+            paidAt: Number(payload.paidAt || Date.now()),
+          };
+          setChats((prev) => prev.map((chat) => chat.id === payload.from ? {
+            ...chat,
+            pausedByHuman: true,
+            pixPendingSca: pendingInfo,
+          } : chat));
+          toast.warning("Pix confirmado - baixa manual no SCA pendente", {
+            description: `${pendingInfo.studentFullName || payload.from} - ${pendingInfo.planName || "Plano"}`,
+          });
+          void refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
         }
         break;
       case "help_alert":
@@ -941,7 +1099,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       default:
         break;
     }
-  }, [notifyUnreadMessage, updateChatMessage]);
+  }, [notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -1086,6 +1244,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setChats([]);
     setMessages([]);
     setSelectedChatId(null);
+    setPixPlans([]);
+    setPixCharges([]);
   }, []);
 
   const selectChat = useCallback(async (id: string) => {
@@ -1574,6 +1734,14 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     geoPolicy,
     saveGeoPolicy,
     systemHealth,
+    pixPlans,
+    pixCharges,
+    refreshPixPlans,
+    createPixPlan,
+    updatePixPlan,
+    deletePixPlan,
+    refreshPixCharges,
+    confirmPixScaDone,
   }), [
     adCampaigns,
     adFiles,
@@ -1626,6 +1794,14 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     geoPolicy,
     saveGeoPolicy,
     systemHealth,
+    pixPlans,
+    pixCharges,
+    refreshPixPlans,
+    createPixPlan,
+    updatePixPlan,
+    deletePixPlan,
+    refreshPixCharges,
+    confirmPixScaDone,
     ackChatAttention,
     selectChat,
     selectedChat,

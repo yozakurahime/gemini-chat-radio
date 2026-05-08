@@ -124,6 +124,7 @@ export default function AtendimentoPage() {
     selectChat,
     sendText,
     setChatIAEnabled,
+    confirmPixScaDone,
     fetchAiContextPreview,
     submitAiFeedback,
     hasMoreMessages,
@@ -270,6 +271,7 @@ export default function AtendimentoPage() {
                           {conv.attentionActive ? `NOVA • ${conv.name || phoneFromJid(conv.id)}` : (conv.name || phoneFromJid(conv.id))}
                         </span>
                         {slaCritical ? <Badge variant="destructive" className="text-[10px] px-1.5 py-0">SLA Critico</Badge> : null}
+                        {conv.pixPendingSca ? <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-emerald-500/20 text-emerald-700 dark:text-emerald-200">Pago - pendente SCA</Badge> : null}
                         {!slaCritical && slaDelayed ? (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-orange-500/20 text-orange-700 dark:text-orange-200">SLA Atrasando</Badge>
                         ) : null}
@@ -321,6 +323,7 @@ export default function AtendimentoPage() {
                   <p className="text-xs text-muted-foreground">{phoneFromJid(selectedChat.id)}</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {selectedChat.pixPendingSca ? <Badge variant="secondary" className="bg-emerald-500/20 text-emerald-700 dark:text-emerald-200">Pago - pendente baixa SCA</Badge> : null}
                   {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA Critico</Badge> : null}
                   {selectedChat.slaStatus === "atrasando" ? <Badge variant="secondary">SLA Atrasando</Badge> : null}
                   <span className="text-xs text-muted-foreground">Resposta IA</span>
@@ -341,6 +344,23 @@ export default function AtendimentoPage() {
 
               <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3 max-w-2xl mx-auto">
+                  {selectedChat.pixPendingSca ? (
+                    <div className="rounded-lg border border-emerald-400/40 bg-emerald-500/5 p-3 space-y-2">
+                      <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-200">Pagamento confirmado - baixa manual no SCA pendente</p>
+                      <p className="text-xs text-muted-foreground">
+                        Aluno: {selectedChat.pixPendingSca.studentFullName} | Plano: {selectedChat.pixPendingSca.planName} | Valor: {(selectedChat.pixPendingSca.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                      </p>
+                      <p className="text-xs text-muted-foreground">Pagamento em {formatDateTime(selectedChat.pixPendingSca.paidAt)}</p>
+                      <Button
+                        size="sm"
+                        className="gap-1"
+                        onClick={() => confirmPixScaDone(selectedChat.pixPendingSca?.chargeId || 0)}
+                      >
+                        Confirmar baixa no SCA
+                      </Button>
+                    </div>
+                  ) : null}
+
                   <div className="rounded-lg border bg-card/70 p-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
