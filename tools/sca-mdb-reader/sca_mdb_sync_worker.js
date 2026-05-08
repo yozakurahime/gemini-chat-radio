@@ -198,9 +198,9 @@ function listDbCandidates(rootDir) {
     return out;
 }
 
-function runPowerShellJson(script, envExtra = {}) {
+function runPowerShellJson(script, envExtra = {}, executable = 'powershell.exe') {
     const ps = spawnSync(
-        'powershell.exe',
+        executable,
         ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
         {
             env: { ...process.env, ...envExtra },
@@ -219,6 +219,30 @@ function runPowerShellJson(script, envExtra = {}) {
     } catch (error) {
         throw new Error(`powershell_json_parse_failed: ${error?.message || error}`);
     }
+}
+
+function buildPowerShellCandidates() {
+    const out = ['powershell.exe'];
+    try {
+        if (process.platform === 'win32' && process.arch === 'x64') {
+            const wow64 = path.join(process.env.WINDIR || 'C:\\Windows', 'SysWOW64', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+            if (fs.existsSync(wow64)) out.push(wow64);
+        }
+    } catch (_) {}
+    return [...new Set(out)];
+}
+
+function runPowerShellJsonAny(script, envExtra = {}) {
+    const candidates = buildPowerShellCandidates();
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            return runPowerShellJson(script, envExtra, candidate);
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error('powershell_exec_failed');
 }
 
 function getOdbcDrivers() {
@@ -252,7 +276,7 @@ foreach ($regPath in $regPaths) {
 $rows = $rows | Where-Object { $_ } | Sort-Object -Unique
 @{ drivers = $rows } | ConvertTo-Json -Compress -Depth 4
 `;
-    const data = runPowerShellJson(script);
+    const data = runPowerShellJsonAny(script);
     return Array.isArray(data?.drivers) ? data.drivers.map((v) => String(v || '').trim()).filter(Boolean) : [];
 }
 
@@ -313,7 +337,7 @@ try {
   $conn.Close()
 }
 `;
-    return runPowerShellJson(script, {
+    return runPowerShellJsonAny(script, {
         SCA_ODBC_CONN: connectionString,
         SCA_ODBC_MODE: mode,
         SCA_ODBC_QUERY: query
