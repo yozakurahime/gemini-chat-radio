@@ -18,6 +18,10 @@ function registerPanelHostRoutes({
         '/download-recepcao',
         '/download-reception'
     ];
+    const receptionMdbReaderPathAliases = [
+        '/programarecepcao',
+        '/programa-recepcao'
+    ];
 
     function getRequestHost(req) {
         const forwardedHostRaw = String(req.get('x-forwarded-host') || '').trim();
@@ -70,7 +74,7 @@ function registerPanelHostRoutes({
         return sendPanelIndex(res);
     }
 
-    function listZipCandidates(dirPath) {
+    function listZipCandidates(dirPath, nameRegex = null) {
         if (!dirPath || !fs.existsSync(dirPath)) return [];
         try {
             return fs.readdirSync(dirPath)
@@ -79,6 +83,7 @@ function registerPanelHostRoutes({
                     const stat = fs.statSync(fullPath);
                     if (!stat.isFile()) return null;
                     if (!/\.zip$/i.test(name)) return null;
+                    if (nameRegex && !nameRegex.test(name)) return null;
                     return { fullPath, name, mtimeMs: Number(stat.mtimeMs || 0) };
                 })
                 .filter(Boolean)
@@ -108,6 +113,30 @@ function registerPanelHostRoutes({
         }
         candidates.push(...listZipCandidates(updatesReceptionDir));
         candidates.push(...listZipCandidates(distReceptionDir));
+        candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        return candidates[0] || null;
+    }
+
+    function resolveReceptionMdbReaderDownloadFile() {
+        const candidates = [];
+        const updatesBaseDir = updatesDir && String(updatesDir).trim()
+            ? path.resolve(updatesDir)
+            : path.join(rootDir, 'updates');
+        const updatesReceptionDir = path.join(updatesBaseDir, 'reception');
+        const distReceptionDir = path.resolve(rootDir, '..', '..', 'dist-recepcao');
+        const preferredLatest = path.join(updatesReceptionDir, 'sca-mdb-reader-latest.zip');
+        if (fs.existsSync(preferredLatest)) {
+            try {
+                const stat = fs.statSync(preferredLatest);
+                candidates.push({
+                    fullPath: preferredLatest,
+                    name: 'sca-mdb-reader-latest.zip',
+                    mtimeMs: Number(stat.mtimeMs || 0)
+                });
+            } catch (_) {}
+        }
+        candidates.push(...listZipCandidates(updatesReceptionDir, /^sca-mdb-reader-.*\.zip$/i));
+        candidates.push(...listZipCandidates(distReceptionDir, /^sca-mdb-reader-.*\.zip$/i));
         candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
         return candidates[0] || null;
     }
@@ -198,6 +227,15 @@ function registerPanelHostRoutes({
         const file = resolveReceptionDownloadFile();
         if (!file) {
             return res.status(404).send('Pacote da recepcao nao encontrado. Gere o ZIP de sincronizacao SCA DB primeiro.');
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        return res.download(file.fullPath, file.name);
+    });
+
+    app.get(receptionMdbReaderPathAliases, (req, res) => {
+        const file = resolveReceptionMdbReaderDownloadFile();
+        if (!file) {
+            return res.status(404).send('Pacote do programa de recepcao nao encontrado. Gere o ZIP sca-mdb-reader primeiro.');
         }
         res.setHeader('Cache-Control', 'no-store');
         return res.download(file.fullPath, file.name);

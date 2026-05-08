@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "generated_at": 0,
+  "engine": "access",
+  "db_file": "",
+  "table": "",
+  "columns": {
+    "external_id": "",
+    "name": "",
+    "phone": "",
+    "event_type": "",
+    "event_at": "",
+    "status": "",
+    "plan": "",
+    "gate": "",
+    "source_marker": ""
+  }
+}
