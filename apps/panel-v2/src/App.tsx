@@ -9,6 +9,7 @@ import Index from "./pages/Index";
 import LoginPage from "./pages/LoginPage";
 import PontoPage from "./pages/PontoPage";
 import ConfiguracoesPage from "./pages/ConfiguracoesPage";
+import RecepcaoSaudePage from "./pages/RecepcaoSaudePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,6 +32,7 @@ function AuthenticatedRoutes() {
       <Route element={<AppLayout />}>
         <Route path="/" element={<Index />} />
         <Route path="/ponto" element={<PontoPage />} />
+        <Route path="/recepcao-saude" element={<RecepcaoSaudePage />} />
         <Route path="/configuracoes" element={<ConfiguracoesPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />
