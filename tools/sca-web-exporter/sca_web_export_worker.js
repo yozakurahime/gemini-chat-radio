@@ -23,6 +23,11 @@ const FILE_PREFIX = String(process.env.SCA_WEB_FILE_PREFIX || 'sca-alunos').trim
 const LOG_ROTATE_BYTES = Math.max(256 * 1024, Number(process.env.SCA_WEB_LOG_ROTATE_BYTES || (5 * 1024 * 1024)));
 const BROWSER_CHANNEL = String(process.env.SCA_WEB_BROWSER_CHANNEL || 'msedge').trim();
 const BROWSER_EXECUTABLE_PATH = String(process.env.SCA_WEB_EXECUTABLE_PATH || '').trim();
+const WEB_SYNC_ENABLED = String(process.env.SCA_WEB_SYNC_ENABLED || '1').trim() !== '0';
+const WEB_SYNC_API_URL = String(process.env.SCA_WEB_SYNC_API_URL || 'https://www.academiaoxigenio.com/admin/sca/students/sync/batch').trim();
+const WEB_SYNC_TOKEN = String(process.env.SCA_WEB_SYNC_TOKEN || process.env.SCA_SYNC_TOKEN || '').trim();
+const WEB_SYNC_SOURCE = String(process.env.SCA_WEB_SYNC_SOURCE || 'sca_web_export').trim();
+const WEB_SYNC_BATCH_SIZE = Math.max(20, Math.min(2000, Number(process.env.SCA_WEB_SYNC_BATCH_SIZE || 300)));
 
 const LOGIN_USER_SELECTOR = String(process.env.SCA_WEB_LOGIN_USER_SELECTOR || '').trim();
 const LOGIN_PASSWORD_SELECTOR = String(process.env.SCA_WEB_LOGIN_PASSWORD_SELECTOR || '').trim();
@@ -74,6 +79,98 @@ function decodeHtmlEntities(text) {
             return _;
         }
     });
+}
+
+function normalizePhoneDigits(phoneRaw) {
+    const digits = String(phoneRaw || '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) return digits;
+    if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+    return digits;
+}
+
+function normalizeText(value, maxLen = 200) {
+    const text = decodeHtmlEntities(String(value === undefined || value === null ? '' : value)).trim();
+    if (!text) return '';
+    return text.slice(0, maxLen);
+}
+
+function sanitizeCpf(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.slice(0, 14);
+}
+
+function toStudentRow(row) {
+    const pick = (...keys) => {
+        for (const key of keys) {
+            if (row[key] === undefined || row[key] === null) continue;
+            const text = normalizeText(row[key]);
+            if (text) return text;
+        }
+        return '';
+    };
+    return {
+        full_name: pick('Nome-Completo', 'Nome Completo', 'Nome', 'Aluno'),
+        email: pick('E-mail', 'Email'),
+        phone_1: normalizePhoneDigits(pick('Telefone-1', 'Telefone 1', 'Telefone')),
+        phone_2: normalizePhoneDigits(pick('Telefone-2', 'Telefone 2', 'Celular')),
+        address: pick('Endereco', 'Endereço', 'Logradouro'),
+        number: pick('Numero', 'Número'),
+        complement: pick('Complemento'),
+        neighborhood: pick('Bairro'),
+        cep: pick('Cep', 'CEP'),
+        city: pick('Cidade'),
+        state: pick('Estado', 'UF'),
+        cpf: sanitizeCpf(pick('CPF')),
+        plan: pick('Plano', 'Modalidade')
+    };
+}
+
+async function postStudentsBatch(rows, connector = {}) {
+    const response = await fetch(WEB_SYNC_API_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-SCA-TOKEN': WEB_SYNC_TOKEN
+        },
+        body: JSON.stringify({
+            source: WEB_SYNC_SOURCE,
+            rows,
+            connector
+        })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error || `http_${response.status}`);
+    }
+    return data;
+}
+
+async function syncStudentsToServer(students, connector = {}) {
+    if (!WEB_SYNC_ENABLED) {
+        log('Envio para servidor desativado (SCA_WEB_SYNC_ENABLED=0).');
+        return;
+    }
+    if (!WEB_SYNC_TOKEN) {
+        log('SCA_WEB_SYNC_TOKEN ausente; pulando envio para servidor.');
+        return;
+    }
+    if (!students.length) {
+        log('Nenhuma linha valida de aluno para enviar.');
+        return;
+    }
+    let sent = 0;
+    let inserted = 0;
+    let updated = 0;
+    for (let i = 0; i < students.length; i += WEB_SYNC_BATCH_SIZE) {
+        const chunk = students.slice(i, i + WEB_SYNC_BATCH_SIZE);
+        const result = await postStudentsBatch(chunk, connector);
+        sent += chunk.length;
+        inserted += Number(result.inserted_count || 0);
+        updated += Number(result.updated_count || 0);
+        log(`Lote alunos enviado: ${chunk.length} | inserted=${result.inserted_count || 0} updated=${result.updated_count || 0}`);
+    }
+    log(`Envio concluido: enviados=${sent} inserted=${inserted} updated=${updated}`);
 }
 
 function getStamp() {
@@ -248,7 +345,9 @@ function convertWorkbookToCsv(sourceFile) {
     const outName = `${FILE_PREFIX}-${getStamp()}.csv`;
     const outPath = path.join(EXPORT_DIR, outName);
     fs.writeFileSync(outPath, csv, 'utf8');
-    return outPath;
+    const jsonRows = XLSX.utils.sheet_to_json(normalizedSheet, { raw: false, defval: '' });
+    const students = jsonRows.map(toStudentRow).filter((row) => row.full_name || row.phone_1 || row.cpf || row.email);
+    return { csvPath: outPath, students };
 }
 
 async function run() {
@@ -287,8 +386,14 @@ async function run() {
         log(`Arquivo baixado: ${rawPath}`);
 
         if (CONVERT_TO_CSV) {
-            const csvPath = convertWorkbookToCsv(rawPath);
-            log(`Arquivo convertido para CSV: ${csvPath}`);
+            const converted = convertWorkbookToCsv(rawPath);
+            log(`Arquivo convertido para CSV: ${converted.csvPath}`);
+            await syncStudentsToServer(converted.students, {
+                source: 'sca_web_exporter',
+                file_name: path.basename(rawPath),
+                generated_csv: path.basename(converted.csvPath),
+                exported_at: Date.now()
+            });
         }
 
         if (!KEEP_RAW_FILES) {

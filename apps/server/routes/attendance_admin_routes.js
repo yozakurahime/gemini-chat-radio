@@ -64,6 +64,34 @@ function registerAttendanceAdminRoutes({
 }) {
 const SCA_ALLOWED_EVENT_TYPES = new Set(['entry', 'exit', 'access', 'denied']);
 
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS sca_students_sync (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL DEFAULT 'sca_web_export',
+        student_key TEXT NOT NULL UNIQUE,
+        full_name TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        phone_1 TEXT NOT NULL DEFAULT '',
+        phone_2 TEXT NOT NULL DEFAULT '',
+        cpf TEXT NOT NULL DEFAULT '',
+        plan TEXT NOT NULL DEFAULT '',
+        address TEXT NOT NULL DEFAULT '',
+        number TEXT NOT NULL DEFAULT '',
+        complement TEXT NOT NULL DEFAULT '',
+        neighborhood TEXT NOT NULL DEFAULT '',
+        cep TEXT NOT NULL DEFAULT '',
+        city TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL DEFAULT '',
+        raw_json TEXT NOT NULL DEFAULT '{}',
+        first_seen_at INTEGER NOT NULL DEFAULT 0,
+        last_seen_at INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )
+`).run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_students_sync_last_seen ON sca_students_sync(last_seen_at DESC)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_students_sync_source ON sca_students_sync(source)').run();
+
 function formatLocalDateTime(value) {
     const ts = Number(value || 0);
     if (!Number.isFinite(ts) || ts <= 0) return '';
@@ -120,6 +148,72 @@ function parseScaEventAt(raw) {
     }
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeScaStudentText(raw, maxLen = 180) {
+    const value = sanitizePublicText(raw, maxLen);
+    return value || '';
+}
+
+function normalizeScaStudentPhone(raw) {
+    return normalizePhoneDigits(raw || '');
+}
+
+function normalizeScaStudentCpf(raw) {
+    return String(raw || '').replace(/\D/g, '').slice(0, 14);
+}
+
+function normalizeScaStudentRow(rawRow, index = 0) {
+    const row = rawRow && typeof rawRow === 'object' ? rawRow : {};
+    const pick = (...keys) => {
+        for (const key of keys) {
+            const value = row[key];
+            const text = normalizeScaStudentText(value, 220);
+            if (text) return text;
+        }
+        return '';
+    };
+    const fullName = normalizeScaStudentText(
+        pick('full_name', 'fullName', 'name', 'nome', 'Nome-Completo', 'Nome Completo'),
+        160
+    );
+    const email = normalizeScaStudentText(pick('email', 'E-mail', 'Email'), 180).toLowerCase();
+    const phone1 = normalizeScaStudentPhone(pick('phone_1', 'phone1', 'telefone_1', 'Telefone-1', 'Telefone 1', 'telefone'));
+    const phone2 = normalizeScaStudentPhone(pick('phone_2', 'phone2', 'telefone_2', 'Telefone-2', 'Telefone 2', 'celular'));
+    const cpf = normalizeScaStudentCpf(pick('cpf', 'CPF'));
+    const plan = normalizeScaStudentText(pick('plan', 'plano', 'Plano', 'modalidade', 'Modalidade'), 120);
+    const address = normalizeScaStudentText(pick('address', 'endereco', 'Endereço', 'Endereco', 'logradouro'), 180);
+    const number = normalizeScaStudentText(pick('number', 'numero', 'Número', 'Numero'), 40);
+    const complement = normalizeScaStudentText(pick('complement', 'complemento', 'Complemento'), 120);
+    const neighborhood = normalizeScaStudentText(pick('neighborhood', 'bairro', 'Bairro'), 120);
+    const cep = normalizeScaStudentText(pick('cep', 'CEP', 'Cep'), 20);
+    const city = normalizeScaStudentText(pick('city', 'cidade', 'Cidade'), 120);
+    const state = normalizeScaStudentText(pick('state', 'estado', 'Estado', 'uf', 'UF'), 10);
+
+    if (!fullName && !phone1 && !cpf && !email) {
+        return { ok: false, error: 'row_identity_required', index };
+    }
+    const studentKey = cpf || phone1 || `${fullName.toLowerCase()}|${email.toLowerCase()}`;
+    return {
+        ok: true,
+        row: {
+            student_key: studentKey,
+            full_name: fullName,
+            email,
+            phone_1: phone1,
+            phone_2: phone2,
+            cpf,
+            plan,
+            address,
+            number,
+            complement,
+            neighborhood,
+            cep,
+            city,
+            state,
+            raw: row
+        }
+    };
 }
 
 function normalizeScaConnectorInput(raw, fallbackSource = 'sca_db') {
@@ -313,6 +407,126 @@ app.get('/admin/sca/sync/status', (req, res) => {
         enabled: !!SCA_SYNC_ENABLED,
         tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
         ...status
+    });
+});
+
+app.post('/admin/sca/students/sync/batch', (req, res) => {
+    if (!authorizeScaSync(req, res)) return;
+    const source = sanitizePublicText(req.body?.source || 'sca_web_export', 60) || 'sca_web_export';
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) return res.status(400).json({ error: 'invalid_rows' });
+    if (rows.length > 10000) return res.status(400).json({ error: 'rows_limit_exceeded' });
+
+    const now = Date.now();
+    const normalized = [];
+    const rejected = [];
+    rows.forEach((row, index) => {
+        const item = normalizeScaStudentRow(row, index);
+        if (!item.ok) {
+            rejected.push({ index, error: item.error });
+            return;
+        }
+        normalized.push(item.row);
+    });
+    if (!normalized.length) {
+        return res.status(400).json({ error: 'no_valid_rows', rejected });
+    }
+
+    const upsert = db.prepare(`
+        INSERT INTO sca_students_sync (
+            source, student_key, full_name, email, phone_1, phone_2, cpf, plan,
+            address, number, complement, neighborhood, cep, city, state, raw_json,
+            first_seen_at, last_seen_at, created_at, updated_at
+        )
+        VALUES (
+            @source, @student_key, @full_name, @email, @phone_1, @phone_2, @cpf, @plan,
+            @address, @number, @complement, @neighborhood, @cep, @city, @state, @raw_json,
+            @first_seen_at, @last_seen_at, @created_at, @updated_at
+        )
+        ON CONFLICT(student_key) DO UPDATE SET
+            source=excluded.source,
+            full_name=excluded.full_name,
+            email=excluded.email,
+            phone_1=excluded.phone_1,
+            phone_2=excluded.phone_2,
+            cpf=excluded.cpf,
+            plan=excluded.plan,
+            address=excluded.address,
+            number=excluded.number,
+            complement=excluded.complement,
+            neighborhood=excluded.neighborhood,
+            cep=excluded.cep,
+            city=excluded.city,
+            state=excluded.state,
+            raw_json=excluded.raw_json,
+            last_seen_at=excluded.last_seen_at,
+            updated_at=excluded.updated_at
+    `);
+    const exists = db.prepare('SELECT id FROM sca_students_sync WHERE student_key=? LIMIT 1');
+
+    let insertedCount = 0;
+    let updatedCount = 0;
+    const tx = db.transaction(() => {
+        normalized.forEach((row) => {
+            const existed = !!exists.get(row.student_key);
+            upsert.run({
+                source,
+                student_key: row.student_key,
+                full_name: row.full_name,
+                email: row.email,
+                phone_1: row.phone_1,
+                phone_2: row.phone_2,
+                cpf: row.cpf,
+                plan: row.plan,
+                address: row.address,
+                number: row.number,
+                complement: row.complement,
+                neighborhood: row.neighborhood,
+                cep: row.cep,
+                city: row.city,
+                state: row.state,
+                raw_json: JSON.stringify(row.raw || {}),
+                first_seen_at: now,
+                last_seen_at: now,
+                created_at: now,
+                updated_at: now
+            });
+            if (existed) updatedCount += 1;
+            else insertedCount += 1;
+        });
+    });
+    tx();
+
+    return res.json({
+        ok: true,
+        source,
+        processed: rows.length,
+        accepted: normalized.length,
+        rejected_count: rejected.length,
+        rejected,
+        inserted_count: insertedCount,
+        updated_count: updatedCount
+    });
+});
+
+app.get('/admin/sca/students/sync/status', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const totals = db.prepare(`
+        SELECT
+            COUNT(*) AS total,
+            MAX(last_seen_at) AS last_seen_at,
+            SUM(CASE WHEN cpf<>'' THEN 1 ELSE 0 END) AS with_cpf,
+            SUM(CASE WHEN phone_1<>'' OR phone_2<>'' THEN 1 ELSE 0 END) AS with_phone
+        FROM sca_students_sync
+    `).get() || {};
+    res.json({
+        ok: true,
+        enabled: !!SCA_SYNC_ENABLED,
+        tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
+        total: Number(totals.total || 0),
+        last_seen_at: Number(totals.last_seen_at || 0),
+        with_cpf: Number(totals.with_cpf || 0),
+        with_phone: Number(totals.with_phone || 0)
     });
 });
 

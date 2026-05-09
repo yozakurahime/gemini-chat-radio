@@ -24,12 +24,14 @@ Worker separado para automatizar:
    - `SCA_WEB_USERNAME`
    - `SCA_WEB_PASSWORD`
 4. Rode `run_now.bat`.
+5. O worker ja envia os alunos para o backend (`/admin/sca/students/sync/batch`) quando o token estiver configurado.
 
 ## Saida
 
 - Arquivo bruto baixado: `runtime/downloads/`
 - CSV convertido: `runtime/exports/`
 - Log: `logs/sca-web-export.log`
+- Sincronizacao server: status em `/admin/sca/students/sync/status`
 
 ## Observacoes
 
