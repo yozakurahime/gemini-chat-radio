@@ -667,15 +667,10 @@ test('operational health/config and AI feedback endpoints work for admin', async
   assert.ok(events.some((event) => String(event.conversation_id || '') === contactId));
 });
 
-test('SCA sync endpoint enforces token and keeps idempotency', async (t) => {
-  const token = 'SCA_TOKEN_QA_123';
+test('SCA sync endpoints are disabled', async (t) => {
   const server = await startServer({
     dataRoot: makeTempDataRoot(),
     port: randomPort(),
-    extraEnv: {
-      SCA_SYNC_ENABLED: '1',
-      SCA_SYNC_TOKEN: token,
-    },
   });
   t.after(async () => {
     await stopServer(server);
@@ -685,61 +680,17 @@ test('SCA sync endpoint enforces token and keeps idempotency', async (t) => {
   const auth = await login(server.baseUrl, server.panelUser, server.panelPass);
   assert.equal(auth.res.status, 200);
 
-  const withoutToken = await reqJson(server.baseUrl, '/admin/sca/sync/batch', {
+  const syncBatch = await reqJson(server.baseUrl, '/admin/sca/sync/batch', {
     method: 'POST',
     body: { source: 'sca_db', events: [] },
   });
-  assert.equal(withoutToken.res.status, 401);
+  assert.equal(syncBatch.res.status, 410);
+  assert.equal(syncBatch.data.error, 'sca_import_disabled');
 
-  const invalidPayload = await reqJson(server.baseUrl, '/admin/sca/sync/batch', {
-    method: 'POST',
-    headers: { 'x-sca-token': token },
-    body: { source: 'sca_db', events: [] },
-  });
-  assert.equal(invalidPayload.res.status, 400);
-
-  const now = Date.now();
-  const sourceEventId = `evt-${now}`;
-  const payload = {
-    source: 'sca_db',
-    events: [{
-      source_event_id: sourceEventId,
-      external_id: `ext-${now}`,
-      name: 'Aluno QA',
-      phone: '62999991111',
-      event_type: 'entry',
-      event_at: now,
-      status: 'ativo',
-      plan: 'mensal',
-      gate: 'catraca-1',
-    }],
-  };
-
-  const firstSync = await reqJson(server.baseUrl, '/admin/sca/sync/batch', {
-    method: 'POST',
-    headers: { 'x-sca-token': token },
-    body: payload,
-  });
-  assert.equal(firstSync.res.status, 200);
-  assert.equal(firstSync.data.ok, true);
-  assert.ok(Number(firstSync.data.inserted_count || 0) >= 1);
-
-  const secondSync = await reqJson(server.baseUrl, '/admin/sca/sync/batch', {
-    method: 'POST',
-    headers: { 'x-sca-token': token },
-    body: payload,
-  });
-  assert.equal(secondSync.res.status, 200);
-  assert.equal(secondSync.data.ok, true);
-  assert.ok(Number(secondSync.data.duplicated_count || 0) >= 1);
-
-  const status = await reqJson(server.baseUrl, '/admin/sca/sync/status', {
+  const syncStatus = await reqJson(server.baseUrl, '/admin/sca/sync/status', {
     cookie: auth.cookie,
   });
-  assert.equal(status.res.status, 200);
-  assert.equal(status.data.ok, true);
-  assert.equal(status.data.enabled, true);
-  assert.equal(status.data.tokenConfigured, true);
-  assert.ok(Number(status.data.events?.total || 0) >= 1);
+  assert.equal(syncStatus.res.status, 410);
+  assert.equal(syncStatus.data.error, 'sca_import_disabled');
 });
 

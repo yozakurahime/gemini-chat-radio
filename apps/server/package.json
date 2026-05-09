@@ -9,8 +9,6 @@
     "test": "node --test tests/security.test.js tests/admin_flows.test.js",
     "health-check": "bash ../../tools/deploy/health-check.sh",
     "health-check:install-cron": "bash ../../tools/deploy/install-health-check-cron.sh",
-    "sca:sync": "node scripts/sca_sync_worker.js",
-    "sca:db:sync": "node scripts/sca_db_sync_worker.js",
     "desktop:publish-manifest": "node scripts/publish-desktop-release.js"
   },
   "dependencies": {

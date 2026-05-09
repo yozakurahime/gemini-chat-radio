@@ -13,8 +13,6 @@ function pickOptionalEnv(keys) {
 
 function makeApp(name, env) {
   const optionalRuntimeEnv = pickOptionalEnv([
-    "SCA_SYNC_ENABLED",
-    "SCA_SYNC_TOKEN",
     "ASAAS_ENV",
     "ASAAS_API_KEY",
     "ASAAS_WEBHOOK_TOKEN",

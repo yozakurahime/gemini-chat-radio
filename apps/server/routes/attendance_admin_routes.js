@@ -3,8 +3,6 @@ function registerAttendanceAdminRoutes({
     db,
     requirePanelAuth,
     requireAdmin,
-    SCA_SYNC_ENABLED,
-    SCA_SYNC_TOKEN,
     ATTENDANCE_ENABLED,
     getAttendanceGeoPolicy,
     getBotPhoneDigits,
@@ -58,9 +56,7 @@ function registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS,
-    upsertScaAccessBatch,
-    getScaSyncStatus
+    WEEKDAY_LABELS
 }) {
 const SCA_ALLOWED_EVENT_TYPES = new Set(['entry', 'exit', 'access', 'denied']);
 
@@ -253,21 +249,8 @@ function normalizeScaConnectorInput(raw, fallbackSource = 'sca_db') {
 }
 
 function authorizeScaSync(req, res) {
-    if (!SCA_SYNC_ENABLED) {
-        res.status(503).json({ error: 'sca_sync_disabled' });
-        return false;
-    }
-    const token = normalizeScaToken(SCA_SYNC_TOKEN);
-    if (!token) {
-        res.status(503).json({ error: 'sca_sync_token_missing' });
-        return false;
-    }
-    const incoming = normalizeScaToken(req.headers['x-sca-token']);
-    if (!incoming || incoming !== token) {
-        res.status(401).json({ error: 'invalid_sca_token' });
-        return false;
-    }
-    return true;
+    res.status(410).json({ error: 'sca_import_disabled' });
+    return false;
 }
 
 function computeValuePerClass({ scheduleType, rawValue, fallbackValue = 0 }) {
@@ -410,20 +393,7 @@ app.post('/admin/sca/sync/batch', (req, res) => {
 
 app.get('/admin/sca/sync/status', (req, res) => {
     const user = requireAdmin(req, res); if (!user) return;
-    const status = typeof getScaSyncStatus === 'function'
-        ? getScaSyncStatus()
-        : {
-            runs: { total: 0, last_success_at: 0, last_error_at: 0, last_message: '' },
-            events: { total: 0, latest_event_at: 0, lag_sec: null },
-            people: { total: 0 },
-            connector: { source: 'sca_db', engine_detected: '', db_file: '', last_scan_at: 0, last_error: '', lag_sec: null, updated_at: 0, meta: {} }
-        };
-    return res.json({
-        ok: true,
-        enabled: !!SCA_SYNC_ENABLED,
-        tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
-        ...status
-    });
+    return res.status(410).json({ error: 'sca_import_disabled' });
 });
 
 app.post('/admin/sca/connector/diagnostic', (req, res) => {
@@ -464,52 +434,7 @@ app.post('/admin/sca/connector/diagnostic', (req, res) => {
 
 app.get('/admin/sca/connector/diagnostic', (req, res) => {
     const user = requireAdmin(req, res); if (!user) return;
-    const connector = sanitizePublicText(req.query?.connector || '', 80);
-    const level = sanitizePublicText(req.query?.level || '', 12).toLowerCase();
-    const limitRaw = Number(req.query?.limit || 50);
-    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.floor(limitRaw))) : 50;
-    const sinceRaw = Number(req.query?.since || 0);
-    const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? Math.floor(sinceRaw) : 0;
-
-    const clauses = [];
-    const params = [];
-    if (connector) {
-        clauses.push('connector=?');
-        params.push(connector);
-    }
-    if (level && ['debug', 'info', 'warn', 'error'].includes(level)) {
-        clauses.push('level=?');
-        params.push(level);
-    }
-    if (since > 0) {
-        clauses.push('created_at>=?');
-        params.push(since);
-    }
-    const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const rows = db.prepare(`
-        SELECT id, connector, source, level, event, message, host, pid, meta_json, created_at
-        FROM sca_connector_diagnostics
-        ${whereSql}
-        ORDER BY created_at DESC
-        LIMIT ?
-    `).all(...params, limit).map((row) => {
-        let meta = {};
-        try { meta = JSON.parse(String(row.meta_json || '{}')); } catch (_) {}
-        return {
-            id: row.id,
-            connector: row.connector,
-            source: row.source,
-            level: row.level,
-            event: row.event,
-            message: row.message,
-            host: row.host,
-            pid: row.pid,
-            created_at: row.created_at,
-            meta
-        };
-    });
-
-    return res.json({ ok: true, items: rows });
+    return res.status(410).json({ error: 'sca_import_disabled' });
 });
 
 app.post('/admin/sca/students/sync/batch', (req, res) => {
@@ -613,23 +538,7 @@ app.post('/admin/sca/students/sync/batch', (req, res) => {
 
 app.get('/admin/sca/students/sync/status', (req, res) => {
     const user = requireAdmin(req, res); if (!user) return;
-    const totals = db.prepare(`
-        SELECT
-            COUNT(*) AS total,
-            MAX(last_seen_at) AS last_seen_at,
-            SUM(CASE WHEN cpf<>'' THEN 1 ELSE 0 END) AS with_cpf,
-            SUM(CASE WHEN phone_1<>'' OR phone_2<>'' THEN 1 ELSE 0 END) AS with_phone
-        FROM sca_students_sync
-    `).get() || {};
-    res.json({
-        ok: true,
-        enabled: !!SCA_SYNC_ENABLED,
-        tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
-        total: Number(totals.total || 0),
-        last_seen_at: Number(totals.last_seen_at || 0),
-        with_cpf: Number(totals.with_cpf || 0),
-        with_phone: Number(totals.with_phone || 0)
-    });
+    return res.status(410).json({ error: 'sca_import_disabled' });
 });
 
 if (ATTENDANCE_ENABLED) {

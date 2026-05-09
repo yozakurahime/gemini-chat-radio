@@ -31,9 +31,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\bootstrap-tools.ps1
 - `npm run panel_v2:test`
 - `npm run server:test`
 - `npm run server:timezone:set`
-- `npm run sca:sync:run`
-- `npm run sca:db:sync:run`
-- `npm run sca:db:package`
 - `npm run deploy:oracle:manual`
 - `npm run check:all`
 
@@ -48,40 +45,6 @@ Esse comando executa bootstrap de ferramentas, instalaÃ§Ãµes, testes e build
 - `iniciar_sistema.bat`
 - `reiniciar_sistema.bat`
 - `parar_sistema.bat`
-
-## SincronizaÃ§Ã£o SCA (CSV)
-
-- Configure `apps/server/.env`:
-  - `SCA_SYNC_ENABLED=1`
-  - `SCA_SYNC_TOKEN=seu_token`
-  - `SCA_EXPORT_DIR=C:\caminho\do\export\sca`
-- Execute manualmente:
-  - `npm run sca:sync:run`
-- ExecuÃ§Ã£o agendada (Windows):
-  - `tools\sca-sync\run_sca_sync.ps1`
-
-## SincronizaÃ§Ã£o SCA (Banco local - recepÃ§Ã£o)
-
-- Configure `apps/server/.env` (ou `.env.recepcao.example` na recepÃ§Ã£o):
-  - `SCA_SYNC_ENABLED=1`
-  - `SCA_SYNC_MODE=db`
-  - `SCA_SYNC_TOKEN=seu_token`
-  - `SCA_SYNC_API_URL=https://www.academiaoxigenio.com/admin/sca/sync/batch`
-  - `SCA_DB_DIR=C:\SistemaSCA`
-  - `SCA_DB_ENGINE=auto`
-- ExecuÃ§Ã£o manual:
-  - `npm run sca:db:sync:run`
-  - `tools\sca-sync\run_sca_db_sync.bat`
-- Agendar a cada 5 min (Windows):
-  - `tools\sca-sync\install_task_scheduler.bat`
-- Instalacao rapida no PC da recepcao:
-  - `tools\sca-sync\instalar_recepcao.bat`
-- Gerar pacote ZIP para PC da recepÃ§Ã£o:
-  - `powershell -NoProfile -ExecutionPolicy Bypass -File tools\sca-sync\build_recepcao_package.ps1`
-  - Esse comando tambÃ©m publica automaticamente em `updates/reception` e `runtime/updates/reception`.
-- Link pÃºblico direto:
-  - `https://www.academiaoxigenio.com/LINKDEDOWNLOADRECEPCAO`
-  - Alias estÃ¡vel: `https://www.academiaoxigenio.com/updates/reception/sca-sync-recepcao-latest.zip`
 
 ## Hospedagem 24x7 (free tier)
 

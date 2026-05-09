@@ -312,8 +312,8 @@ const ATTENDANCE_ENTRY_WINDOW_BEFORE_BLOCK_END_MIN = 30;
 const ATTENDANCE_EXIT_MANUAL_GRACE_AFTER_END_MIN = 0;
 const ATTENDANCE_EXIT_AUTO_CLOSE_ENABLED = true;
 const ATTENDANCE_ENTRY_WINDOW_AFTER_MIN = -ATTENDANCE_ENTRY_WINDOW_BEFORE_BLOCK_END_MIN;
-const SCA_SYNC_ENABLED = process.env.SCA_SYNC_ENABLED === '1';
-const SCA_SYNC_TOKEN = String(process.env.SCA_SYNC_TOKEN || '').trim();
+const SCA_SYNC_ENABLED = false;
+const SCA_SYNC_TOKEN = '';
 const ATTENDANCE_GEO_DEFAULTS = {
     enabled: true,
     require_entry_location: true,
@@ -7780,8 +7780,6 @@ registerAttendanceAdminRoutes({
     db,
     requirePanelAuth,
     requireAdmin,
-    SCA_SYNC_ENABLED,
-    SCA_SYNC_TOKEN,
     ATTENDANCE_ENABLED,
     getAttendanceGeoPolicy,
     getBotPhoneDigits,
@@ -7835,9 +7833,7 @@ registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS,
-    upsertScaAccessBatch,
-    getScaSyncStatus
+    WEEKDAY_LABELS
 });
 
 function parseTimeInputMs(v, fallback = null) {
