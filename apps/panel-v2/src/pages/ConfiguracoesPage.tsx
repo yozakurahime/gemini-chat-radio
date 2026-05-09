@@ -583,6 +583,18 @@ export default function ConfiguracoesPage() {
     }
   };
 
+  const enablePixPlan = async (id: number) => {
+    if (!id) return;
+    setPixSaving(true);
+    try {
+      const ok = await updatePixPlan(id, { active: true });
+      if (!ok) return;
+      toast.success("Plano Pix reativado.");
+    } finally {
+      setPixSaving(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-2">
@@ -1032,7 +1044,15 @@ export default function ConfiguracoesPage() {
                               <div className="flex items-center gap-2">
                                 {Number(item.active || 0) === 1 ? <Badge>Ativo</Badge> : <Badge variant="secondary">Inativo</Badge>}
                                 <Button size="sm" variant="outline" onClick={() => startPixEdit(item)} disabled={pixSaving}>Editar</Button>
-                                <Button size="sm" variant="outline" onClick={() => disablePixPlan(Number(item.id || 0))} disabled={pixSaving || Number(item.active || 0) !== 1}>Desativar</Button>
+                                {Number(item.active || 0) === 1 ? (
+                                  <Button size="sm" variant="outline" onClick={() => disablePixPlan(Number(item.id || 0))} disabled={pixSaving}>
+                                    Desativar
+                                  </Button>
+                                ) : (
+                                  <Button size="sm" variant="outline" onClick={() => enablePixPlan(Number(item.id || 0))} disabled={pixSaving}>
+                                    Reativar
+                                  </Button>
+                                )}
                               </div>
                             </div>
                           )}

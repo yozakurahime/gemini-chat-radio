@@ -1447,6 +1447,8 @@ db.prepare(`CREATE TABLE IF NOT EXISTS pix_charges (
     contact_id TEXT NOT NULL,
     contact_name TEXT DEFAULT '',
     student_full_name TEXT NOT NULL,
+    payer_full_name TEXT DEFAULT '',
+    payer_cpf_cnpj TEXT DEFAULT '',
     plan_id INTEGER NOT NULL,
     plan_name_snapshot TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
@@ -1583,6 +1585,8 @@ try { db.prepare("ALTER TABLE attendance_events ADD COLUMN geo_note TEXT DEFAULT
 try { db.prepare("ALTER TABLE attendance_geo_pending ADD COLUMN schedule_date_key TEXT DEFAULT ''").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE attendance_geo_pending ADD COLUMN block_start_min INTEGER").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE attendance_geo_pending ADD COLUMN block_end_min INTEGER").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE pix_charges ADD COLUMN payer_full_name TEXT DEFAULT ''").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE pix_charges ADD COLUMN payer_cpf_cnpj TEXT DEFAULT ''").run(); } catch(e) {}
 
 try {
     const segCount = Number(db.prepare('SELECT COUNT(1) AS c FROM business_segments').get()?.c || 0);
@@ -6979,6 +6983,8 @@ async function convertAndSaveAudio(buffer) { const ts=Date.now(); const i=path.j
 const PIX_SCA_CONFIRM_MESSAGE = 'Pagamento confirmado com sucesso, {{nome}}! Ja realizamos a baixa da sua mensalidade no sistema da academia. Se precisar de comprovante ou ajuda com seu plano, estou por aqui.';
 const PIX_PENDING_STATUSES = new Set(['pending', 'overdue']);
 const PIX_WEBHOOK_EVENTS_PAID = new Set(['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_UPDATED']);
+const PIX_REPLY_DELAY_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_MS || 700));
+const PIX_REPLY_DELAY_JITTER_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_JITTER_MS || 450));
 const pixConversationState = Object.create(null);
 
 function sanitizePixStudentName(value) {
@@ -6993,6 +6999,13 @@ function sanitizePixDisplayName(value) {
     const name = sanitizePixStudentName(value);
     if (!name) return 'Aluno';
     return name.split(' ')[0];
+}
+
+function sanitizePixCpfCnpj(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (digits.length === 11) return digits;
+    if (digits.length === 14) return digits;
+    return '';
 }
 
 function listPixPlans({ activeOnly = false } = {}) {
@@ -7051,6 +7064,8 @@ function createPixChargeRow({
     contactId,
     contactName,
     studentFullName,
+    payerFullName,
+    payerCpfCnpj,
     plan,
     asaasCustomerId,
     asaasPaymentId,
@@ -7063,15 +7078,17 @@ function createPixChargeRow({
     const now = Date.now();
     const result = db.prepare(`
         INSERT INTO pix_charges (
-            contact_id, contact_name, student_full_name, plan_id, plan_name_snapshot,
+            contact_id, contact_name, student_full_name, payer_full_name, payer_cpf_cnpj, plan_id, plan_name_snapshot,
             amount_cents, asaas_customer_id, asaas_payment_id, asaas_txid,
             pix_copy_paste, pix_qr_payload, status, sca_manual_status,
             created_at, updated_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `).run(
         contactId,
         contactName || '',
         studentFullName,
+        payerFullName || '',
+        payerCpfCnpj || '',
         Number(plan.id || 0),
         String(plan.name || ''),
         Number(plan.amount_cents || 0),
@@ -7116,8 +7133,8 @@ function listPixCharges({ status = '', scaManualStatus = '', contact = '' } = {}
         params.push(scaManualStatus);
     }
     if (contact) {
-        where.push('(contact_id LIKE ? OR contact_name LIKE ? OR student_full_name LIKE ?)');
-        params.push(`%${contact}%`, `%${contact}%`, `%${contact}%`);
+        where.push('(contact_id LIKE ? OR contact_name LIKE ? OR student_full_name LIKE ? OR payer_full_name LIKE ? OR payer_cpf_cnpj LIKE ?)');
+        params.push(`%${contact}%`, `%${contact}%`, `%${contact}%`, `%${contact}%`, `%${contact}%`);
     }
     const sql = `
         SELECT *
@@ -7185,6 +7202,10 @@ function findPixPlanFromInput(rawInput, plans = []) {
 async function sendPixBotReply({ sender, user, text, timestamp = Date.now(), markPaused = false }) {
     if (!text) return;
     if (markPaused) user.pausedByHuman = true;
+    const waitMs = PIX_REPLY_DELAY_MS + (PIX_REPLY_DELAY_JITTER_MS > 0 ? Math.floor(Math.random() * (PIX_REPLY_DELAY_JITTER_MS + 1)) : 0);
+    if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
     if (sock) await sock.sendMessage(getSendTarget(sender), { text });
     appendHistoryEntry(user.history, 'Hime', text, timestamp);
     saveChat(sender);
@@ -7203,10 +7224,12 @@ async function sendPixBotReply({ sender, user, text, timestamp = Date.now(), mar
     }
 }
 
-function buildPixChargeSummary(plan, studentFullName) {
+function buildPixChargeSummary(plan, studentFullName, payerFullName, payerCpfCnpj) {
     return [
         'Perfeito. Confirme os dados para gerar o Pix:',
         `Aluno: ${studentFullName}`,
+        `Pagador: ${payerFullName || studentFullName}`,
+        `CPF/CNPJ do pagador: ${payerCpfCnpj || '-'}`,
         `Plano: ${plan.name}`,
         `Valor: ${formatCurrencyBRLFromCents(plan.amount_cents)}`,
         '',
@@ -7214,12 +7237,14 @@ function buildPixChargeSummary(plan, studentFullName) {
     ].join('\n');
 }
 
-async function generatePixChargeForConversation({ sender, user, studentFullName, plan }) {
+async function generatePixChargeForConversation({ sender, user, studentFullName, payerFullName, payerCpfCnpj, plan }) {
     const phoneDigits = sanitizePhoneDigits(sender);
     const customer = await createOrReuseAsaasCustomer(ASAAS_CONFIG, {
         studentFullName,
+        payerFullName,
         contactId: sender,
-        contactPhoneDigits: phoneDigits
+        contactPhoneDigits: phoneDigits,
+        cpfCnpj: payerCpfCnpj
     });
     const dueAt = Date.now() + (ASAAS_CONFIG.pixExpiresHours * 3600 * 1000);
     const payment = await createPixCharge(ASAAS_CONFIG, {
@@ -7238,6 +7263,8 @@ async function generatePixChargeForConversation({ sender, user, studentFullName,
         contactId: sender,
         contactName: user?.name || '',
         studentFullName,
+        payerFullName,
+        payerCpfCnpj,
         plan,
         asaasCustomerId: String(customer?.id || ''),
         asaasPaymentId: String(payment?.id || ''),
@@ -7283,6 +7310,7 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
                 user,
                 text: [
                     `Ja existe uma cobranca Pix em aberto para ${openCharge.student_full_name}.`,
+                    `Pagador: ${openCharge.payer_full_name || openCharge.student_full_name || '-'}`,
                     `Plano: ${openCharge.plan_name_snapshot}`,
                     `Valor: ${formatCurrencyBRLFromCents(openCharge.amount_cents)}`,
                     `Vencimento: ${dueLabel}`,
@@ -7322,8 +7350,36 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
             return { consumed: true };
         }
         setPixState(sender, {
-            step: 'awaiting_plan',
+            step: 'awaiting_payer_name',
             studentFullName
+        });
+        await sendPixBotReply({ sender, user, text: 'Agora me informe o nome completo de quem vai pagar este Pix (responsavel financeiro).' });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_payer_name') {
+        const payerFullName = sanitizePixStudentName(input);
+        if (payerFullName.length < 6 || payerFullName.split(' ').length < 2) {
+            await sendPixBotReply({ sender, user, text: 'Preciso do nome completo do pagador (nome e sobrenome) para continuar.' });
+            return { consumed: true };
+        }
+        setPixState(sender, {
+            step: 'awaiting_payer_document',
+            payerFullName
+        });
+        await sendPixBotReply({ sender, user, text: 'Perfeito. Agora me informe o CPF ou CNPJ de quem vai pagar.' });
+        return { consumed: true };
+    }
+
+    if (state.step === 'awaiting_payer_document') {
+        const payerCpfCnpj = sanitizePixCpfCnpj(input);
+        if (!payerCpfCnpj) {
+            await sendPixBotReply({ sender, user, text: 'Preciso de um CPF (11 digitos) ou CNPJ (14 digitos) valido do pagador para gerar o Pix.' });
+            return { consumed: true };
+        }
+        setPixState(sender, {
+            step: 'awaiting_plan',
+            payerCpfCnpj
         });
         const plansText = buildPlanListText(plans);
         await sendPixBotReply({
@@ -7353,7 +7409,12 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
         await sendPixBotReply({
             sender,
             user,
-            text: buildPixChargeSummary(pickedPlan, state.studentFullName || '')
+            text: buildPixChargeSummary(
+                pickedPlan,
+                state.studentFullName || '',
+                state.payerFullName || '',
+                state.payerCpfCnpj || ''
+            )
         });
         return { consumed: true };
     }
@@ -7380,6 +7441,8 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
                 sender,
                 user,
                 studentFullName: state.studentFullName || '',
+                payerFullName: state.payerFullName || state.studentFullName || '',
+                payerCpfCnpj: sanitizePixCpfCnpj(state.payerCpfCnpj || ''),
                 plan
             });
             setPixState(sender, {
@@ -7390,6 +7453,7 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
             const copyPaste = String(charge.pix_copy_paste || '').trim();
             const message = [
                 `Pix gerado com sucesso para ${state.studentFullName || 'o aluno'}.`,
+                `Pagador: ${state.payerFullName || state.studentFullName || '-'}`,
                 `Plano: ${plan.name}`,
                 `Valor: ${formatCurrencyBRLFromCents(plan.amount_cents)}`,
                 `Vencimento: ${expiresLabel}`,

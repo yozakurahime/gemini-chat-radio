@@ -101,20 +101,38 @@ async function requestAsaas(config, pathname, { method = 'GET', body, timeoutMs 
 
 async function createOrReuseAsaasCustomer(config, {
     studentFullName,
+    payerFullName,
     contactId,
-    contactPhoneDigits
+    contactPhoneDigits,
+    cpfCnpj = ''
 }) {
-    const name = cleanText(studentFullName, 120) || 'Aluno';
+    const name = cleanText(payerFullName || studentFullName, 120) || 'Aluno';
     const externalReference = cleanText(contactId, 120);
     const mobilePhone = sanitizePhoneDigits(contactPhoneDigits);
-    return requestAsaas(config, '/v3/customers', {
+    const safeCpfCnpj = String(cpfCnpj || '').replace(/\D/g, '').slice(0, 14);
+    const customer = await requestAsaas(config, '/v3/customers', {
         method: 'POST',
         body: {
             name,
             mobilePhone: mobilePhone || undefined,
-            externalReference: externalReference || undefined
+            externalReference: externalReference || undefined,
+            cpfCnpj: safeCpfCnpj || undefined
         }
     });
+    if (safeCpfCnpj && customer?.id) {
+        const currentDoc = String(customer?.cpfCnpj || customer?.cpf || customer?.cnpj || '').replace(/\D/g, '').slice(0, 14);
+        if (!currentDoc || currentDoc !== safeCpfCnpj) {
+            try {
+                await requestAsaas(config, `/v3/customers/${encodeURIComponent(String(customer.id))}`, {
+                    method: 'POST',
+                    body: { cpfCnpj: safeCpfCnpj }
+                });
+            } catch (_) {
+                // best-effort update; payment creation will fail with explicit reason if still invalid
+            }
+        }
+    }
+    return customer;
 }
 
 async function createPixCharge(config, {
