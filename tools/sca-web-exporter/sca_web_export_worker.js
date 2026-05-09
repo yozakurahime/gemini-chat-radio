@@ -23,6 +23,7 @@ const FILE_PREFIX = String(process.env.SCA_WEB_FILE_PREFIX || 'sca-alunos').trim
 const LOG_ROTATE_BYTES = Math.max(256 * 1024, Number(process.env.SCA_WEB_LOG_ROTATE_BYTES || (5 * 1024 * 1024)));
 const BROWSER_CHANNEL = String(process.env.SCA_WEB_BROWSER_CHANNEL || 'msedge').trim();
 const BROWSER_EXECUTABLE_PATH = String(process.env.SCA_WEB_EXECUTABLE_PATH || '').trim();
+const PERSISTENT_PROFILE_ENABLED = String(process.env.SCA_WEB_PERSISTENT_PROFILE || '1').trim() !== '0';
 const WEB_SYNC_ENABLED = String(process.env.SCA_WEB_SYNC_ENABLED || '1').trim() !== '0';
 const WEB_SYNC_API_URL = String(process.env.SCA_WEB_SYNC_API_URL || 'https://www.academiaoxigenio.com/admin/sca/students/sync/batch').trim();
 const WEB_SYNC_TOKEN = String(process.env.SCA_WEB_SYNC_TOKEN || process.env.SCA_SYNC_TOKEN || '').trim();
@@ -171,6 +172,60 @@ async function syncStudentsToServer(students, connector = {}) {
         log(`Lote alunos enviado: ${chunk.length} | inserted=${result.inserted_count || 0} updated=${result.updated_count || 0}`);
     }
     log(`Envio concluido: enviados=${sent} inserted=${inserted} updated=${updated}`);
+}
+
+function buildLaunchBaseOptions(headless) {
+    const options = {
+        headless: !!headless
+    };
+    if (BROWSER_EXECUTABLE_PATH) {
+        options.executablePath = BROWSER_EXECUTABLE_PATH;
+    } else if (BROWSER_CHANNEL) {
+        options.channel = BROWSER_CHANNEL;
+    }
+    return options;
+}
+
+async function launchBrowserWithFallback() {
+    const variants = [];
+    if (PERSISTENT_PROFILE_ENABLED) {
+        variants.push({ kind: 'persistent', headless: HEADLESS, label: `persistent-${HEADLESS ? 'headless' : 'headed'}` });
+        if (HEADLESS) {
+            variants.push({ kind: 'persistent', headless: false, label: 'persistent-headed-fallback' });
+        }
+    }
+    variants.push({ kind: 'ephemeral', headless: HEADLESS, label: `ephemeral-${HEADLESS ? 'headless' : 'headed'}` });
+    if (HEADLESS) {
+        variants.push({ kind: 'ephemeral', headless: false, label: 'ephemeral-headed-fallback' });
+    }
+
+    let lastError = null;
+    for (const variant of variants) {
+        try {
+            const baseOpts = buildLaunchBaseOptions(variant.headless);
+            if (variant.kind === 'persistent') {
+                const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+                    ...baseOpts,
+                    acceptDownloads: true,
+                    viewport: { width: 1600, height: 900 }
+                });
+                log(`Navegador iniciado em modo ${variant.label}.`);
+                return { context, browser: null, mode: variant.label };
+            }
+
+            const browser = await chromium.launch(baseOpts);
+            const context = await browser.newContext({
+                acceptDownloads: true,
+                viewport: { width: 1600, height: 900 }
+            });
+            log(`Navegador iniciado em modo ${variant.label}.`);
+            return { context, browser, mode: variant.label };
+        } catch (error) {
+            lastError = error;
+            log(`Falha ao iniciar navegador (${variant.label}): ${error?.message || error}`);
+        }
+    }
+    throw lastError || new Error('browser_launch_failed');
 }
 
 function getStamp() {
@@ -360,19 +415,11 @@ async function run() {
     ensureDir(USER_DATA_DIR);
 
     let context;
+    let browser = null;
     try {
-        const launchOpts = {
-            headless: HEADLESS,
-            acceptDownloads: true,
-            viewport: { width: 1600, height: 900 }
-        };
-        if (BROWSER_EXECUTABLE_PATH) {
-            launchOpts.executablePath = BROWSER_EXECUTABLE_PATH;
-        } else if (BROWSER_CHANNEL) {
-            launchOpts.channel = BROWSER_CHANNEL;
-        }
-
-        context = await chromium.launchPersistentContext(USER_DATA_DIR, launchOpts);
+        const launched = await launchBrowserWithFallback();
+        context = launched.context;
+        browser = launched.browser || null;
         const page = context.pages()[0] || await context.newPage();
         page.setDefaultTimeout(TIMEOUT_MS);
 
@@ -407,6 +454,9 @@ async function run() {
     } finally {
         if (context) {
             await context.close().catch(() => {});
+        }
+        if (browser) {
+            await browser.close().catch(() => {});
         }
     }
 }
