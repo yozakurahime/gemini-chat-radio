@@ -40,3 +40,4 @@ O `run_now.bat` executa auto-update antes da exportacao (quando habilitado no `.
 - Se a tela mudar e o clique automatico falhar, configure os seletores no `.env`.
 - Sessao de navegador e salva em `runtime/browser-profile`, reduzindo necessidade de relogar.
 - Controle de auto-update: `SCA_WEB_AUTO_UPDATE`, `SCA_WEB_UPDATE_CHECK_MINUTES` e `SCA_WEB_UPDATE_META_URL`.
+- A tarefa agendada roda em modo silencioso (sem abrir janela de CMD).

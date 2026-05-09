@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 set "ROOT=%~dp0"
 set "TASK_NAME=HimeFit - SCA Web Export"
-set "RUNNER=%ROOT%run_now.bat"
+set "RUNNER=%ROOT%run_hidden.vbs"
 
 if not exist "%RUNNER%" (
   echo [ERRO] Runner nao encontrado: %RUNNER%
@@ -17,7 +17,7 @@ if not errorlevel 1 (
 
 schtasks /Create ^
   /TN "%TASK_NAME%" ^
-  /TR "\"%RUNNER%\"" ^
+  /TR "\"%SystemRoot%\System32\wscript.exe\" //B //NoLogo \"%RUNNER%\"" ^
   /SC MINUTE ^
   /MO 5 ^
   /RL LIMITED ^
