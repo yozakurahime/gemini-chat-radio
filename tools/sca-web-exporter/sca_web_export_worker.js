@@ -283,6 +283,44 @@ async function tryClickByText(page, texts) {
     return '';
 }
 
+async function triggerScaPostbackByToken(page, tokens) {
+    const normalized = (Array.isArray(tokens) ? tokens : [])
+        .map((v) => String(v || '').trim().toLowerCase())
+        .filter(Boolean);
+    if (!normalized.length) return '';
+    const hit = await page.evaluate((tokenList) => {
+        const nodes = Array.from(document.querySelectorAll('a[href], button[onclick], span[onclick], div[onclick], li[onclick]'));
+        const getMeta = (el) => {
+            const attrs = [
+                el.getAttribute('href') || '',
+                el.getAttribute('onclick') || '',
+                el.id || '',
+                el.className || '',
+                el.getAttribute('title') || '',
+                el.getAttribute('aria-label') || '',
+                el.textContent || ''
+            ].join(' ').toLowerCase();
+            return attrs;
+        };
+        for (const el of nodes) {
+            const meta = getMeta(el);
+            if (!tokenList.some((token) => meta.includes(token))) continue;
+            try {
+                const href = String(el.getAttribute('href') || '');
+                if (href.toLowerCase().startsWith('javascript:')) {
+                    // eslint-disable-next-line no-eval
+                    eval(href.slice('javascript:'.length));
+                } else if (typeof el.click === 'function') {
+                    el.click();
+                }
+                return meta.slice(0, 180);
+            } catch (_) {}
+        }
+        return '';
+    }, normalized);
+    return String(hit || '').trim();
+}
+
 async function ensureLoggedIn(page) {
     const isLoginUrl = String(page.url() || '').toLowerCase().includes('/login');
     let hasPasswordInput = false;
@@ -358,14 +396,18 @@ async function openAlunosAndDownload(page) {
         'a:has-text("Export")'
     ];
 
-    const clickedDownload = await tryClick(page, downloadTriggerSelectors) || await tryClickByText(page, ['Download', 'Baixar']);
+    const clickedDownload = await tryClick(page, downloadTriggerSelectors)
+        || await tryClickByText(page, ['Download', 'Baixar'])
+        || await triggerScaPostbackByToken(page, ['download', 'baixar', 'btnDown', 'sbDown', 'exportacao', 'exportação']);
     if (!clickedDownload) {
         throw new Error('Nao foi possivel clicar no botao de download. Configure SCA_WEB_DOWNLOAD_TRIGGER_SELECTOR no .env.');
     }
     await sleep(CLICK_DELAY_MS);
 
     const downloadPromise = page.waitForEvent('download', { timeout: TIMEOUT_MS });
-    const clickedExport = await tryClick(page, exportActionSelectors) || await tryClickByText(page, [EXPORT_ACTION_TEXT, 'Exportar', 'Export']);
+    const clickedExport = await tryClick(page, exportActionSelectors)
+        || await tryClickByText(page, [EXPORT_ACTION_TEXT, 'Exportar', 'Export'])
+        || await triggerScaPostbackByToken(page, ['sbEx', 'btnEx', 'export']);
     if (!clickedExport) {
         throw new Error('Nao foi possivel clicar na opcao de exportacao. Configure SCA_WEB_EXPORT_ACTION_SELECTOR no .env.');
     }
