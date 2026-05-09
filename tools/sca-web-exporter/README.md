@@ -7,6 +7,8 @@ Worker separado para automatizar:
 3. clicar em `Download` e depois `Export`
 4. baixar o arquivo e converter para CSV
 
+O `run_now.bat` executa auto-update antes da exportacao (quando habilitado no `.env`).
+
 ## Estrutura
 
 - `sca_web_export_worker.js`: runtime principal
@@ -37,3 +39,4 @@ Worker separado para automatizar:
 
 - Se a tela mudar e o clique automatico falhar, configure os seletores no `.env`.
 - Sessao de navegador e salva em `runtime/browser-profile`, reduzindo necessidade de relogar.
+- Controle de auto-update: `SCA_WEB_AUTO_UPDATE`, `SCA_WEB_UPDATE_CHECK_MINUTES` e `SCA_WEB_UPDATE_META_URL`.

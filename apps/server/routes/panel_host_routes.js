@@ -26,6 +26,10 @@ function registerPanelHostRoutes({
         '/programarecepcaoweb',
         '/programa-recepcao-web'
     ];
+    const receptionWebExporterMetaPathAliases = [
+        '/programarecepcaoweb/meta',
+        '/programa-recepcao-web/meta'
+    ];
 
     function getRequestHost(req) {
         const forwardedHostRaw = String(req.get('x-forwarded-host') || '').trim();
@@ -298,6 +302,23 @@ function registerPanelHostRoutes({
         }
         res.setHeader('Cache-Control', 'no-store');
         return res.download(file.fullPath, file.name);
+    });
+
+    app.get(receptionWebExporterMetaPathAliases, (req, res) => {
+        const file = resolveReceptionWebExporterDownloadFile();
+        if (!file) {
+            return res.status(404).json({ ok: false, error: 'package_not_found' });
+        }
+        const host = getRequestHost(req);
+        const origin = getPublicOrigin(host);
+        return res.json({
+            ok: true,
+            package_file: file.name,
+            package_size_bytes: fs.existsSync(file.fullPath) ? Number(fs.statSync(file.fullPath).size || 0) : 0,
+            package_updated_at: Number(file.mtimeMs || 0),
+            version_token: `${file.name}:${Number(file.mtimeMs || 0)}`,
+            download_url: `${origin}/programarecepcaoweb`
+        });
     });
 }
 
