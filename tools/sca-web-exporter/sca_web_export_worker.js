@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { chromium } = require('playwright-core');
 const XLSX = require('xlsx');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -29,6 +30,10 @@ const WEB_SYNC_API_URL = String(process.env.SCA_WEB_SYNC_API_URL || 'https://www
 const WEB_SYNC_TOKEN = String(process.env.SCA_WEB_SYNC_TOKEN || process.env.SCA_SYNC_TOKEN || '').trim();
 const WEB_SYNC_SOURCE = String(process.env.SCA_WEB_SYNC_SOURCE || 'sca_web_export').trim();
 const WEB_SYNC_BATCH_SIZE = Math.max(20, Math.min(2000, Number(process.env.SCA_WEB_SYNC_BATCH_SIZE || 300)));
+const DIAG_ENABLED = String(process.env.SCA_WEB_DIAG_ENABLED || '1').trim() !== '0';
+const DIAG_API_URL = String(process.env.SCA_WEB_DIAG_API_URL || 'https://www.academiaoxigenio.com/admin/sca/connector/diagnostic').trim();
+const DIAG_TOKEN = String(process.env.SCA_WEB_DIAG_TOKEN || WEB_SYNC_TOKEN || process.env.SCA_SYNC_TOKEN || '').trim();
+const DIAG_CONNECTOR = String(process.env.SCA_WEB_DIAG_CONNECTOR || 'sca-web-exporter').trim() || 'sca-web-exporter';
 
 const LOGIN_USER_SELECTOR = String(process.env.SCA_WEB_LOGIN_USER_SELECTOR || '').trim();
 const LOGIN_PASSWORD_SELECTOR = String(process.env.SCA_WEB_LOGIN_PASSWORD_SELECTOR || '').trim();
@@ -68,6 +73,12 @@ function sanitizeFileName(input) {
         .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
         .replace(/\s+/g, ' ')
         .trim();
+}
+
+function truncateText(value, max = 800) {
+    const text = String(value === undefined || value === null ? '' : value).trim();
+    if (text.length <= max) return text;
+    return text.slice(0, max);
 }
 
 function decodeHtmlEntities(text) {
@@ -172,6 +183,29 @@ async function syncStudentsToServer(students, connector = {}) {
         log(`Lote alunos enviado: ${chunk.length} | inserted=${result.inserted_count || 0} updated=${result.updated_count || 0}`);
     }
     log(`Envio concluido: enviados=${sent} inserted=${inserted} updated=${updated}`);
+}
+
+async function sendDiagnostic(level, event, message, extra = {}) {
+    if (!DIAG_ENABLED || !DIAG_TOKEN) return;
+    try {
+        await fetch(DIAG_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-SCA-TOKEN': DIAG_TOKEN
+            },
+            body: JSON.stringify({
+                connector: DIAG_CONNECTOR,
+                level: String(level || 'info'),
+                event: String(event || 'runtime_event'),
+                message: truncateText(message || '', 1500),
+                host: os.hostname(),
+                pid: process.pid,
+                at: Date.now(),
+                meta: extra && typeof extra === 'object' ? extra : {}
+            })
+        });
+    } catch (_) {}
 }
 
 function buildLaunchBaseOptions(headless) {
@@ -458,10 +492,12 @@ async function run() {
 
     let context;
     let browser = null;
+    const startedAt = Date.now();
     try {
         const launched = await launchBrowserWithFallback();
         context = launched.context;
         browser = launched.browser || null;
+        await sendDiagnostic('info', 'browser_started', `Navegador iniciado em ${launched.mode}.`, { mode: launched.mode });
         const page = context.pages()[0] || await context.newPage();
         page.setDefaultTimeout(TIMEOUT_MS);
 
@@ -473,6 +509,9 @@ async function run() {
 
         const rawPath = await openAlunosAndDownload(page);
         log(`Arquivo baixado: ${rawPath}`);
+        await sendDiagnostic('info', 'download_ok', 'Arquivo exportado no SCA com sucesso.', {
+            file_name: path.basename(rawPath)
+        });
 
         if (CONVERT_TO_CSV) {
             const converted = convertWorkbookToCsv(rawPath);
@@ -482,6 +521,10 @@ async function run() {
                 file_name: path.basename(rawPath),
                 generated_csv: path.basename(converted.csvPath),
                 exported_at: Date.now()
+            });
+            await sendDiagnostic('info', 'sync_ok', 'CSV convertido e sincronizado com o servidor.', {
+                csv_file: path.basename(converted.csvPath),
+                students_count: converted.students.length
             });
         }
 
@@ -493,6 +536,9 @@ async function run() {
         }
 
         log('Exportacao SCA finalizada com sucesso.');
+        await sendDiagnostic('info', 'run_ok', 'Execucao concluida sem erros.', {
+            duration_ms: Date.now() - startedAt
+        });
     } finally {
         if (context) {
             await context.close().catch(() => {});
@@ -505,5 +551,8 @@ async function run() {
 
 run().catch((error) => {
     log(`Erro no SCA web export: ${error?.message || error}`);
+    sendDiagnostic('error', 'run_error', `Erro no SCA web export: ${error?.message || error}`, {
+        stack: truncateText(error?.stack || '', 3000)
+    }).catch(() => {});
     process.exitCode = 1;
 });

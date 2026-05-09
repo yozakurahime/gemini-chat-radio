@@ -34,6 +34,7 @@ O `run_now.bat` executa auto-update antes da exportacao (quando habilitado no `.
 - CSV convertido: `runtime/exports/`
 - Log: `logs/sca-web-export.log`
 - Sincronizacao server: status em `/admin/sca/students/sync/status`
+- Diagnostico remoto: `/admin/sca/connector/diagnostic`
 
 ## Observacoes
 

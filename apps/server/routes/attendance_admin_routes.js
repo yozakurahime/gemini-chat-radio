@@ -91,6 +91,22 @@ db.prepare(`
 `).run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_students_sync_last_seen ON sca_students_sync(last_seen_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_students_sync_source ON sca_students_sync(source)').run();
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS sca_connector_diagnostics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connector TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        level TEXT NOT NULL DEFAULT 'info',
+        event TEXT NOT NULL DEFAULT '',
+        message TEXT NOT NULL DEFAULT '',
+        host TEXT NOT NULL DEFAULT '',
+        pid INTEGER NOT NULL DEFAULT 0,
+        meta_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL DEFAULT 0
+    )
+`).run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_diag_created_at ON sca_connector_diagnostics(created_at DESC)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_diag_connector ON sca_connector_diagnostics(connector)').run();
 
 function formatLocalDateTime(value) {
     const ts = Number(value || 0);
@@ -408,6 +424,92 @@ app.get('/admin/sca/sync/status', (req, res) => {
         tokenConfigured: !!normalizeScaToken(SCA_SYNC_TOKEN),
         ...status
     });
+});
+
+app.post('/admin/sca/connector/diagnostic', (req, res) => {
+    if (!authorizeScaSync(req, res)) return;
+    const source = sanitizePublicText(req.body?.source || 'sca_connector', 60) || 'sca_connector';
+    const connector = sanitizePublicText(req.body?.connector || source, 80) || source;
+    const levelRaw = String(req.body?.level || 'info').toLowerCase().trim();
+    const level = ['debug', 'info', 'warn', 'error'].includes(levelRaw) ? levelRaw : 'info';
+    const event = sanitizePublicText(req.body?.event || 'runtime_event', 80) || 'runtime_event';
+    const message = sanitizePublicText(req.body?.message || '', 2000);
+    if (!message) return res.status(400).json({ error: 'message_required' });
+    const host = sanitizePublicText(req.body?.host || '', 120);
+    const pidRaw = Number(req.body?.pid || 0);
+    const pid = Number.isFinite(pidRaw) && pidRaw > 0 ? Math.floor(pidRaw) : 0;
+    const meta = req.body?.meta && typeof req.body.meta === 'object' ? req.body.meta : {};
+    const createdAtRaw = Number(req.body?.at || 0);
+    const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? Math.floor(createdAtRaw) : Date.now();
+
+    db.prepare(`
+        INSERT INTO sca_connector_diagnostics (
+            connector, source, level, event, message, host, pid, meta_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        connector,
+        source,
+        level,
+        event,
+        message,
+        host,
+        pid,
+        JSON.stringify(meta),
+        createdAt
+    );
+
+    return res.json({ ok: true });
+});
+
+app.get('/admin/sca/connector/diagnostic', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const connector = sanitizePublicText(req.query?.connector || '', 80);
+    const level = sanitizePublicText(req.query?.level || '', 12).toLowerCase();
+    const limitRaw = Number(req.query?.limit || 50);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.floor(limitRaw))) : 50;
+    const sinceRaw = Number(req.query?.since || 0);
+    const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? Math.floor(sinceRaw) : 0;
+
+    const clauses = [];
+    const params = [];
+    if (connector) {
+        clauses.push('connector=?');
+        params.push(connector);
+    }
+    if (level && ['debug', 'info', 'warn', 'error'].includes(level)) {
+        clauses.push('level=?');
+        params.push(level);
+    }
+    if (since > 0) {
+        clauses.push('created_at>=?');
+        params.push(since);
+    }
+    const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = db.prepare(`
+        SELECT id, connector, source, level, event, message, host, pid, meta_json, created_at
+        FROM sca_connector_diagnostics
+        ${whereSql}
+        ORDER BY created_at DESC
+        LIMIT ?
+    `).all(...params, limit).map((row) => {
+        let meta = {};
+        try { meta = JSON.parse(String(row.meta_json || '{}')); } catch (_) {}
+        return {
+            id: row.id,
+            connector: row.connector,
+            source: row.source,
+            level: row.level,
+            event: row.event,
+            message: row.message,
+            host: row.host,
+            pid: row.pid,
+            created_at: row.created_at,
+            meta
+        };
+    });
+
+    return res.json({ ok: true, items: rows });
 });
 
 app.post('/admin/sca/students/sync/batch', (req, res) => {
