@@ -102,6 +102,7 @@ const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
 const multer = require('multer');
 const Database = require('better-sqlite3');
+const XLSX = require('xlsx');
 const { execFile, spawn, spawnSync } = require('child_process');
 const { resolveAppPaths } = require('./app_paths');
 const { createPanelAuth } = require('./panel_auth');
@@ -569,6 +570,7 @@ function setRadioSetting(key, value) {
 const SYSTEM_CONFIG_KEY = 'system.config.v1';
 const SYSTEM_UPDATE_STATE_KEY = 'system.update.state.v1';
 const OPS_ALERTS_CONFIG_KEY = 'ops.alerts.v1';
+const PIX_SAFE_CONFIG_KEY = 'pix.safe.config.v1';
 const SYSTEM_CONFIG_SECRET_FIELDS = new Set(['aiApiKey', 'updatesToken']);
 const SYSTEM_DEFAULT_CONFIG = {
     onboardingCompleted: false,
@@ -598,6 +600,16 @@ const OPS_ALERTS_DEFAULT_CONFIG = {
         chatSlaDelayMin: 5,
         chatSlaCriticalMin: 15
     },
+    updatedAt: 0
+};
+const PIX_SAFE_DEFAULT_CONFIG = {
+    enabled: true,
+    requireOptIn: true,
+    maxRemindersPerCharge: 2,
+    firstReminderAfterMin: 120,
+    reminderIntervalMin: 1440,
+    quietHourStart: 8,
+    quietHourEnd: 20,
     updatedAt: 0
 };
 
@@ -863,6 +875,36 @@ function setOpsAlertsConfig(nextConfig, updatedBy = 'system') {
     normalized.updatedAt = Date.now();
     setAppConfigRaw(OPS_ALERTS_CONFIG_KEY, normalized, { updatedBy, isSecret: 0 });
     return getOpsAlertsConfig();
+}
+
+function normalizePixSafeConfigInput(payload, currentConfig = PIX_SAFE_DEFAULT_CONFIG) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const current = currentConfig && typeof currentConfig === 'object' ? currentConfig : PIX_SAFE_DEFAULT_CONFIG;
+    return {
+        enabled: source.enabled !== false,
+        requireOptIn: source.requireOptIn !== false,
+        maxRemindersPerCharge: normalizeOpsThresholdNumber(source.maxRemindersPerCharge, Number(current.maxRemindersPerCharge || PIX_SAFE_DEFAULT_CONFIG.maxRemindersPerCharge), { min: 0, max: 5 }),
+        firstReminderAfterMin: normalizeOpsThresholdNumber(source.firstReminderAfterMin, Number(current.firstReminderAfterMin || PIX_SAFE_DEFAULT_CONFIG.firstReminderAfterMin), { min: 1, max: 43200 }),
+        reminderIntervalMin: normalizeOpsThresholdNumber(source.reminderIntervalMin, Number(current.reminderIntervalMin || PIX_SAFE_DEFAULT_CONFIG.reminderIntervalMin), { min: 30, max: 43200 }),
+        quietHourStart: normalizeOpsThresholdNumber(source.quietHourStart, Number(current.quietHourStart || PIX_SAFE_DEFAULT_CONFIG.quietHourStart), { min: 0, max: 23 }),
+        quietHourEnd: normalizeOpsThresholdNumber(source.quietHourEnd, Number(current.quietHourEnd || PIX_SAFE_DEFAULT_CONFIG.quietHourEnd), { min: 0, max: 23 }),
+        updatedAt: Number(current.updatedAt || 0)
+    };
+}
+
+function getPixSafeConfig() {
+    const stored = getAppConfigRaw(PIX_SAFE_CONFIG_KEY, {});
+    return normalizePixSafeConfigInput({
+        ...PIX_SAFE_DEFAULT_CONFIG,
+        ...(stored || {})
+    }, PIX_SAFE_DEFAULT_CONFIG);
+}
+
+function setPixSafeConfig(nextConfig, updatedBy = 'system') {
+    const normalized = normalizePixSafeConfigInput(nextConfig, getPixSafeConfig());
+    normalized.updatedAt = Date.now();
+    setAppConfigRaw(PIX_SAFE_CONFIG_KEY, normalized, { updatedBy, isSecret: 0 });
+    return getPixSafeConfig();
 }
 
 function maskSystemConfig(config) {
@@ -1466,6 +1508,30 @@ db.prepare(`CREATE TABLE IF NOT EXISTS pix_charges (
     created_at INTEGER,
     updated_at INTEGER
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS pix_contact_prefs (
+    contact_id TEXT PRIMARY KEY,
+    allow_active_billing INTEGER DEFAULT 1,
+    updated_by TEXT DEFAULT '',
+    updated_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS pix_charge_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    charge_id INTEGER NOT NULL,
+    reminder_tag TEXT NOT NULL,
+    message_text TEXT DEFAULT '',
+    sent_at INTEGER,
+    created_at INTEGER
+)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS pix_daily_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_filename TEXT DEFAULT '',
+    source_ext TEXT DEFAULT '',
+    csv_filename TEXT DEFAULT '',
+    rows_count INTEGER DEFAULT 0,
+    columns_count INTEGER DEFAULT 0,
+    uploaded_by TEXT DEFAULT '',
+    created_at INTEGER
+)`).run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_events_employee_at ON attendance_events(employee_id, event_at)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_schedules_employee_weekday ON attendance_schedules(employee_id, weekday)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_attendance_catalog_type_active ON attendance_activity_catalog(type, active, sort_order)').run();
@@ -1490,6 +1556,10 @@ db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_status ON pix_charges(sta
 db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_contact ON pix_charges(contact_id)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charges_sca_manual_status ON pix_charges(sca_manual_status)').run();
 db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uniq_pix_charges_asaas_payment_id ON pix_charges(asaas_payment_id) WHERE asaas_payment_id <> ''").run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_contact_prefs_updated ON pix_contact_prefs(updated_at)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_charge_reminders_charge ON pix_charge_reminders(charge_id, sent_at DESC)').run();
+db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uniq_pix_charge_reminders_tag ON pix_charge_reminders(charge_id, reminder_tag)").run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_pix_daily_imports_created ON pix_daily_imports(created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_conversation_created ON ai_feedback_events(conversation_id, created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback_events(created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_advertisers_segment_status ON advertisers(segment_id, status)').run();
@@ -6985,7 +7055,134 @@ const PIX_PENDING_STATUSES = new Set(['pending', 'overdue']);
 const PIX_WEBHOOK_EVENTS_PAID = new Set(['PAYMENT_RECEIVED', 'PAYMENT_CONFIRMED', 'PAYMENT_UPDATED']);
 const PIX_REPLY_DELAY_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_MS || 700));
 const PIX_REPLY_DELAY_JITTER_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_JITTER_MS || 450));
+const PIX_SAFE_SWEEP_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.PIX_SAFE_SWEEP_INTERVAL_MS || (5 * 60 * 1000)));
+const PIX_PAYMENT_ALERT_WHATSAPP = String(process.env.PIX_PAYMENT_ALERT_WHATSAPP || process.env.OWNER_WHATSAPP || '').trim();
+const PIX_DAILY_IMPORTS_DIR = path.join(STORAGE_DIR, 'pix_daily_imports');
 const pixConversationState = Object.create(null);
+
+function normalizePixContactId(contactId) {
+    return String(contactId || '').trim();
+}
+
+function resolvePixPaymentAlertTargets() {
+    if (!PIX_PAYMENT_ALERT_WHATSAPP) return [];
+    const rawItems = PIX_PAYMENT_ALERT_WHATSAPP.split(/[,\n;]+/g).map((item) => item.trim()).filter(Boolean);
+    const unique = new Set();
+    rawItems.forEach((item) => {
+        const normalized = item.includes('@') ? item : toWhatsappJid(item);
+        if (normalized) unique.add(normalized);
+    });
+    return Array.from(unique);
+}
+
+function setPixContactBillingPreference(contactId, allowActiveBilling = true, updatedBy = 'system') {
+    const safeContactId = normalizePixContactId(contactId);
+    if (!safeContactId) return;
+    db.prepare(`
+        INSERT INTO pix_contact_prefs (contact_id, allow_active_billing, updated_by, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(contact_id) DO UPDATE SET
+            allow_active_billing=excluded.allow_active_billing,
+            updated_by=excluded.updated_by,
+            updated_at=excluded.updated_at
+    `).run(safeContactId, allowActiveBilling ? 1 : 0, String(updatedBy || 'system'), Date.now());
+}
+
+function getPixContactBillingPreference(contactId) {
+    const safeContactId = normalizePixContactId(contactId);
+    if (!safeContactId) return null;
+    const row = db.prepare(`
+        SELECT contact_id, allow_active_billing, updated_by, updated_at
+        FROM pix_contact_prefs
+        WHERE contact_id=?
+    `).get(safeContactId);
+    if (!row) return null;
+    return {
+        contact_id: String(row.contact_id || ''),
+        allow_active_billing: Number(row.allow_active_billing || 0) === 1,
+        updated_by: String(row.updated_by || ''),
+        updated_at: Number(row.updated_at || 0)
+    };
+}
+
+function countPixRemindersForCharge(chargeId) {
+    const row = db.prepare('SELECT COUNT(1) AS total FROM pix_charge_reminders WHERE charge_id=?').get(Number(chargeId || 0));
+    return Number(row?.total || 0);
+}
+
+function getLatestPixReminderForCharge(chargeId) {
+    const row = db.prepare(`
+        SELECT *
+        FROM pix_charge_reminders
+        WHERE charge_id=?
+        ORDER BY sent_at DESC, id DESC
+        LIMIT 1
+    `).get(Number(chargeId || 0));
+    return row || null;
+}
+
+function registerPixReminderSent(chargeId, reminderTag, messageText = '') {
+    const now = Date.now();
+    db.prepare(`
+        INSERT INTO pix_charge_reminders (charge_id, reminder_tag, message_text, sent_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(charge_id, reminder_tag) DO NOTHING
+    `).run(Number(chargeId || 0), String(reminderTag || ''), String(messageText || '').slice(0, 1000), now, now);
+}
+
+function computePixReminderDue(charge, safeConfig, now = Date.now()) {
+    const maxReminders = Number(safeConfig?.maxRemindersPerCharge || 0);
+    if (maxReminders <= 0) return null;
+    const sentCount = countPixRemindersForCharge(charge.id);
+    if (sentCount >= maxReminders) return null;
+    const createdAt = Number(charge?.created_at || 0);
+    if (!createdAt) return null;
+    if (sentCount === 0) {
+        const dueAt = createdAt + (Number(safeConfig?.firstReminderAfterMin || PIX_SAFE_DEFAULT_CONFIG.firstReminderAfterMin) * 60 * 1000);
+        if (now < dueAt) return null;
+        return { reminderNumber: 1, reminderTag: 'r1' };
+    }
+    const latest = getLatestPixReminderForCharge(charge.id);
+    const lastSentAt = Number(latest?.sent_at || 0);
+    if (!lastSentAt) return null;
+    const dueAt = lastSentAt + (Number(safeConfig?.reminderIntervalMin || PIX_SAFE_DEFAULT_CONFIG.reminderIntervalMin) * 60 * 1000);
+    if (now < dueAt) return null;
+    return { reminderNumber: sentCount + 1, reminderTag: `r${sentCount + 1}` };
+}
+
+function isWithinPixQuietWindow(safeConfig, now = Date.now()) {
+    const start = Math.max(0, Math.min(23, Number(safeConfig?.quietHourStart ?? PIX_SAFE_DEFAULT_CONFIG.quietHourStart)));
+    const end = Math.max(0, Math.min(23, Number(safeConfig?.quietHourEnd ?? PIX_SAFE_DEFAULT_CONFIG.quietHourEnd)));
+    const hour = Number(new Date(now).toLocaleString('en-US', { hour12: false, hour: '2-digit', timeZone: process.env.TZ || 'America/Sao_Paulo' }));
+    if (!Number.isFinite(hour)) return true;
+    if (start === end) return true;
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
+function ensureConversationExistsForContact(contactId, suggestedName = '') {
+    const id = normalizePixContactId(contactId);
+    if (!id) return null;
+    if (!conversationState[id]) {
+        conversationState[id] = {
+            history: [],
+            messageBuffer: [],
+            typingTimer: null,
+            pausedByHuman: false,
+            pendingHumanHandoff: null,
+            name: sanitizePublicText(suggestedName || id.split('@')[0], 120) || id,
+            lastActivityTimestamp: Date.now(),
+            tags: [],
+            notes: "",
+            status: 'active',
+            routeJid: id,
+            slaPendingSince: 0,
+            slaStatus: 'ok',
+            slaUpdatedAt: Date.now()
+        };
+    }
+    return conversationState[id];
+}
 
 function sanitizePixStudentName(value) {
     return String(value || '')
@@ -7006,6 +7203,109 @@ function sanitizePixCpfCnpj(value) {
     if (digits.length === 11) return digits;
     if (digits.length === 14) return digits;
     return '';
+}
+
+function escapeCsvCell(value) {
+    const raw = String(value ?? '');
+    if (raw.includes(';') || raw.includes('"') || raw.includes('\n') || raw.includes('\r')) {
+        return `"${raw.replace(/"/g, '""')}"`;
+    }
+    return raw;
+}
+
+function extractRowsFromCsvText(csvText = '') {
+    const lines = String(csvText || '')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .filter((line) => line.trim() !== '');
+    const rows = lines.map((line) => line.split(';'));
+    const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    return {
+        rows,
+        rowCount: rows.length,
+        colCount: maxCols
+    };
+}
+
+function convertSpreadsheetBufferToCsv(buffer, originalName = '') {
+    const safeName = String(originalName || '').toLowerCase();
+    if (safeName.endsWith('.csv')) {
+        const text = Buffer.from(buffer).toString('utf8');
+        const parsed = extractRowsFromCsvText(text);
+        return {
+            csvText: text,
+            rowCount: parsed.rowCount,
+            colCount: parsed.colCount
+        };
+    }
+    const workbook = XLSX.read(buffer, { type: 'buffer', raw: false, cellDates: true });
+    const firstSheetName = String(workbook?.SheetNames?.[0] || '');
+    if (!firstSheetName || !workbook.Sheets[firstSheetName]) {
+        throw new Error('spreadsheet_empty');
+    }
+    const sheet = workbook.Sheets[firstSheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const rowCount = Array.isArray(rows) ? rows.length : 0;
+    const colCount = Array.isArray(rows) ? rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0) : 0;
+    const csvLines = (rows || []).map((row) => {
+        const cols = Array.isArray(row) ? row : [];
+        return cols.map((cell) => escapeCsvCell(cell)).join(';');
+    });
+    const csvText = csvLines.join('\n');
+    return {
+        csvText,
+        rowCount,
+        colCount
+    };
+}
+
+function listPixDailyImports({ limit = 20 } = {}) {
+    const safeLimit = Math.max(1, Math.min(200, Number(limit || 20)));
+    return db.prepare(`
+        SELECT id, original_filename, source_ext, csv_filename, rows_count, columns_count, uploaded_by, created_at
+        FROM pix_daily_imports
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+    `).all(safeLimit);
+}
+
+function storePixDailyImport({ fileBuffer, originalName = '', uploadedBy = '' }) {
+    ensureDir(PIX_DAILY_IMPORTS_DIR);
+    const cleanOriginal = sanitizePublicText(originalName || 'base_diaria.csv', 180) || 'base_diaria.csv';
+    const ext = path.extname(cleanOriginal).toLowerCase();
+    if (!['.csv', '.xls', '.xlsx'].includes(ext)) {
+        throw new Error('invalid_file_type');
+    }
+    const converted = convertSpreadsheetBufferToCsv(fileBuffer, cleanOriginal);
+    const now = Date.now();
+    const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+    const csvFilename = `base-diaria-${stamp}.csv`;
+    const csvPath = path.join(PIX_DAILY_IMPORTS_DIR, csvFilename);
+    fs.writeFileSync(csvPath, converted.csvText, 'utf8');
+    const inserted = db.prepare(`
+        INSERT INTO pix_daily_imports (
+            original_filename, source_ext, csv_filename, rows_count, columns_count, uploaded_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(cleanOriginal, ext, csvFilename, Number(converted.rowCount || 0), Number(converted.colCount || 0), sanitizePublicText(uploadedBy || '', 80), now);
+    const id = Number(inserted?.lastInsertRowid || 0);
+    const item = db.prepare(`
+        SELECT id, original_filename, source_ext, csv_filename, rows_count, columns_count, uploaded_by, created_at
+        FROM pix_daily_imports
+        WHERE id=?
+    `).get(id);
+    return item || null;
+}
+
+function resolvePixDailyImportCsvPath(importId) {
+    const row = db.prepare('SELECT csv_filename FROM pix_daily_imports WHERE id=?').get(Number(importId || 0));
+    if (!row) return '';
+    const file = String(row.csv_filename || '');
+    if (!file) return '';
+    const full = path.join(PIX_DAILY_IMPORTS_DIR, file);
+    if (!isPathInside(PIX_DAILY_IMPORTS_DIR, full)) return '';
+    return full;
 }
 
 function listPixPlans({ activeOnly = false } = {}) {
@@ -7224,6 +7524,16 @@ async function sendPixBotReply({ sender, user, text, timestamp = Date.now(), mar
     }
 }
 
+async function sendPixCopyPasteCode({ sender, user, copyPaste }) {
+    const code = String(copyPaste || '').trim();
+    if (!code) {
+        await sendPixBotReply({ sender, user, text: 'Nao consegui obter o codigo Pix copia e cola agora. Vou chamar um atendente para te ajudar.' });
+        return;
+    }
+    await sendPixBotReply({ sender, user, text: 'Pix copia e cola (mensagem separada para facilitar a copia):' });
+    await sendPixBotReply({ sender, user, text: code });
+}
+
 function buildPixChargeSummary(plan, studentFullName, payerFullName, payerCpfCnpj) {
     return [
         'Perfeito. Confirme os dados para gerar o Pix:',
@@ -7281,6 +7591,26 @@ function buildPixInitialPrompt() {
     return 'Perfeito. Quer pagar sua mensalidade agora via Pix? Responda SIM ou NAO.';
 }
 
+function detectPixBillingOptOut(input = '') {
+    const normalized = normalizePlanLookupKey(String(input || ''));
+    if (!normalized) return false;
+    return normalized.includes('parar cobranca')
+        || normalized.includes('nao cobrar')
+        || normalized.includes('nao quero cobranca')
+        || normalized.includes('cancelar cobrancas')
+        || normalized === 'sair cobranca'
+        || normalized === 'stop cobranca';
+}
+
+function detectPixBillingOptIn(input = '') {
+    const normalized = normalizePlanLookupKey(String(input || ''));
+    if (!normalized) return false;
+    return normalized.includes('voltar cobranca')
+        || normalized.includes('reativar cobranca')
+        || normalized.includes('quero cobranca')
+        || normalized === 'ativar cobranca';
+}
+
 async function handlePixConversationMessage({ sender, user, text, msgTimestampMs }) {
     if (!ASAAS_CONFIG.enabled) return { consumed: false };
     const input = String(text || '').trim();
@@ -7289,6 +7619,18 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
     const plans = listPixPlans({ activeOnly: true });
 
     if (!plans.length) return { consumed: false };
+
+    if (detectPixBillingOptOut(input)) {
+        setPixContactBillingPreference(sender, false, 'whatsapp_optout');
+        clearPixState(sender);
+        await sendPixBotReply({ sender, user, text: 'Tudo certo. Desativei os lembretes automaticos de cobranca para este numero. Se quiser reativar, envie: ativar cobranca.' });
+        return { consumed: true };
+    }
+    if (detectPixBillingOptIn(input)) {
+        setPixContactBillingPreference(sender, true, 'whatsapp_optin');
+        await sendPixBotReply({ sender, user, text: 'Perfeito. Reativei os lembretes automaticos de cobranca para este numero.' });
+        return { consumed: true };
+    }
 
     if (isCancelMessage(input)) {
         if (state.step && state.step !== 'idle') {
@@ -7302,6 +7644,7 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
 
     if (!state.step || state.step === 'idle') {
         if (!detectPixMonthlyIntent(input)) return { consumed: false };
+        setPixContactBillingPreference(sender, true, 'whatsapp_monthly_intent');
         const openCharge = getLatestOpenChargeByContact(sender);
         if (openCharge && String(openCharge.pix_copy_paste || '').trim()) {
             const dueLabel = openCharge.expires_at ? new Date(Number(openCharge.expires_at)).toLocaleString('pt-BR') : '-';
@@ -7315,10 +7658,10 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
                     `Valor: ${formatCurrencyBRLFromCents(openCharge.amount_cents)}`,
                     `Vencimento: ${dueLabel}`,
                     '',
-                    'Pix copia e cola:',
-                    String(openCharge.pix_copy_paste || '').trim(),
+                    'Vou te enviar o codigo Pix em mensagem separada para facilitar a copia.'
                 ].join('\n')
             });
+            await sendPixCopyPasteCode({ sender, user, copyPaste: openCharge.pix_copy_paste });
             setPixState(sender, { step: 'waiting_payment', chargeId: Number(openCharge.id || 0) });
             return { consumed: true };
         }
@@ -7338,6 +7681,7 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
             await sendPixBotReply({ sender, user, text: 'Para continuar, responda SIM para gerar Pix ou NAO para cancelar.' });
             return { consumed: true };
         }
+        setPixContactBillingPreference(sender, true, 'whatsapp_confirm_start');
         setPixState(sender, { step: 'awaiting_student_name' });
         await sendPixBotReply({ sender, user, text: 'Perfeito. Me informe o nome completo do aluno para quem vamos lançar este plano.' });
         return { consumed: true };
@@ -7458,12 +7802,11 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
                 `Valor: ${formatCurrencyBRLFromCents(plan.amount_cents)}`,
                 `Vencimento: ${expiresLabel}`,
                 '',
-                'Pix copia e cola:',
-                copyPaste || '(indisponivel no momento)',
-                '',
+                'Vou te enviar o codigo Pix em mensagem separada para facilitar a copia.',
                 'Assim que o pagamento for confirmado, eu aviso aqui.'
             ].join('\n');
             await sendPixBotReply({ sender, user, text: message });
+            await sendPixCopyPasteCode({ sender, user, copyPaste });
             return { consumed: true };
         } catch (error) {
             console.error('[pix] erro ao gerar cobranca:', error?.message || error);
@@ -7527,6 +7870,30 @@ async function notifyPixPaidAndPauseConversation(charge) {
     setPixState(contactId, { step: 'waiting_sca_manual', chargeId: Number(charge.id || 0) });
 }
 
+async function notifyPixPaidToOwnerWhatsapp(charge) {
+    if (!sock || !charge) return;
+    const targets = resolvePixPaymentAlertTargets();
+    if (!targets.length) return;
+    const paidAt = Number(charge.paid_at || Date.now());
+    const paidAtLabel = Number.isFinite(paidAt) && paidAt > 0 ? new Date(paidAt).toLocaleString('pt-BR') : '-';
+    const message = [
+        'Pagamento Pix confirmado (pendente baixa manual no SCA).',
+        `Aluno: ${charge.student_full_name || '-'}`,
+        `Pagador: ${charge.payer_full_name || charge.student_full_name || '-'}`,
+        `Plano: ${charge.plan_name_snapshot || '-'}`,
+        `Valor: ${formatCurrencyBRLFromCents(Number(charge.amount_cents || 0))}`,
+        `Pago em: ${paidAtLabel}`,
+        `Contato: ${charge.contact_id || '-'}`
+    ].join('\n');
+    for (const target of targets) {
+        try {
+            await sock.sendMessage(target, { text: message });
+        } catch (error) {
+            console.error('[pix] owner alert send error:', error?.message || error);
+        }
+    }
+}
+
 async function processAsaasWebhook({ headers, body }) {
     if (!verifyAsaasWebhookToken(headers, ASAAS_CONFIG.webhookToken)) {
         return { ok: false, error: 'unauthorized' };
@@ -7562,6 +7929,7 @@ async function processAsaasWebhook({ headers, body }) {
     const updated = getPixChargeById(Number(dbCharge.id));
     if (updated && String(updated.status || '') === 'paid') {
         await notifyPixPaidAndPauseConversation(updated);
+        await notifyPixPaidToOwnerWhatsapp(updated);
     }
     return { ok: true };
 }
@@ -7619,11 +7987,78 @@ function getPendingPixForContact(contactId) {
     return getLatestPendingScaChargeByContact(contactId);
 }
 
+async function runPixSafeCollectionSweep() {
+    if (!ASAAS_CONFIG.enabled) return;
+    if (!sock) return;
+    const safeConfig = getPixSafeConfig();
+    if (!safeConfig.enabled) return;
+    if (!isWithinPixQuietWindow(safeConfig, Date.now())) return;
+    const now = Date.now();
+    const openCharges = db.prepare(`
+        SELECT *
+        FROM pix_charges
+        WHERE status IN ('pending', 'overdue')
+          AND sca_manual_status='pending'
+        ORDER BY created_at ASC
+        LIMIT 150
+    `).all();
+    for (const charge of openCharges) {
+        const contactId = normalizePixContactId(charge?.contact_id || '');
+        if (!contactId) continue;
+        if (safeConfig.requireOptIn) {
+            const pref = getPixContactBillingPreference(contactId);
+            if (!pref || !pref.allow_active_billing) continue;
+        }
+        const due = computePixReminderDue(charge, safeConfig, now);
+        if (!due) continue;
+        const expiresLabel = charge.expires_at ? new Date(Number(charge.expires_at)).toLocaleString('pt-BR') : '-';
+        const copyPaste = String(charge.pix_copy_paste || '').trim();
+        if (!copyPaste) continue;
+        const convo = ensureConversationExistsForContact(contactId, charge.student_full_name || '');
+        if (!convo) continue;
+        if (convo.pausedByHuman) continue;
+        const text = [
+            `Lembrete de pagamento (${due.reminderNumber}/${safeConfig.maxRemindersPerCharge}): ainda temos um Pix pendente para ${charge.student_full_name || 'o aluno'}.`,
+            `Plano: ${charge.plan_name_snapshot || '-'}`,
+            `Valor: ${formatCurrencyBRLFromCents(Number(charge.amount_cents || 0))}`,
+            `Vencimento: ${expiresLabel}`,
+            '',
+            'Vou enviar o codigo copia e cola em mensagem separada.',
+            'Se preferir parar os lembretes, responda: parar cobranca'
+        ].join('\n');
+        try {
+            await sendPixBotReply({ sender: contactId, user: convo, text });
+            await sendPixCopyPasteCode({ sender: contactId, user: convo, copyPaste });
+            registerPixReminderSent(charge.id, due.reminderTag, text);
+        } catch (error) {
+            console.error('[pix-safe] reminder send failed:', error?.message || error);
+        }
+    }
+}
+
+let pixSafeSweepTimer = null;
+function startPixSafeCollectionLoop() {
+    if (pixSafeSweepTimer) return;
+    const run = async () => {
+        try {
+            await runPixSafeCollectionSweep();
+        } catch (error) {
+            console.error('[pix-safe] sweep error:', error?.message || error);
+        }
+    };
+    pixSafeSweepTimer = setInterval(run, PIX_SAFE_SWEEP_INTERVAL_MS);
+    setTimeout(run, 30 * 1000);
+}
+
 // --- SERVIDOR ---
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const upload = multer({ storage: multer.diskStorage({ destination: (req, f, cb) => cb(null, ADS_DIR), filename: (req, f, cb) => cb(null, f.originalname.replace(/[^a-zA-Z0-9.]/g, '_')) }) });
+const pixDailyImportUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024, files: 1 }
+});
 const chatImageUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_IMAGE_MAX_BYTES, files: 1 },
@@ -7818,7 +8253,14 @@ registerPixAdminRoutes({
     listPixCharges,
     getPixChargeById,
     confirmPixChargeScaDone,
-    processAsaasWebhook
+    processAsaasWebhook,
+    getPixSafeConfig,
+    normalizePixSafeConfigInput,
+    setPixSafeConfig,
+    pixDailyImportUpload,
+    storePixDailyImport,
+    listPixDailyImports,
+    resolvePixDailyImportCsvPath
 });
 
 // --- ATTENDANCE (PONTO) ---
@@ -8657,6 +9099,7 @@ async function startBot() {
             lastQrAt = 0;
             console.log('[ok] BOT ONLINE');
             startAttendanceReminderLoop();
+            startPixSafeCollectionLoop();
             return;
         }
         if (connection === 'close') {

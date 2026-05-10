@@ -35,6 +35,36 @@ type PixCharge = {
   created_at?: number;
   updated_at?: number;
 };
+type PixSafeConfig = {
+  enabled: boolean;
+  requireOptIn: boolean;
+  maxRemindersPerCharge: number;
+  firstReminderAfterMin: number;
+  reminderIntervalMin: number;
+  quietHourStart: number;
+  quietHourEnd: number;
+  updatedAt?: number;
+};
+type PixDailyImport = {
+  id: number;
+  original_filename: string;
+  source_ext: string;
+  csv_filename: string;
+  rows_count: number;
+  columns_count: number;
+  uploaded_by?: string;
+  created_at?: number;
+};
+type ScaInactiveStudent = {
+  id: number;
+  external_id: string;
+  name: string;
+  phone: string;
+  status: string;
+  plan: string;
+  last_access_at: number;
+  days_without_visit: number;
+};
 type Chat = {
   id: string;
   name: string;
@@ -261,6 +291,14 @@ type PanelDataContextValue = {
   deletePixPlan: (id: number) => Promise<boolean>;
   refreshPixCharges: (filters?: { status?: string; sca_manual_status?: string; contact?: string }) => Promise<void>;
   confirmPixScaDone: (chargeId: number) => Promise<boolean>;
+  pixSafeConfig: PixSafeConfig | null;
+  loadPixSafeConfig: () => Promise<PixSafeConfig | null>;
+  savePixSafeConfig: (payload: Partial<PixSafeConfig>) => Promise<boolean>;
+  pixDailyImports: PixDailyImport[];
+  refreshPixDailyImports: () => Promise<void>;
+  uploadPixDailyImport: (file: File) => Promise<boolean>;
+  scaInactiveStudents: ScaInactiveStudent[];
+  refreshScaInactiveStudents: (days?: number, limit?: number, query?: string) => Promise<void>;
 };
 
 const PanelDataContext = createContext<PanelDataContextValue | null>(null);
@@ -557,6 +595,9 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [systemHealth, setSystemHealth] = useState<SystemHealthSnapshot | null>(null);
   const [pixPlans, setPixPlans] = useState<PixPlan[]>([]);
   const [pixCharges, setPixCharges] = useState<PixCharge[]>([]);
+  const [pixSafeConfig, setPixSafeConfig] = useState<PixSafeConfig | null>(null);
+  const [pixDailyImports, setPixDailyImports] = useState<PixDailyImport[]>([]);
+  const [scaInactiveStudents, setScaInactiveStudents] = useState<ScaInactiveStudent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selectedChatRef = useRef<string | null>(null);
@@ -612,6 +653,50 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setPlaylist([]);
     setRadio((prev) => ({ ...prev, isPlaying: false, currentTrack: null }));
   }, []);
+
+  const notifyPixPendingScaBrowser = useCallback((payload: {
+    from?: string;
+    studentFullName?: string;
+    planName?: string;
+  }) => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const title = "Pix confirmado - baixa no SCA pendente";
+    const description = `${payload.studentFullName || payload.from || "Cliente"} • ${payload.planName || "Plano"}`;
+    const openConversation = () => {
+      if (!payload.from) return;
+      selectedChatRef.current = payload.from;
+      setSelectedChatId(payload.from);
+      sendWs({ type: "request_chat_history", contactId: payload.from });
+      sendWs({ type: "request_chat_meta", contactId: payload.from });
+    };
+    const createNotification = () => {
+      try {
+        const notif = new Notification(title, { body: description });
+        notif.onclick = () => {
+          try {
+            window.focus();
+          } catch {
+            /* ignore */
+          }
+          openConversation();
+          notif.close();
+        };
+      } catch {
+        /* ignore */
+      }
+    };
+    if (Notification.permission === "granted") {
+      createNotification();
+      return;
+    }
+    if (Notification.permission === "default") {
+      void Notification.requestPermission()
+        .then((permission) => {
+          if (permission === "granted") createNotification();
+        })
+        .catch(() => undefined);
+    }
+  }, [sendWs]);
 
   const refreshAds = useCallback(async () => {
     setAdFiles([]);
@@ -857,6 +942,101 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshPixCharges, refreshSystemHealth, requestInitialLists]);
 
+  const loadPixSafeConfig = useCallback(async () => {
+    if (user?.role !== "admin") {
+      setPixSafeConfig(null);
+      return null;
+    }
+    try {
+      const res = await apiFetch("/admin/pix/safe-config");
+      const data = await res.json();
+      const cfg = (data?.config || null) as PixSafeConfig | null;
+      setPixSafeConfig(cfg);
+      return cfg;
+    } catch {
+      setPixSafeConfig(null);
+      return null;
+    }
+  }, [user?.role]);
+
+  const savePixSafeConfig = useCallback(async (payload: Partial<PixSafeConfig>) => {
+    if (user?.role !== "admin") return false;
+    try {
+      const res = await apiFetch("/admin/pix/safe-config", {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await res.json();
+      setPixSafeConfig((data?.config || null) as PixSafeConfig | null);
+      toast.success("Modo cobranca segura atualizado.");
+      return true;
+    } catch {
+      toast.error("Falha ao salvar modo cobranca segura.");
+      return false;
+    }
+  }, [user?.role]);
+
+  const refreshPixDailyImports = useCallback(async () => {
+    if (user?.role !== "admin") {
+      setPixDailyImports([]);
+      return;
+    }
+    try {
+      const res = await apiFetch("/admin/pix/daily-imports?limit=40");
+      const data = await res.json();
+      setPixDailyImports(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setPixDailyImports([]);
+    }
+  }, [user?.role]);
+
+  const uploadPixDailyImport = useCallback(async (file: File) => {
+    if (user?.role !== "admin") return false;
+    if (!file) return false;
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      await apiFetch("/admin/pix/daily-imports/upload", {
+        method: "POST",
+        body: form,
+      });
+      await refreshPixDailyImports();
+      toast.success("Base enviada e convertida para CSV com sucesso.");
+      return true;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "invalid_file_type") {
+        toast.error("Arquivo invalido. Envie CSV, XLS ou XLSX.");
+      } else {
+        toast.error("Falha ao enviar base diaria.");
+      }
+      return false;
+    }
+  }, [refreshPixDailyImports, user?.role]);
+
+  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "") => {
+    if (!user) {
+      setScaInactiveStudents([]);
+      return;
+    }
+    const safeDays = Math.max(1, Math.min(180, Math.floor(Number(days) || 5)));
+    const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
+    const params = new URLSearchParams({
+      days: String(safeDays),
+      limit: String(safeLimit),
+    });
+    const q = String(query || "").trim();
+    if (q) params.set("q", q);
+    try {
+      const res = await apiFetch(`/admin/sca/students/inactive?${params.toString()}`);
+      const data = await res.json();
+      setScaInactiveStudents(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setScaInactiveStudents([]);
+    }
+  }, [user]);
+
   const refreshAll = useCallback(async () => {
     requestInitialLists();
     await Promise.all([
@@ -866,8 +1046,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       refreshSystemHealth(),
       refreshPixPlans(),
       refreshPixCharges(),
+      loadPixSafeConfig(),
+      refreshPixDailyImports(),
+      refreshScaInactiveStudents(5, 200, ""),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -1058,6 +1241,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           toast.warning("Pix confirmado - baixa manual no SCA pendente", {
             description: `${pendingInfo.studentFullName || payload.from} - ${pendingInfo.planName || "Plano"}`,
           });
+          notifyPixPendingScaBrowser({
+            from: payload.from,
+            studentFullName: pendingInfo.studentFullName,
+            planName: pendingInfo.planName,
+          });
           void refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
         }
         break;
@@ -1099,7 +1287,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       default:
         break;
     }
-  }, [notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
+  }, [notifyPixPendingScaBrowser, notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -1246,6 +1434,9 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setSelectedChatId(null);
     setPixPlans([]);
     setPixCharges([]);
+    setPixSafeConfig(null);
+    setPixDailyImports([]);
+    setScaInactiveStudents([]);
   }, []);
 
   const selectChat = useCallback(async (id: string) => {
@@ -1742,6 +1933,14 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     deletePixPlan,
     refreshPixCharges,
     confirmPixScaDone,
+    pixSafeConfig,
+    loadPixSafeConfig,
+    savePixSafeConfig,
+    pixDailyImports,
+    refreshPixDailyImports,
+    uploadPixDailyImport,
+    scaInactiveStudents,
+    refreshScaInactiveStudents,
   }), [
     adCampaigns,
     adFiles,
@@ -1802,6 +2001,14 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     deletePixPlan,
     refreshPixCharges,
     confirmPixScaDone,
+    pixSafeConfig,
+    loadPixSafeConfig,
+    savePixSafeConfig,
+    pixDailyImports,
+    refreshPixDailyImports,
+    uploadPixDailyImport,
+    scaInactiveStudents,
+    refreshScaInactiveStudents,
     ackChatAttention,
     selectChat,
     selectedChat,
