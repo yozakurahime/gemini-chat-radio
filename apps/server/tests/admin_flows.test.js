@@ -304,6 +304,11 @@ test('knowledge context profile runtime generates structured IA context', () => 
 
 test('pix chat runtime detects payment intent and confirmation answers', () => {
   assert.equal(detectPixMonthlyIntent('Quero pagar a mensalidade no pix'), true);
+  assert.equal(detectPixMonthlyIntent('Pode gerar o pix da mensalidade?'), true);
+  assert.equal(detectPixMonthlyIntent('Manda o codigo pix do plano mensal'), true);
+  assert.equal(detectPixMonthlyIntent('Manda os detalhes da mensalidade'), false);
+  assert.equal(detectPixMonthlyIntent('Quanto ta a mensalidade?'), false);
+  assert.equal(detectPixMonthlyIntent('Qual o valor do plano mensal?'), false);
   assert.equal(detectPixMonthlyIntent('Qual o horario de hoje?'), false);
   assert.equal(parseYesNo('sim'), 'yes');
   assert.equal(parseYesNo('nao'), 'no');

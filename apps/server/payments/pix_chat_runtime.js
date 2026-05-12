@@ -11,9 +11,16 @@ function normalizePlainText(value) {
 function detectPixMonthlyIntent(text) {
     const normalized = normalizePlainText(text);
     if (!normalized) return false;
-    const wantsPay = /\b(pagar|pagamento|quitar|pix|mensalidade)\b/.test(normalized);
-    const monthly = /\b(mensalidade|mensal|plano)\b/.test(normalized);
-    return wantsPay && monthly;
+    const hasPlanTopic = /\b(mensalidade|mensal|plano|matricula)\b/.test(normalized);
+    if (!hasPlanTopic) return false;
+
+    const asksOnlyPrice = /\b(quanto|valor|preco|custa|mensalidade quanto)\b/.test(normalized);
+    const hasPayAction = /\b(pagar|pagamento|quitar|acertar|liquidar|fechar|gerar|emitir|fazer)\b/.test(normalized);
+    const hasPix = /\bpix\b/.test(normalized);
+    const hasPixIntent = hasPix && /\b(pagar|gerar|emitir|manda|enviar|copia|cola|codigo)\b/.test(normalized);
+
+    if (asksOnlyPrice && !hasPayAction && !hasPixIntent) return false;
+    return hasPayAction || hasPixIntent;
 }
 
 function parseYesNo(text) {
