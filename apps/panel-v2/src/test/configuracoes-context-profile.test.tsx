@@ -29,6 +29,14 @@ vi.mock("@/hooks/use-panel-data", () => ({
     deletePixPlan: vi.fn().mockResolvedValue(true),
     refreshPixCharges: vi.fn().mockResolvedValue(undefined),
     confirmPixScaDone: vi.fn().mockResolvedValue(true),
+    pixSafeConfig: null,
+    loadPixSafeConfig: vi.fn().mockResolvedValue(null),
+    savePixSafeConfig: vi.fn().mockResolvedValue(true),
+    pixDailyImports: [],
+    refreshPixDailyImports: vi.fn().mockResolvedValue(undefined),
+    uploadPixDailyImport: vi.fn().mockResolvedValue(true),
+    scaInactiveStudents: [],
+    refreshScaInactiveStudents: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 

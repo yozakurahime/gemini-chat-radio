@@ -17,7 +17,14 @@ function registerPixAdminRoutes({
     listPixCharges,
     getPixChargeById,
     confirmPixChargeScaDone,
-    processAsaasWebhook
+    processAsaasWebhook,
+    getPixSafeConfig,
+    normalizePixSafeConfigInput,
+    setPixSafeConfig,
+    pixDailyImportUpload,
+    storePixDailyImport,
+    listPixDailyImports,
+    resolvePixDailyImportCsvPath
 }) {
     app.get('/admin/pix/plans', (req, res) => {
         const user = requirePanelAuth(req, res); if (!user) return;
@@ -83,6 +90,80 @@ function registerPixAdminRoutes({
         const contact = sanitizePublicText(req.query?.contact || '', 120);
         const items = listPixCharges({ status, scaManualStatus, contact });
         return res.json({ ok: true, items });
+    });
+
+    app.get('/admin/pix/safe-config', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const config = typeof getPixSafeConfig === 'function' ? getPixSafeConfig() : null;
+        if (!config) return res.status(503).json({ ok: false, error: 'pix_safe_config_unavailable' });
+        return res.json({ ok: true, config });
+    });
+
+    app.put('/admin/pix/safe-config', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        if (typeof normalizePixSafeConfigInput !== 'function' || typeof setPixSafeConfig !== 'function') {
+            return res.status(503).json({ ok: false, error: 'pix_safe_config_unavailable' });
+        }
+        const current = typeof getPixSafeConfig === 'function' ? getPixSafeConfig() : {};
+        const payload = req.body && typeof req.body === 'object' ? req.body : {};
+        const normalized = normalizePixSafeConfigInput(payload, current || {});
+        const saved = setPixSafeConfig(normalized, user.username);
+        logAdminAction('pix.safe_config.update', user.username, 'pix_safe', saved, req.ip);
+        return res.json({ ok: true, config: saved });
+    });
+
+    app.get('/admin/pix/daily-imports', (req, res) => {
+        const user = requirePanelAuth(req, res); if (!user) return;
+        const limit = toInt(req.query?.limit, 20);
+        const items = typeof listPixDailyImports === 'function' ? listPixDailyImports({ limit }) : [];
+        return res.json({ ok: true, items });
+    });
+
+    app.post('/admin/pix/daily-imports/upload', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        if (!pixDailyImportUpload || typeof storePixDailyImport !== 'function') {
+            return res.status(503).json({ ok: false, error: 'daily_import_unavailable' });
+        }
+        const middleware = pixDailyImportUpload.single('file');
+        middleware(req, res, (err) => {
+            if (err) {
+                return res.status(400).json({ ok: false, error: 'upload_failed', detail: String(err?.message || err) });
+            }
+            const file = req.file;
+            if (!file || !Buffer.isBuffer(file.buffer)) {
+                return res.status(400).json({ ok: false, error: 'missing_file' });
+            }
+            try {
+                const item = storePixDailyImport({
+                    fileBuffer: file.buffer,
+                    originalName: file.originalname || '',
+                    uploadedBy: user.username || ''
+                });
+                logAdminAction('pix.daily_import.upload', user.username, String(item?.id || 0), {
+                    original: file.originalname || '',
+                    csv: item?.csv_filename || '',
+                    rows: Number(item?.rows_count || 0),
+                    cols: Number(item?.columns_count || 0)
+                }, req.ip);
+                return res.json({ ok: true, item });
+            } catch (error) {
+                const code = String(error?.message || 'upload_parse_failed');
+                return res.status(400).json({ ok: false, error: code });
+            }
+        });
+    });
+
+    app.get('/admin/pix/daily-imports/:id/csv', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        if (typeof resolvePixDailyImportCsvPath !== 'function') {
+            return res.status(503).json({ ok: false, error: 'daily_import_unavailable' });
+        }
+        const id = toInt(req.params?.id, 0);
+        if (!id) return res.status(400).json({ ok: false, error: 'invalid_id' });
+        const fullPath = resolvePixDailyImportCsvPath(id);
+        if (!fullPath) return res.status(404).json({ ok: false, error: 'not_found' });
+        res.setHeader('Cache-Control', 'no-store');
+        return res.download(fullPath);
     });
 
     app.post('/admin/pix/charges/:id/sca-done', async (req, res) => {

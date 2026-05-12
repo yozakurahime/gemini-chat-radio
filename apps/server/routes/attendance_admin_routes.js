@@ -396,6 +396,55 @@ app.get('/admin/sca/sync/status', (req, res) => {
     return res.status(410).json({ error: 'sca_import_disabled' });
 });
 
+app.get('/admin/sca/students/inactive', (req, res) => {
+    const user = requirePanelAuth(req, res); if (!user) return;
+    const rawDays = Number(req.query?.days ?? 5);
+    const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(180, Math.floor(rawDays))) : 5;
+    const rawLimit = Number(req.query?.limit ?? 200);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 200;
+    const q = sanitizePublicText(req.query?.q || '', 120);
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const cutoffAt = now - (days * dayMs);
+    const where = ['last_access_at > 0', 'last_access_at <= ?'];
+    const params = [cutoffAt];
+    if (q) {
+        where.push('(name LIKE ? OR phone LIKE ? OR external_id LIKE ? OR plan LIKE ?)');
+        const term = `%${q}%`;
+        params.push(term, term, term, term);
+    }
+    params.push(limit);
+    const rows = db.prepare(`
+        SELECT id, external_id, name, phone, status, plan, last_access_at
+        FROM sca_people
+        WHERE ${where.join(' AND ')}
+        ORDER BY last_access_at ASC, id ASC
+        LIMIT ?
+    `).all(...params);
+    const items = rows.map((row) => {
+        const lastAccessAt = Number(row.last_access_at || 0);
+        const daysWithoutVisit = lastAccessAt > 0 ? Math.max(days, Math.floor((now - lastAccessAt) / dayMs)) : days;
+        return {
+            id: Number(row.id || 0),
+            external_id: String(row.external_id || ''),
+            name: String(row.name || ''),
+            phone: String(row.phone || ''),
+            status: String(row.status || ''),
+            plan: String(row.plan || ''),
+            last_access_at: lastAccessAt,
+            days_without_visit: daysWithoutVisit
+        };
+    });
+    return res.json({
+        ok: true,
+        days,
+        cutoff_at: cutoffAt,
+        generated_at: now,
+        total: items.length,
+        items
+    });
+});
+
 app.post('/admin/sca/connector/diagnostic', (req, res) => {
     if (!authorizeScaSync(req, res)) return;
     const source = sanitizePublicText(req.body?.source || 'sca_connector', 60) || 'sca_connector';

@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
-import { Activity, Bot, CreditCard, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, UserPlus, Users } from "lucide-react";
+import { Activity, Bot, CreditCard, Download, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, Upload, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
@@ -78,6 +78,48 @@ type PixPlan = {
   name: string;
   amount_cents: number;
   active: number;
+};
+
+type PixSafeConfig = {
+  enabled: boolean;
+  requireOptIn: boolean;
+  maxRemindersPerCharge: number;
+  firstReminderAfterMin: number;
+  reminderIntervalMin: number;
+  quietHourStart: number;
+  quietHourEnd: number;
+  updatedAt?: number;
+};
+
+type PixDailyImport = {
+  id: number;
+  original_filename: string;
+  source_ext: string;
+  csv_filename: string;
+  rows_count: number;
+  columns_count: number;
+  uploaded_by?: string;
+  created_at?: number;
+};
+type ScaInactiveStudent = {
+  id: number;
+  external_id: string;
+  name: string;
+  phone: string;
+  status: string;
+  plan: string;
+  last_access_at: number;
+  days_without_visit: number;
+};
+
+const PIX_SAFE_DEFAULT: PixSafeConfig = {
+  enabled: true,
+  requireOptIn: true,
+  maxRemindersPerCharge: 2,
+  firstReminderAfterMin: 120,
+  reminderIntervalMin: 1440,
+  quietHourStart: 8,
+  quietHourEnd: 20,
 };
 
 const OPS_ALERTS_DEFAULT: OpsAlertsConfig = {
@@ -164,6 +206,17 @@ function formatDateTimeBr(value?: number) {
   return formatDateTimeBrTz(value, "-");
 }
 
+function digitsOnly(value: string) {
+  return String(value || "").replace(/\D+/g, "");
+}
+
+function buildWhatsappLink(phone: string, studentName: string) {
+  const digits = digitsOnly(phone);
+  if (!digits) return "";
+  const text = encodeURIComponent(`Oi ${studentName || "tudo bem"}! Sentimos sua falta na academia. Posso te ajudar com algo?`);
+  return `https://wa.me/${digits}?text=${text}`;
+}
+
 function statusBadgeClass(status?: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "critical" || status === "critico") return "destructive";
   if (status === "degraded" || status === "atrasando") return "secondary";
@@ -183,6 +236,14 @@ export default function ConfiguracoesPage() {
     createPixPlan,
     updatePixPlan,
     deletePixPlan,
+    pixSafeConfig,
+    loadPixSafeConfig,
+    savePixSafeConfig,
+    pixDailyImports,
+    refreshPixDailyImports,
+    uploadPixDailyImport,
+    scaInactiveStudents,
+    refreshScaInactiveStudents,
   } = usePanelData();
   const isAdmin = user?.role === "admin";
 
@@ -221,6 +282,12 @@ export default function ConfiguracoesPage() {
   const [pixEditingId, setPixEditingId] = useState<number>(0);
   const [pixEditingName, setPixEditingName] = useState("");
   const [pixEditingAmount, setPixEditingAmount] = useState("");
+  const [pixSafeDraft, setPixSafeDraft] = useState<PixSafeConfig>(PIX_SAFE_DEFAULT);
+  const [pixSafeSaving, setPixSafeSaving] = useState(false);
+  const [dailyImportFile, setDailyImportFile] = useState<File | null>(null);
+  const [dailyImportSending, setDailyImportSending] = useState(false);
+  const [inactiveDaysFilter, setInactiveDaysFilter] = useState("5");
+  const [inactiveStudentsLoading, setInactiveStudentsLoading] = useState(false);
 
   const sortedUsers = useMemo(
     () => [...managedUsers].sort((a, b) => {
@@ -368,7 +435,18 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     if (!isAdmin) return;
     refreshPixPlans();
-  }, [isAdmin, refreshPixPlans]);
+    loadPixSafeConfig();
+    refreshPixDailyImports();
+    void refreshScaInactiveStudents(5, 200, "");
+  }, [isAdmin, refreshPixPlans, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents]);
+
+  useEffect(() => {
+    if (!pixSafeConfig) return;
+    setPixSafeDraft({
+      ...PIX_SAFE_DEFAULT,
+      ...pixSafeConfig,
+    });
+  }, [pixSafeConfig]);
 
   const parsePixAmountToCents = (rawValue: string) => {
     const normalized = String(rawValue || "").replace(/\./g, "").replace(",", ".").trim();
@@ -592,6 +670,58 @@ export default function ConfiguracoesPage() {
       toast.success("Plano Pix reativado.");
     } finally {
       setPixSaving(false);
+    }
+  };
+
+  const updatePixSafeDraftNumber = (key: keyof PixSafeConfig, rawValue: string) => {
+    const value = Number(rawValue);
+    setPixSafeDraft((prev) => ({
+      ...prev,
+      [key]: Number.isFinite(value) ? value : 0,
+    }));
+  };
+
+  const handleSavePixSafe = async () => {
+    if (!isAdmin || pixSafeSaving) return;
+    setPixSafeSaving(true);
+    try {
+      const ok = await savePixSafeConfig({
+        enabled: !!pixSafeDraft.enabled,
+        requireOptIn: !!pixSafeDraft.requireOptIn,
+        maxRemindersPerCharge: Number(pixSafeDraft.maxRemindersPerCharge || 0),
+        firstReminderAfterMin: Number(pixSafeDraft.firstReminderAfterMin || 0),
+        reminderIntervalMin: Number(pixSafeDraft.reminderIntervalMin || 0),
+        quietHourStart: Number(pixSafeDraft.quietHourStart || 0),
+        quietHourEnd: Number(pixSafeDraft.quietHourEnd || 0),
+      });
+      if (!ok) return;
+      await loadPixSafeConfig();
+    } finally {
+      setPixSafeSaving(false);
+    }
+  };
+
+  const handleUploadDailyImport = async () => {
+    if (!dailyImportFile || dailyImportSending) return;
+    setDailyImportSending(true);
+    try {
+      const ok = await uploadPixDailyImport(dailyImportFile);
+      if (!ok) return;
+      setDailyImportFile(null);
+      await refreshPixDailyImports();
+    } finally {
+      setDailyImportSending(false);
+    }
+  };
+
+  const handleRefreshInactiveStudents = async () => {
+    if (!isAdmin) return;
+    setInactiveStudentsLoading(true);
+    try {
+      const days = Math.max(1, Math.min(180, Math.floor(Number(inactiveDaysFilter) || 5)));
+      await refreshScaInactiveStudents(days, 300, "");
+    } finally {
+      setInactiveStudentsLoading(false);
     }
   };
 
@@ -1055,6 +1185,177 @@ export default function ConfiguracoesPage() {
                                 )}
                               </div>
                             </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Shield className="h-4 w-4" /> Modo cobranca segura
+                </CardTitle>
+                <CardDescription>
+                  Regras anti-spam para lembretes de Pix no WhatsApp.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <p className="text-sm font-medium">Lembretes ativos</p>
+                      <p className="text-xs text-muted-foreground">Ativa envio automatico de lembretes para cobrancas pendentes.</p>
+                    </div>
+                    <Switch
+                      checked={!!pixSafeDraft.enabled}
+                      onCheckedChange={(checked) => setPixSafeDraft((prev) => ({ ...prev, enabled: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <p className="text-sm font-medium">Exigir opt-in</p>
+                      <p className="text-xs text-muted-foreground">So envia lembrete para quem ja pediu cobranca via chat.</p>
+                    </div>
+                    <Switch
+                      checked={!!pixSafeDraft.requireOptIn}
+                      onCheckedChange={(checked) => setPixSafeDraft((prev) => ({ ...prev, requireOptIn: checked }))}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-2">
+                    <Label>Max lembretes por cobranca</Label>
+                    <Input type="number" value={pixSafeDraft.maxRemindersPerCharge} onChange={(event) => updatePixSafeDraftNumber("maxRemindersPerCharge", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>1o lembrete apos (min)</Label>
+                    <Input type="number" value={pixSafeDraft.firstReminderAfterMin} onChange={(event) => updatePixSafeDraftNumber("firstReminderAfterMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Intervalo entre lembretes (min)</Label>
+                    <Input type="number" value={pixSafeDraft.reminderIntervalMin} onChange={(event) => updatePixSafeDraftNumber("reminderIntervalMin", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Janela inicio (hora)</Label>
+                    <Input type="number" value={pixSafeDraft.quietHourStart} onChange={(event) => updatePixSafeDraftNumber("quietHourStart", event.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Janela fim (hora)</Label>
+                    <Input type="number" value={pixSafeDraft.quietHourEnd} onChange={(event) => updatePixSafeDraftNumber("quietHourEnd", event.target.value)} />
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button className="gap-1" onClick={handleSavePixSafe} disabled={pixSafeSaving}>
+                    <Save className="h-4 w-4" /> Salvar modo seguro
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Upload className="h-4 w-4" /> Base diaria (SCA manual)
+                </CardTitle>
+                <CardDescription>
+                  Envie diariamente a base exportada (CSV/XLS/XLSX). O sistema converte automaticamente para CSV.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+                  <Input
+                    type="file"
+                    accept=".csv,.xls,.xlsx"
+                    onChange={(event) => setDailyImportFile(event.target.files?.[0] || null)}
+                    disabled={dailyImportSending}
+                  />
+                  <Button className="gap-1" onClick={handleUploadDailyImport} disabled={!dailyImportFile || dailyImportSending}>
+                    <Upload className="h-4 w-4" /> Enviar e converter
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {(pixDailyImports || []).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum envio diario registrado ainda.</p>
+                  ) : (
+                    (pixDailyImports as PixDailyImport[]).map((item) => (
+                      <div key={item.id} className="rounded-lg border p-3 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium">{item.original_filename}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDateTimeBr(item.created_at)} • Linhas: {Number(item.rows_count || 0)} • Colunas: {Number(item.columns_count || 0)}
+                          </p>
+                        </div>
+                        <a href={`/admin/pix/daily-imports/${encodeURIComponent(String(item.id))}/csv`} target="_blank" rel="noreferrer">
+                          <Button size="sm" variant="outline" className="gap-1">
+                            <Download className="h-4 w-4" /> Baixar CSV
+                          </Button>
+                        </a>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Users className="h-4 w-4" /> Alunos sem vir ha varios dias
+                </CardTitle>
+                <CardDescription>
+                  Lista para reativacao: alunos com mais de X dias sem registrar acesso.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-[200px_auto] gap-3">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={180}
+                    value={inactiveDaysFilter}
+                    onChange={(event) => setInactiveDaysFilter(event.target.value)}
+                    placeholder="Dias sem vir"
+                    disabled={inactiveStudentsLoading}
+                  />
+                  <Button className="gap-1" onClick={handleRefreshInactiveStudents} disabled={inactiveStudentsLoading}>
+                    <RotateCcw className="h-4 w-4" /> Atualizar lista
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {(scaInactiveStudents || []).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nenhum aluno acima do limite informado no momento.</p>
+                  ) : (
+                    (scaInactiveStudents as ScaInactiveStudent[]).map((item) => {
+                      const waLink = buildWhatsappLink(item.phone, item.name);
+                      return (
+                        <div key={`${item.id}-${item.external_id}`} className="rounded-lg border p-3 flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium">{item.name || "Aluno sem nome"}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {item.plan ? `Plano: ${item.plan} • ` : ""}
+                              {item.phone ? `Telefone: ${item.phone} • ` : ""}
+                              Sem vir ha {Number(item.days_without_visit || 0)} dias
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Ultimo acesso: {formatDateTimeBr(item.last_access_at)}
+                            </p>
+                          </div>
+                          {waLink ? (
+                            <a href={waLink} target="_blank" rel="noreferrer">
+                              <Button size="sm" variant="outline" className="gap-1">
+                                <Send className="h-4 w-4" /> Chamar no WhatsApp
+                              </Button>
+                            </a>
+                          ) : (
+                            <Badge variant="secondary">Sem telefone</Badge>
                           )}
                         </div>
                       );
