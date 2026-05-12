@@ -24,7 +24,8 @@ function registerPixAdminRoutes({
     pixDailyImportUpload,
     storePixDailyImport,
     listPixDailyImports,
-    resolvePixDailyImportCsvPath
+    resolvePixDailyImportCsvPath,
+    getPixWebhookMonitorSnapshot
 }) {
     app.get('/admin/pix/plans', (req, res) => {
         const user = requirePanelAuth(req, res); if (!user) return;
@@ -90,6 +91,15 @@ function registerPixAdminRoutes({
         const contact = sanitizePublicText(req.query?.contact || '', 120);
         const items = listPixCharges({ status, scaManualStatus, contact });
         return res.json({ ok: true, items });
+    });
+
+    app.get('/admin/pix/webhook-status', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const monitor = typeof getPixWebhookMonitorSnapshot === 'function'
+            ? getPixWebhookMonitorSnapshot()
+            : null;
+        if (!monitor) return res.status(503).json({ ok: false, error: 'webhook_monitor_unavailable' });
+        return res.json({ ok: true, monitor });
     });
 
     app.get('/admin/pix/safe-config', (req, res) => {

@@ -23,6 +23,53 @@ function registerKnowledgeAdminRoutes({
     broadcast
 }) {
     const contextProfileFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'context_profile.json');
+    const playbooksFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'ai_playbooks.json');
+
+    function defaultPlaybooks() {
+        return {
+            enabled: true,
+            sections: {
+                mensalidade: 'Quando perguntarem valor da mensalidade ou preco de plano, responda com os valores que existirem no contexto. Se nao houver valor no contexto, diga que vai confirmar com o atendimento humano antes de fechar.',
+                modalidades: 'Quando perguntarem modalidades, responda com lista objetiva (nome, frequencia, publico e observacoes) priorizando clareza comercial.',
+                matricula: 'Quando pedirem matricula, explique documentos, forma de pagamento, etapas e ofereca concluir com atendente humano.',
+                objecoes: 'Quando houver indecisao (tempo, preco, distancia), responda com empatia, destaque beneficios praticos e convide para teste/aula experimental quando houver no contexto.'
+            },
+            updated_at: 0,
+            updated_by: 'system'
+        };
+    }
+
+    function normalizePlaybooksInput(raw = {}, actor = 'system', keepTimestamp = false) {
+        const defaults = defaultPlaybooks();
+        const sections = raw?.sections && typeof raw.sections === 'object' ? raw.sections : {};
+        const clean = (value, fallback) => String(value ?? fallback ?? '').trim().slice(0, 1200);
+        return {
+            enabled: raw?.enabled !== false,
+            sections: {
+                mensalidade: clean(sections.mensalidade, defaults.sections.mensalidade),
+                modalidades: clean(sections.modalidades, defaults.sections.modalidades),
+                matricula: clean(sections.matricula, defaults.sections.matricula),
+                objecoes: clean(sections.objecoes, defaults.sections.objecoes)
+            },
+            updated_at: keepTimestamp ? Number(raw?.updated_at || 0) : Date.now(),
+            updated_by: String(actor || 'system').trim().slice(0, 80) || 'system'
+        };
+    }
+
+    function readPlaybooks() {
+        if (!fs.existsSync(playbooksFile)) return defaultPlaybooks();
+        try {
+            const parsed = JSON.parse(fs.readFileSync(playbooksFile, 'utf-8'));
+            return normalizePlaybooksInput(parsed, parsed?.updated_by || 'system', true);
+        } catch (_) {
+            return defaultPlaybooks();
+        }
+    }
+
+    function writePlaybooks(playbooks) {
+        fs.mkdirSync(path.dirname(playbooksFile), { recursive: true });
+        fs.writeFileSync(playbooksFile, JSON.stringify(playbooks, null, 2), 'utf-8');
+    }
 
     function readContextProfile() {
         if (!fs.existsSync(contextProfileFile)) return null;
@@ -77,6 +124,32 @@ function registerKnowledgeAdminRoutes({
             profile: readContextProfile(),
             base_context: getBaseContext() || ''
         });
+    });
+
+    app.get('/admin/knowledge/playbooks', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        return res.json({
+            ok: true,
+            playbooks: readPlaybooks()
+        });
+    });
+
+    app.post('/admin/knowledge/playbooks/save', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const next = normalizePlaybooksInput(req.body?.playbooks || req.body || {}, user.username);
+        try {
+            writePlaybooks(next);
+            try {
+                broadcast({
+                    type: 'ai_playbooks_updated',
+                    updated_at: next.updated_at,
+                    updated_by: next.updated_by
+                });
+            } catch (_) {}
+            return res.json({ ok: true, playbooks: next });
+        } catch (_) {
+            return res.status(500).json({ error: 'write_failed' });
+        }
     });
 
     app.post('/admin/knowledge/profile/save', (req, res) => {

@@ -2377,6 +2377,51 @@ function collectOperationalComponents() {
         };
     }
 
+    if (!ASAAS_CONFIG.enabled) {
+        components.pix_webhook = {
+            status: 'ok',
+            message: 'pix/asaas desativado',
+            metrics: {
+                enabled: false
+            }
+        };
+    } else {
+        const monitor = getPixWebhookMonitorSnapshot();
+        const staleMs = Number(monitor.staleAfterHours || PIX_WEBHOOK_STALE_HOURS) * 60 * 60 * 1000;
+        const nowTs = Date.now();
+        let status = 'ok';
+        let message = 'webhook pix recebendo eventos normalmente';
+        if (Number(monitor.consecutiveFailures || 0) >= 3) {
+            status = 'critical';
+            message = sanitizePublicText(`falhas seguidas no webhook: ${monitor.lastFailureMessage || 'erro desconhecido'}`, 180);
+        } else if (Number(monitor.consecutiveFailures || 0) > 0) {
+            status = 'degraded';
+            message = sanitizePublicText(`ultima falha no webhook: ${monitor.lastFailureMessage || 'erro desconhecido'}`, 180);
+        } else if (Number(monitor.lastSuccessAt || 0) <= 0) {
+            status = 'degraded';
+            message = 'webhook pix sem eventos confirmados ainda';
+        } else if ((nowTs - Number(monitor.lastSuccessAt || 0)) > staleMs) {
+            status = 'degraded';
+            message = `sem confirmacao de webhook ha mais de ${Number(monitor.staleAfterHours || PIX_WEBHOOK_STALE_HOURS)}h`;
+        }
+        components.pix_webhook = {
+            status,
+            message,
+            metrics: {
+                enabled: true,
+                lastEventAt: Number(monitor.lastEventAt || 0),
+                lastEventName: String(monitor.lastEventName || ''),
+                lastSuccessAt: Number(monitor.lastSuccessAt || 0),
+                lastFailureAt: Number(monitor.lastFailureAt || 0),
+                lastFailureMessage: String(monitor.lastFailureMessage || ''),
+                consecutiveFailures: Number(monitor.consecutiveFailures || 0),
+                successCount: Number(monitor.successCount || 0),
+                failureCount: Number(monitor.failureCount || 0),
+                staleAfterHours: Number(monitor.staleAfterHours || PIX_WEBHOOK_STALE_HOURS)
+            }
+        };
+    }
+
     const downtimeWarnMin = Math.max(1, Number(thresholds?.downtimeWarnMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeWarnMin));
     const downtimeCriticalMin = Math.max(downtimeWarnMin + 1, Number(thresholds?.downtimeCriticalMin || OPS_ALERTS_DEFAULT_CONFIG.thresholds.downtimeCriticalMin));
     for (const [componentName, component] of Object.entries(components)) {
@@ -7057,11 +7102,49 @@ const PIX_REPLY_DELAY_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_MS || 
 const PIX_REPLY_DELAY_JITTER_MS = Math.max(0, Number(process.env.PIX_REPLY_DELAY_JITTER_MS || 450));
 const PIX_SAFE_SWEEP_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.PIX_SAFE_SWEEP_INTERVAL_MS || (5 * 60 * 1000)));
 const PIX_PAYMENT_ALERT_WHATSAPP = String(process.env.PIX_PAYMENT_ALERT_WHATSAPP || process.env.OWNER_WHATSAPP || '').trim();
+const PIX_WEBHOOK_STALE_HOURS = Math.max(6, Math.min(336, Number(process.env.PIX_WEBHOOK_STALE_HOURS || 72)));
 const PIX_DAILY_IMPORTS_DIR = path.join(STORAGE_DIR, 'pix_daily_imports');
 const pixConversationState = Object.create(null);
+const pixWebhookMonitor = {
+    lastEventAt: 0,
+    lastEventName: '',
+    lastSuccessAt: 0,
+    lastFailureAt: 0,
+    lastFailureMessage: '',
+    consecutiveFailures: 0,
+    successCount: 0,
+    failureCount: 0
+};
 
 function normalizePixContactId(contactId) {
     return String(contactId || '').trim();
+}
+
+function getPixWebhookMonitorSnapshot() {
+    return {
+        ...pixWebhookMonitor,
+        staleAfterHours: PIX_WEBHOOK_STALE_HOURS
+    };
+}
+
+function markPixWebhookResult({ ok = false, eventName = '', reason = '' } = {}) {
+    const now = Date.now();
+    pixWebhookMonitor.lastEventAt = now;
+    pixWebhookMonitor.lastEventName = sanitizePublicText(eventName || pixWebhookMonitor.lastEventName || '', 80);
+    if (ok) {
+        pixWebhookMonitor.lastSuccessAt = now;
+        pixWebhookMonitor.lastFailureMessage = '';
+        pixWebhookMonitor.consecutiveFailures = 0;
+        pixWebhookMonitor.successCount = Number(pixWebhookMonitor.successCount || 0) + 1;
+    } else {
+        pixWebhookMonitor.lastFailureAt = now;
+        pixWebhookMonitor.lastFailureMessage = sanitizePublicText(reason || 'webhook_failed', 180);
+        pixWebhookMonitor.consecutiveFailures = Number(pixWebhookMonitor.consecutiveFailures || 0) + 1;
+        pixWebhookMonitor.failureCount = Number(pixWebhookMonitor.failureCount || 0) + 1;
+    }
+    try {
+        evaluateOperationalHealth({ emit: true });
+    } catch (_) {}
 }
 
 function resolvePixPaymentAlertTargets() {
@@ -7863,6 +7946,8 @@ async function notifyPixPaidAndPauseConversation(charge) {
         from: contactId,
         chargeId: Number(charge.id || 0),
         studentFullName: charge.student_full_name || '',
+        payerFullName: charge.payer_full_name || '',
+        payerCpfCnpj: charge.payer_cpf_cnpj || '',
         planName: charge.plan_name_snapshot || '',
         amountCents: Number(charge.amount_cents || 0),
         paidAt: Number(charge.paid_at || Date.now())
@@ -7896,23 +7981,40 @@ async function notifyPixPaidToOwnerWhatsapp(charge) {
 
 async function processAsaasWebhook({ headers, body }) {
     if (!verifyAsaasWebhookToken(headers, ASAAS_CONFIG.webhookToken)) {
+        markPixWebhookResult({ ok: false, reason: 'unauthorized' });
         return { ok: false, error: 'unauthorized' };
     }
     const eventName = String(body?.event || '').trim();
-    if (!eventName) return { ok: false, error: 'invalid_event' };
-    if (!PIX_WEBHOOK_EVENTS_PAID.has(eventName)) return { ok: false, error: 'ignored' };
+    if (!eventName) {
+        markPixWebhookResult({ ok: false, reason: 'invalid_event' });
+        return { ok: false, error: 'invalid_event' };
+    }
+    if (!PIX_WEBHOOK_EVENTS_PAID.has(eventName)) {
+        markPixWebhookResult({ ok: true, eventName });
+        return { ok: false, error: 'ignored' };
+    }
     const paymentId = extractWebhookPaymentId(body);
-    if (!paymentId) return { ok: false, error: 'invalid_payment_id' };
+    if (!paymentId) {
+        markPixWebhookResult({ ok: false, eventName, reason: 'invalid_payment_id' });
+        return { ok: false, error: 'invalid_payment_id' };
+    }
 
     const dbCharge = getPixChargeByAsaasPaymentId(paymentId);
-    if (!dbCharge) return { ok: false, error: 'ignored' };
-    if (String(dbCharge.status || '') === 'paid') return { ok: true, ignored: true };
+    if (!dbCharge) {
+        markPixWebhookResult({ ok: true, eventName });
+        return { ok: false, error: 'ignored' };
+    }
+    if (String(dbCharge.status || '') === 'paid') {
+        markPixWebhookResult({ ok: true, eventName });
+        return { ok: true, ignored: true };
+    }
 
     let asaasPayment = null;
     try {
         asaasPayment = await fetchPayment(ASAAS_CONFIG, paymentId);
     } catch (error) {
         console.error('[pix] webhook fetch payment error:', error?.message || error);
+        markPixWebhookResult({ ok: false, eventName, reason: 'payment_lookup_failed' });
         return { ok: false, error: 'payment_lookup_failed' };
     }
 
@@ -7931,6 +8033,7 @@ async function processAsaasWebhook({ headers, body }) {
         await notifyPixPaidAndPauseConversation(updated);
         await notifyPixPaidToOwnerWhatsapp(updated);
     }
+    markPixWebhookResult({ ok: true, eventName });
     return { ok: true };
 }
 
@@ -7985,6 +8088,77 @@ async function confirmPixChargeScaDone({ id, actor, actorUsername, ip }) {
 
 function getPendingPixForContact(contactId) {
     return getLatestPendingScaChargeByContact(contactId);
+}
+
+function getDailyOperationsSnapshot() {
+    const now = Date.now();
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    const startTs = startToday.getTime();
+    const endTs = startTs + (24 * 60 * 60 * 1000);
+
+    const totals = Object.values(conversationState || {}).reduce((acc, convo) => {
+        if (!convo || typeof convo !== 'object') return acc;
+        if (convo.status === 'archived') return acc;
+        acc.activeConversations += 1;
+        if (convo.attentionActive) acc.attentionActive += 1;
+        if (convo.pendingHumanHandoff) acc.pendingHuman += 1;
+        return acc;
+    }, { activeConversations: 0, attentionActive: 0, pendingHuman: 0 });
+
+    const countSafe = (sql, ...params) => {
+        try {
+            return Number(db.prepare(sql).get(...params)?.total || 0);
+        } catch (_) {
+            return 0;
+        }
+    };
+    const pixGeneratedToday = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM pix_charges
+        WHERE created_at >= ? AND created_at < ?
+    `, startTs, endTs);
+    const pixPaidToday = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM pix_charges
+        WHERE status='paid' AND paid_at >= ? AND paid_at < ?
+    `, startTs, endTs);
+    const pixPendingSca = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM pix_charges
+        WHERE status='paid' AND sca_manual_status='pending'
+    `);
+    const inactiveStudents5d = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM sca_people
+        WHERE last_access_at > 0 AND last_access_at <= ?
+    `, now - (5 * 24 * 60 * 60 * 1000));
+    const aiFeedbackToday = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM ai_feedback_events
+        WHERE created_at >= ? AND created_at < ?
+    `, startTs, endTs);
+
+    return {
+        generatedAt: now,
+        period: {
+            startAt: startTs,
+            endAt: endTs
+        },
+        chat: totals,
+        pix: {
+            generatedToday: pixGeneratedToday,
+            paidToday: pixPaidToday,
+            pendingSca: pixPendingSca
+        },
+        retention: {
+            inactiveStudents5d
+        },
+        ai: {
+            feedbackToday: aiFeedbackToday
+        },
+        webhook: getPixWebhookMonitorSnapshot()
+    };
 }
 
 async function runPixSafeCollectionSweep() {
@@ -8105,6 +8279,7 @@ registerSystemAdminRoutes({
     app,
     db,
     fs,
+    requirePanelAuth,
     requireAdmin,
     getLastQrRaw: () => lastQrRaw,
     getLastQrAt: () => lastQrAt,
@@ -8144,6 +8319,7 @@ registerSystemAdminRoutes({
     restoreDatabaseBackup,
     ensureDir,
     getOperationalHealthSnapshot,
+    getDailyOperationsSnapshot,
     getOpsAlertsConfig,
     normalizeOpsAlertsConfigInput,
     setOpsAlertsConfig
@@ -8260,7 +8436,8 @@ registerPixAdminRoutes({
     pixDailyImportUpload,
     storePixDailyImport,
     listPixDailyImports,
-    resolvePixDailyImportCsvPath
+    resolvePixDailyImportCsvPath,
+    getPixWebhookMonitorSnapshot
 });
 
 // --- ATTENDANCE (PONTO) ---
@@ -8791,6 +8968,8 @@ wss.on('connection', (ws, req) => {
                         pixPendingSca: pendingPix ? {
                             chargeId: Number(pendingPix.id || 0),
                             studentFullName: pendingPix.student_full_name || '',
+                            payerFullName: pendingPix.payer_full_name || '',
+                            payerCpfCnpj: pendingPix.payer_cpf_cnpj || '',
                             planName: pendingPix.plan_name_snapshot || '',
                             amountCents: Number(pendingPix.amount_cents || 0),
                             paidAt: Number(pendingPix.paid_at || 0)
@@ -8799,8 +8978,8 @@ wss.on('connection', (ws, req) => {
                 }).sort((a, b) => b.timestamp - a.timestamp); 
                 ws.send(JSON.stringify({ type: 'active_chat_list', chats })); 
             }
-            if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u){ const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
-            if (data.type === 'request_chat_meta') { const u = conversationState[data.contactId]; if (u) { const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_meta_response', from: data.contactId, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
+            if (data.type === 'request_chat_history') { const u = conversationState[data.contactId]; if(u){ const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_history_response', from: data.contactId, history: u.history, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', payerFullName: pendingPix.payer_full_name || '', payerCpfCnpj: pendingPix.payer_cpf_cnpj || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
+            if (data.type === 'request_chat_meta') { const u = conversationState[data.contactId]; if (u) { const pendingPix = getPendingPixForContact(data.contactId); ws.send(JSON.stringify({ type: 'chat_meta_response', from: data.contactId, tags: u.tags, notes: u.notes, isPaused: !!u.pausedByHuman, pendingHuman: !!u.pendingHumanHandoff, pixPendingSca: pendingPix ? { chargeId: Number(pendingPix.id || 0), studentFullName: pendingPix.student_full_name || '', payerFullName: pendingPix.payer_full_name || '', payerCpfCnpj: pendingPix.payer_cpf_cnpj || '', planName: pendingPix.plan_name_snapshot || '', amountCents: Number(pendingPix.amount_cents || 0), paidAt: Number(pendingPix.paid_at || 0) } : null })); } }
             if (data.type === 'update_contact_data') { const u=conversationState[data.contactId]; if(u){ u.tags=data.tags; u.notes=data.notes; saveChat(data.contactId); broadcast({type:'contact_data_updated', contactId:data.contactId, tags:u.tags, notes:u.notes}); } }
             if (data.type === 'admin_reply') {
                 const u = conversationState[data.to];

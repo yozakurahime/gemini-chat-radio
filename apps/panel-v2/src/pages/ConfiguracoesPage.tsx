@@ -101,6 +101,17 @@ type PixDailyImport = {
   uploaded_by?: string;
   created_at?: number;
 };
+type AiPlaybooks = {
+  enabled: boolean;
+  sections: {
+    mensalidade: string;
+    modalidades: string;
+    matricula: string;
+    objecoes: string;
+  };
+  updated_at?: number;
+  updated_by?: string;
+};
 type ScaInactiveStudent = {
   id: number;
   external_id: string;
@@ -165,6 +176,16 @@ const EMPTY_CONTEXT_PROFILE: ContextProfile = {
   importedContext: "",
 };
 
+const AI_PLAYBOOKS_DEFAULT: AiPlaybooks = {
+  enabled: true,
+  sections: {
+    mensalidade: "Quando perguntarem valor da mensalidade ou preco de plano, responda com os valores que existirem no contexto. Se nao houver valor no contexto, diga que vai confirmar com o atendimento humano antes de fechar.",
+    modalidades: "Quando perguntarem modalidades, responda com lista objetiva (nome, frequencia, publico e observacoes) priorizando clareza comercial.",
+    matricula: "Quando pedirem matricula, explique documentos, forma de pagamento, etapas e ofereca concluir com atendente humano.",
+    objecoes: "Quando houver indecisao (tempo, preco, distancia), responda com empatia, destaque beneficios praticos e convide para teste/aula experimental quando houver no contexto.",
+  },
+};
+
 function mergeContextProfile(raw: any, importedContext = ""): ContextProfile {
   return {
     ...EMPTY_CONTEXT_PROFILE,
@@ -224,6 +245,7 @@ function statusBadgeClass(status?: string): "default" | "secondary" | "destructi
 }
 
 export default function ConfiguracoesPage() {
+  const panelData = usePanelData();
   const {
     user,
     knowledgeBase,
@@ -244,7 +266,12 @@ export default function ConfiguracoesPage() {
     uploadPixDailyImport,
     scaInactiveStudents,
     refreshScaInactiveStudents,
-  } = usePanelData();
+    aiPlaybooks,
+    loadAiPlaybooks: rawLoadAiPlaybooks,
+    saveAiPlaybooks: rawSaveAiPlaybooks,
+  } = panelData;
+  const loadAiPlaybooks = rawLoadAiPlaybooks || (async () => null);
+  const saveAiPlaybooks = rawSaveAiPlaybooks || (async () => false);
   const isAdmin = user?.role === "admin";
 
   const [aiContext, setAiContext] = useState("");
@@ -252,6 +279,8 @@ export default function ConfiguracoesPage() {
   const [loadingContextProfile, setLoadingContextProfile] = useState(false);
   const [savingContextProfile, setSavingContextProfile] = useState(false);
   const [hasSavedContextProfile, setHasSavedContextProfile] = useState(false);
+  const [aiPlaybooksDraft, setAiPlaybooksDraft] = useState<AiPlaybooks>(AI_PLAYBOOKS_DEFAULT);
+  const [savingAiPlaybooks, setSavingAiPlaybooks] = useState(false);
   const [testMessage, setTestMessage] = useState("");
   const [testResponse, setTestResponse] = useState("");
   const [isTestLoading, setIsTestLoading] = useState(false);
@@ -434,6 +463,26 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     if (!isAdmin) return;
+    void loadAiPlaybooks();
+  }, [isAdmin, loadAiPlaybooks]);
+
+  useEffect(() => {
+    const source = aiPlaybooks || AI_PLAYBOOKS_DEFAULT;
+    setAiPlaybooksDraft({
+      enabled: source.enabled !== false,
+      sections: {
+        mensalidade: String(source.sections?.mensalidade || AI_PLAYBOOKS_DEFAULT.sections.mensalidade),
+        modalidades: String(source.sections?.modalidades || AI_PLAYBOOKS_DEFAULT.sections.modalidades),
+        matricula: String(source.sections?.matricula || AI_PLAYBOOKS_DEFAULT.sections.matricula),
+        objecoes: String(source.sections?.objecoes || AI_PLAYBOOKS_DEFAULT.sections.objecoes),
+      },
+      updated_at: source.updated_at,
+      updated_by: source.updated_by,
+    });
+  }, [aiPlaybooks]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
     refreshPixPlans();
     loadPixSafeConfig();
     refreshPixDailyImports();
@@ -497,6 +546,35 @@ export default function ConfiguracoesPage() {
       toast.error(code === "too_short" ? "Preencha pelo menos algumas informacoes da academia." : "Falha ao salvar formulario de contexto.");
     } finally {
       setSavingContextProfile(false);
+    }
+  };
+
+  const updatePlaybookField = (field: keyof AiPlaybooks["sections"], value: string) => {
+    setAiPlaybooksDraft((prev) => ({
+      ...prev,
+      sections: {
+        ...prev.sections,
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSavePlaybooks = async () => {
+    if (!isAdmin || savingAiPlaybooks) return;
+    setSavingAiPlaybooks(true);
+    try {
+      const ok = await saveAiPlaybooks({
+        enabled: !!aiPlaybooksDraft.enabled,
+        sections: {
+          mensalidade: String(aiPlaybooksDraft.sections.mensalidade || "").trim(),
+          modalidades: String(aiPlaybooksDraft.sections.modalidades || "").trim(),
+          matricula: String(aiPlaybooksDraft.sections.matricula || "").trim(),
+          objecoes: String(aiPlaybooksDraft.sections.objecoes || "").trim(),
+        },
+      });
+      if (ok) toast.success("Playbooks da IA atualizados.");
+    } finally {
+      setSavingAiPlaybooks(false);
     }
   };
 
@@ -919,6 +997,76 @@ export default function ConfiguracoesPage() {
               </Card>
             </TabsContent>
           </Tabs>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Bot className="h-4 w-4" /> Playbooks de resposta da IA
+              </CardTitle>
+              <CardDescription>
+                Regras objetivas para melhorar respostas sobre mensalidade, modalidades, matricula e objecoes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <p className="text-sm font-medium">Ativar playbooks</p>
+                  <p className="text-xs text-muted-foreground">Quando ativo, a IA recebe estas orientacoes junto do contexto base.</p>
+                </div>
+                <Switch
+                  checked={!!aiPlaybooksDraft.enabled}
+                  onCheckedChange={(checked) => setAiPlaybooksDraft((prev) => ({ ...prev, enabled: checked }))}
+                  disabled={!isAdmin}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Mensalidade e preco</Label>
+                  <Textarea
+                    className="min-h-[120px]"
+                    value={aiPlaybooksDraft.sections.mensalidade}
+                    onChange={(event) => updatePlaybookField("mensalidade", event.target.value)}
+                    disabled={!isAdmin}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Modalidades e aulas</Label>
+                  <Textarea
+                    className="min-h-[120px]"
+                    value={aiPlaybooksDraft.sections.modalidades}
+                    onChange={(event) => updatePlaybookField("modalidades", event.target.value)}
+                    disabled={!isAdmin}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Matricula e fechamento</Label>
+                  <Textarea
+                    className="min-h-[120px]"
+                    value={aiPlaybooksDraft.sections.matricula}
+                    onChange={(event) => updatePlaybookField("matricula", event.target.value)}
+                    disabled={!isAdmin}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Objecoes comuns</Label>
+                  <Textarea
+                    className="min-h-[120px]"
+                    value={aiPlaybooksDraft.sections.objecoes}
+                    onChange={(event) => updatePlaybookField("objecoes", event.target.value)}
+                    disabled={!isAdmin}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {aiPlaybooks?.updated_at ? `Atualizado em ${formatDateTime(aiPlaybooks.updated_at)} por ${aiPlaybooks?.updated_by || "admin"}.` : "Use este bloco para padronizar respostas comerciais da IA."}
+                </p>
+                <Button className="gap-1" onClick={handleSavePlaybooks} disabled={!isAdmin || savingAiPlaybooks}>
+                  <Save className="h-4 w-4" /> {savingAiPlaybooks ? "Salvando..." : "Salvar playbooks"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>

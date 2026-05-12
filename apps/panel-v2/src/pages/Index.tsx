@@ -8,6 +8,7 @@ import { Send, Bot, User, Search, MessageSquare, Image as ImageIcon, AlertTriang
 import { parsePanelMessage, usePanelData } from "@/hooks/use-panel-data";
 import WhatsAppConnect from "@/components/whatsapp/WhatsAppConnect";
 import { formatDateTimeBr, formatTimeBr } from "@/lib/date-time";
+import { toast } from "sonner";
 
 function formatTime(value?: number) {
   return formatTimeBr(value, "");
@@ -15,6 +16,10 @@ function formatTime(value?: number) {
 
 function formatDateTime(value?: number) {
   return formatDateTimeBr(value, "-");
+}
+
+function formatCurrency(cents?: number) {
+  return (Number(cents || 0) / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
 function phoneFromJid(id: string) {
@@ -116,6 +121,7 @@ function chatSlaRank(status?: string) {
 }
 
 export default function AtendimentoPage() {
+  const panelData = usePanelData();
   const {
     chats,
     selectedChatId,
@@ -127,10 +133,13 @@ export default function AtendimentoPage() {
     confirmPixScaDone,
     fetchAiContextPreview,
     submitAiFeedback,
+    opsDailySummary,
+    refreshOpsDailySummary: rawRefreshOpsDailySummary,
     hasMoreMessages,
     loadingMessages,
     loadMoreMessages,
-  } = usePanelData();
+  } = panelData;
+  const refreshOpsDailySummary = rawRefreshOpsDailySummary || (async () => null);
   const [searchQuery, setSearchQuery] = useState("");
   const [chatFilter, setChatFilter] = useState<"urgent" | "unread" | "all">("urgent");
   const [messageInput, setMessageInput] = useState("");
@@ -188,6 +197,14 @@ export default function AtendimentoPage() {
   };
 
   useEffect(() => {
+    void refreshOpsDailySummary();
+    const timer = window.setInterval(() => {
+      void refreshOpsDailySummary();
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, [refreshOpsDailySummary]);
+
+  useEffect(() => {
     let active = true;
     if (!selectedChatId) {
       setAiPreview(null);
@@ -225,6 +242,27 @@ export default function AtendimentoPage() {
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
       <div className="p-4 border-b">
         <WhatsAppConnect />
+        {opsDailySummary ? (
+          <div className="mt-3 rounded-lg border bg-card/70 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="outline">Conversas ativas: {Number(opsDailySummary.chat?.activeConversations || 0)}</Badge>
+              <Badge variant={Number(opsDailySummary.chat?.attentionActive || 0) > 0 ? "secondary" : "outline"}>
+                Em atencao: {Number(opsDailySummary.chat?.attentionActive || 0)}
+              </Badge>
+              <Badge variant={Number(opsDailySummary.pix?.pendingSca || 0) > 0 ? "secondary" : "outline"}>
+                Pix pendente SCA: {Number(opsDailySummary.pix?.pendingSca || 0)}
+              </Badge>
+              <Badge variant="outline">Pagos hoje: {Number(opsDailySummary.pix?.paidToday || 0)}</Badge>
+              <Badge variant="outline">Inativos (+5d): {Number(opsDailySummary.retention?.inactiveStudents5d || 0)}</Badge>
+              <Badge
+                variant={Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? "destructive" : "default"}
+              >
+                Webhook Pix: {Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? "com falhas" : "ok"}
+              </Badge>
+              <span className="text-muted-foreground">Atualizado: {formatTime(opsDailySummary.generatedAt)}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-1 min-h-0">
@@ -348,9 +386,49 @@ export default function AtendimentoPage() {
                     <div className="rounded-lg border border-emerald-400/40 bg-emerald-500/5 p-3 space-y-2">
                       <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-200">Pagamento confirmado - baixa manual no SCA pendente</p>
                       <p className="text-xs text-muted-foreground">
-                        Aluno: {selectedChat.pixPendingSca.studentFullName} | Plano: {selectedChat.pixPendingSca.planName} | Valor: {(selectedChat.pixPendingSca.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                        Aluno: {selectedChat.pixPendingSca.studentFullName} | Plano: {selectedChat.pixPendingSca.planName} | Valor: {formatCurrency(selectedChat.pixPendingSca.amountCents)}
                       </p>
+                      <p className="text-xs text-muted-foreground">Pagador: {selectedChat.pixPendingSca.payerFullName || "Nao informado"} {selectedChat.pixPendingSca.payerCpfCnpj ? `| CPF/CNPJ: ${selectedChat.pixPendingSca.payerCpfCnpj}` : ""}</p>
                       <p className="text-xs text-muted-foreground">Pagamento em {formatDateTime(selectedChat.pixPendingSca.paidAt)}</p>
+                      <div className="rounded-md border bg-background/60 p-2 text-xs text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">Checklist da baixa manual:</p>
+                        <p>1. Localizar aluno no SCA: {selectedChat.pixPendingSca.studentFullName}</p>
+                        <p>2. Conferir plano: {selectedChat.pixPendingSca.planName}</p>
+                        <p>3. Validar pagador/CPF antes de baixar.</p>
+                        <p>4. Depois clique no botao abaixo para avisar o cliente.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedChat.pixPendingSca.payerCpfCnpj ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(selectedChat.pixPendingSca?.payerCpfCnpj || "");
+                                toast.success("CPF/CNPJ copiado.");
+                              } catch {
+                                toast.error("Nao foi possivel copiar o CPF/CNPJ.");
+                              }
+                            }}
+                          >
+                            Copiar CPF/CNPJ
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(selectedChat.pixPendingSca?.studentFullName || "");
+                              toast.success("Nome do aluno copiado.");
+                            } catch {
+                              toast.error("Nao foi possivel copiar o nome.");
+                            }
+                          }}
+                        >
+                          Copiar nome do aluno
+                        </Button>
+                      </div>
                       <Button
                         size="sm"
                         className="gap-1"

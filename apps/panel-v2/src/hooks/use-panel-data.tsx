@@ -7,6 +7,8 @@ type User = { username: string; fullname?: string; role?: string; avatar?: strin
 type PixPendingSca = {
   chargeId: number;
   studentFullName: string;
+  payerFullName?: string;
+  payerCpfCnpj?: string;
   planName: string;
   amountCents: number;
   paidAt: number;
@@ -64,6 +66,36 @@ type ScaInactiveStudent = {
   plan: string;
   last_access_at: number;
   days_without_visit: number;
+};
+type AiPlaybooks = {
+  enabled: boolean;
+  sections: {
+    mensalidade: string;
+    modalidades: string;
+    matricula: string;
+    objecoes: string;
+  };
+  updated_at?: number;
+  updated_by?: string;
+};
+type OpsDailySummary = {
+  generatedAt: number;
+  period?: { startAt?: number; endAt?: number };
+  chat?: { activeConversations?: number; attentionActive?: number; pendingHuman?: number };
+  pix?: { generatedToday?: number; paidToday?: number; pendingSca?: number };
+  retention?: { inactiveStudents5d?: number };
+  ai?: { feedbackToday?: number };
+  webhook?: {
+    lastEventAt?: number;
+    lastEventName?: string;
+    lastSuccessAt?: number;
+    lastFailureAt?: number;
+    lastFailureMessage?: string;
+    consecutiveFailures?: number;
+    successCount?: number;
+    failureCount?: number;
+    staleAfterHours?: number;
+  };
 };
 type Chat = {
   id: string;
@@ -299,6 +331,11 @@ type PanelDataContextValue = {
   uploadPixDailyImport: (file: File) => Promise<boolean>;
   scaInactiveStudents: ScaInactiveStudent[];
   refreshScaInactiveStudents: (days?: number, limit?: number, query?: string) => Promise<void>;
+  aiPlaybooks: AiPlaybooks | null;
+  loadAiPlaybooks: () => Promise<AiPlaybooks | null>;
+  saveAiPlaybooks: (payload: Partial<AiPlaybooks>) => Promise<boolean>;
+  opsDailySummary: OpsDailySummary | null;
+  refreshOpsDailySummary: () => Promise<OpsDailySummary | null>;
 };
 
 const PanelDataContext = createContext<PanelDataContextValue | null>(null);
@@ -598,6 +635,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [pixSafeConfig, setPixSafeConfig] = useState<PixSafeConfig | null>(null);
   const [pixDailyImports, setPixDailyImports] = useState<PixDailyImport[]>([]);
   const [scaInactiveStudents, setScaInactiveStudents] = useState<ScaInactiveStudent[]>([]);
+  const [aiPlaybooks, setAiPlaybooks] = useState<AiPlaybooks | null>(null);
+  const [opsDailySummary, setOpsDailySummary] = useState<OpsDailySummary | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selectedChatRef = useRef<string | null>(null);
@@ -1037,6 +1076,58 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
+  const loadAiPlaybooks = useCallback(async () => {
+    if (user?.role !== "admin") {
+      setAiPlaybooks(null);
+      return null;
+    }
+    try {
+      const res = await apiFetch("/admin/knowledge/playbooks");
+      const data = await res.json();
+      const next = (data?.playbooks || null) as AiPlaybooks | null;
+      setAiPlaybooks(next);
+      return next;
+    } catch {
+      setAiPlaybooks(null);
+      return null;
+    }
+  }, [user?.role]);
+
+  const saveAiPlaybooks = useCallback(async (payload: Partial<AiPlaybooks>) => {
+    if (user?.role !== "admin") return false;
+    try {
+      const res = await apiFetch("/admin/knowledge/playbooks/save", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ playbooks: payload || {} }),
+      });
+      const data = await res.json();
+      setAiPlaybooks((data?.playbooks || null) as AiPlaybooks | null);
+      toast.success("Playbooks da IA atualizados.");
+      return true;
+    } catch {
+      toast.error("Falha ao salvar playbooks da IA.");
+      return false;
+    }
+  }, [user?.role]);
+
+  const refreshOpsDailySummary = useCallback(async () => {
+    if (!user) {
+      setOpsDailySummary(null);
+      return null;
+    }
+    try {
+      const res = await apiFetch("/admin/system/ops/daily-summary");
+      const data = await res.json();
+      const next = (data?.summary || null) as OpsDailySummary | null;
+      setOpsDailySummary(next);
+      return next;
+    } catch {
+      setOpsDailySummary(null);
+      return null;
+    }
+  }, [user]);
+
   const refreshAll = useCallback(async () => {
     requestInitialLists();
     await Promise.all([
@@ -1049,8 +1140,10 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       loadPixSafeConfig(),
       refreshPixDailyImports(),
       refreshScaInactiveStudents(5, 200, ""),
+      loadAiPlaybooks(),
+      refreshOpsDailySummary(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents, loadAiPlaybooks, refreshOpsDailySummary, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -1229,6 +1322,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           const pendingInfo = {
             chargeId: Number(payload.chargeId || 0),
             studentFullName: String(payload.studentFullName || ""),
+            payerFullName: String(payload.payerFullName || ""),
+            payerCpfCnpj: String(payload.payerCpfCnpj || ""),
             planName: String(payload.planName || ""),
             amountCents: Number(payload.amountCents || 0),
             paidAt: Number(payload.paidAt || Date.now()),
@@ -1284,10 +1379,13 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       case "system_health_update":
         setSystemHealth(payload.health || null);
         break;
+      case "ai_playbooks_updated":
+        void loadAiPlaybooks();
+        break;
       default:
         break;
     }
-  }, [notifyPixPendingScaBrowser, notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
+  }, [loadAiPlaybooks, notifyPixPendingScaBrowser, notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -1437,6 +1535,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setPixSafeConfig(null);
     setPixDailyImports([]);
     setScaInactiveStudents([]);
+    setAiPlaybooks(null);
+    setOpsDailySummary(null);
   }, []);
 
   const selectChat = useCallback(async (id: string) => {
@@ -1941,6 +2041,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     uploadPixDailyImport,
     scaInactiveStudents,
     refreshScaInactiveStudents,
+    aiPlaybooks,
+    loadAiPlaybooks,
+    saveAiPlaybooks,
+    opsDailySummary,
+    refreshOpsDailySummary,
   }), [
     adCampaigns,
     adFiles,
@@ -2009,6 +2114,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     uploadPixDailyImport,
     scaInactiveStudents,
     refreshScaInactiveStudents,
+    aiPlaybooks,
+    loadAiPlaybooks,
+    saveAiPlaybooks,
+    opsDailySummary,
+    refreshOpsDailySummary,
     ackChatAttention,
     selectChat,
     selectedChat,

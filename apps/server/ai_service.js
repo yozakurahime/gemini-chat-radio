@@ -18,6 +18,7 @@ const ADS_AI_FLAG = process.env.ADS_AI_ENABLED !== '0';
 const APP_PATHS = resolveAppPaths(__dirname, process.env, process.platform);
 const CONTEXTO_FILE_PATH = APP_PATHS.BASE_CONTEXT_FILE;
 const KNOWLEDGE_PUBLISHED_PATH = APP_PATHS.KNOWLEDGE_PUBLISHED_FILE;
+const AI_PLAYBOOKS_FILE_PATH = path.join(APP_PATHS.KNOWLEDGE_DIR, 'ai_playbooks.json');
 const AI_TIMEZONE = String(process.env.HIMEFIT_TZ || process.env.TZ || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
 const HIMEFIT_LOCAL_HOLIDAYS = String(process.env.HIMEFIT_LOCAL_HOLIDAYS || '').trim();
 const MAX_HISTORY_TOKENS = 12;
@@ -62,6 +63,20 @@ const PROMPT_LEAK_PATTERNS = [
     /^\s*#\s*instru/i,
     /^\s*hoje:\s*\d{1,2}\/\d{1,2}\/\d{2,4}/i
 ];
+
+function buildDefaultAiPlaybooks() {
+    return {
+        enabled: true,
+        sections: {
+            mensalidade: 'Quando perguntarem valor da mensalidade ou preco de plano, responda com os valores que existirem no contexto. Se nao houver valor no contexto, diga que vai confirmar com o atendimento humano antes de fechar.',
+            modalidades: 'Quando perguntarem modalidades, responda com lista objetiva (nome, frequencia, publico e observacoes) priorizando clareza comercial.',
+            matricula: 'Quando pedirem matricula, explique documentos, forma de pagamento, etapas e ofereca concluir com atendente humano.',
+            objecoes: 'Quando houver indecisao (tempo, preco, distancia), responda com empatia, destaque beneficios praticos e convide para teste/aula experimental quando houver no contexto.'
+        },
+        updated_at: 0,
+        updated_by: 'system'
+    };
+}
 
 function stripInvisibleGarbage(text) {
     return String(text || '')
@@ -386,8 +401,10 @@ if (API_KEY) {
 
 let contextoAcademia = '';
 let avisosDoDia = '';
+let aiPlaybooks = buildDefaultAiPlaybooks();
 let contextoAcademiaStamp = { mtimeMs: 0, size: -1 };
 let avisosDoDiaStamp = { mtimeMs: 0, size: -1 };
+let aiPlaybooksStamp = { mtimeMs: 0, size: -1 };
 
 function isPromptLeakText(text) {
     const s = normalizeInlineText(text);
@@ -751,9 +768,42 @@ function refreshPublishedNoticesFromDisk(force = false) {
     }
 }
 
+function refreshAiPlaybooksFromDisk(force = false) {
+    try {
+        const stamp = getFileStamp(AI_PLAYBOOKS_FILE_PATH);
+        if (!stamp) {
+            aiPlaybooks = buildDefaultAiPlaybooks();
+            aiPlaybooksStamp = { mtimeMs: 0, size: -1 };
+            return;
+        }
+        const changed = force
+            || stamp.mtimeMs !== aiPlaybooksStamp.mtimeMs
+            || stamp.size !== aiPlaybooksStamp.size;
+        if (!changed) return;
+        const raw = JSON.parse(fs.readFileSync(AI_PLAYBOOKS_FILE_PATH, 'utf-8'));
+        const defaults = buildDefaultAiPlaybooks();
+        const sections = raw?.sections && typeof raw.sections === 'object' ? raw.sections : {};
+        aiPlaybooks = {
+            enabled: raw?.enabled !== false,
+            sections: {
+                mensalidade: normalizeInlineText(sections.mensalidade || defaults.sections.mensalidade).slice(0, 1200),
+                modalidades: normalizeInlineText(sections.modalidades || defaults.sections.modalidades).slice(0, 1200),
+                matricula: normalizeInlineText(sections.matricula || defaults.sections.matricula).slice(0, 1200),
+                objecoes: normalizeInlineText(sections.objecoes || defaults.sections.objecoes).slice(0, 1200)
+            },
+            updated_at: Number(raw?.updated_at || 0),
+            updated_by: normalizeInlineText(raw?.updated_by || 'system').slice(0, 80)
+        };
+        aiPlaybooksStamp = stamp;
+    } catch (_) {
+        aiPlaybooks = buildDefaultAiPlaybooks();
+    }
+}
+
 function refreshDynamicContextSnapshot(force = false) {
     refreshBaseContextFromDisk(force);
     refreshPublishedNoticesFromDisk(force);
+    refreshAiPlaybooksFromDisk(force);
 }
 
 function getCurrentContextSnapshot() {
@@ -761,14 +811,31 @@ function getCurrentContextSnapshot() {
     return {
         contexto_length: contextoAcademia.length,
         avisos_length: avisosDoDia.length,
+        playbooks_enabled: aiPlaybooks?.enabled !== false,
+        playbooks_updated_at: Number(aiPlaybooks?.updated_at || 0),
         contexto_mtime_ms: contextoAcademiaStamp.mtimeMs || 0,
-        avisos_mtime_ms: avisosDoDiaStamp.mtimeMs || 0
+        avisos_mtime_ms: avisosDoDiaStamp.mtimeMs || 0,
+        playbooks_mtime_ms: aiPlaybooksStamp.mtimeMs || 0
     };
+}
+
+function buildPlaybooksContextBlock() {
+    if (!aiPlaybooks || aiPlaybooks.enabled === false) return '';
+    const s = aiPlaybooks.sections || {};
+    const lines = [
+        '# PLAYBOOKS DE ATENDIMENTO',
+        s.mensalidade ? `- Mensalidade e planos: ${s.mensalidade}` : '',
+        s.modalidades ? `- Modalidades e aulas: ${s.modalidades}` : '',
+        s.matricula ? `- Matricula e fechamento: ${s.matricula}` : '',
+        s.objecoes ? `- Objecoes comerciais: ${s.objecoes}` : ''
+    ].filter(Boolean);
+    return lines.join('\n');
 }
 
 refreshDynamicContextSnapshot(true);
 fs.watchFile(CONTEXTO_FILE_PATH, () => refreshBaseContextFromDisk(true));
 fs.watchFile(KNOWLEDGE_PUBLISHED_PATH, () => refreshPublishedNoticesFromDisk(true));
+fs.watchFile(AI_PLAYBOOKS_FILE_PATH, () => refreshAiPlaybooksFromDisk(true));
 
 async function transcreverAudioIA(audioPath) {
     if (!model) return '[Erro: IA nao configurada]';
@@ -800,11 +867,13 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
         const holidayLine = nowInfo.holiday?.isHoliday
             ? `Hoje (${nowInfo.dateBR}) e feriado ${nowInfo.holiday.scope}: ${nowInfo.holiday.name}.`
             : `Hoje (${nowInfo.dateBR}) nao e feriado nacional conhecido.`;
+        const playbooksBlock = buildPlaybooksContextBlock();
         const contextParts = [
             `# RELOGIO OFICIAL\nFuso horario oficial: ${nowInfo.timezone}\nData de hoje: ${nowInfo.dateBR}\nDia da semana oficial: ${nowInfo.weekday}.`,
             `# FERIADO OFICIAL\n${holidayLine}`,
             `# REGRA DE DATA\nQuando mencionar "hoje", use EXATAMENTE o dia da semana oficial acima. Nunca invente outro dia da semana para hoje.`,
             `# REGRA DE FERIADO\nSe hoje for feriado, nao assuma horario regular. Use horario de feriado somente se estiver explicito na base de conhecimento. Se nao houver horario de feriado explicito, informe que o horario pode ser especial e ofereca confirmacao com atendente humano.`,
+            playbooksBlock,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,
         ];
@@ -839,5 +908,6 @@ module.exports = {
     synthesizeAdSpeech,
     getAdsAICapabilities,
     refreshDynamicContextSnapshot,
-    getCurrentContextSnapshot
+    getCurrentContextSnapshot,
+    buildDefaultAiPlaybooks
 };

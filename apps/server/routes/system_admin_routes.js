@@ -5,6 +5,7 @@ function registerSystemAdminRoutes({
     app,
     db,
     fs,
+    requirePanelAuth,
     requireAdmin,
     getLastQrRaw,
     getLastQrAt,
@@ -44,6 +45,7 @@ function registerSystemAdminRoutes({
     restoreDatabaseBackup,
     ensureDir,
     getOperationalHealthSnapshot,
+    getDailyOperationsSnapshot,
     getOpsAlertsConfig,
     normalizeOpsAlertsConfigInput,
     setOpsAlertsConfig
@@ -197,6 +199,20 @@ function registerSystemAdminRoutes({
             profile: appProfile,
             appVersion,
             health
+        });
+    });
+
+    app.get('/admin/system/ops/daily-summary', (req, res) => {
+        const user = requirePanelAuth(req, res); if (!user) return;
+        const summary = typeof getDailyOperationsSnapshot === 'function'
+            ? getDailyOperationsSnapshot()
+            : null;
+        if (!summary) {
+            return res.status(503).json({ ok: false, error: 'daily_summary_unavailable' });
+        }
+        return res.json({
+            ok: true,
+            summary
         });
     });
 
