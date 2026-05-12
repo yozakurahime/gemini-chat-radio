@@ -4,19 +4,53 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
-import { Clock, Download, Calendar, User, CheckCircle, XCircle, ListChecks, MapPin, Plus, Trash2, Pencil } from "lucide-react";
+import {
+  Clock,
+  Download,
+  Calendar,
+  User,
+  CheckCircle,
+  XCircle,
+  ListChecks,
+  MapPin,
+  Plus,
+  Trash2,
+  Pencil,
+  LogIn,
+  LogOut,
+  FileWarning,
+  TimerReset,
+  ChevronRight,
+  ShieldCheck,
+  Settings2,
+} from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
 import { formatDateBr as formatDateBrTz } from "@/lib/date-time";
 
 const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
+const MAIN_VIEWS = ["today", "schedules", "team", "setup"] as const;
+type MainView = (typeof MAIN_VIEWS)[number];
+type TodayView = "overview" | "history" | "map";
 
 function attendanceErrorMessage(code: string) {
   switch (code) {
@@ -34,6 +68,24 @@ function attendanceErrorMessage(code: string) {
       return "Dia da semana invalido.";
     default:
       return "Falha ao salvar escala.";
+  }
+}
+
+function manualPunchErrorMessage(code: string) {
+  switch (code) {
+    case "invalid_employee":
+      return "Selecione um funcionario valido.";
+    case "invalid_event":
+      return "Tipo de registro invalido.";
+    case "employee_not_allowed":
+      return "Esse funcionario nao esta habilitado para ponto.";
+    case "outside_schedule":
+    case "invalid_punch_window":
+      return "Registro fora da janela permitida da escala.";
+    case "already_closed":
+      return "Nao existe turno aberto para registrar saida.";
+    default:
+      return "Nao foi possivel registrar o ponto manual agora.";
   }
 }
 
@@ -77,6 +129,23 @@ function toNumberOrNull(raw: string) {
   if (!value) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function dateKeyFromLocalDate(date = new Date()) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseHHMMToMinutes(value?: string) {
+  const text = String(value || "").trim();
+  const match = /^(\d{2}):(\d{2})$/.exec(text);
+  if (!match) return null;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return (hh * 60) + mm;
 }
 
 type EditScheduleState = {
@@ -144,6 +213,14 @@ export default function PontoPage() {
     refreshAttendance,
   } = usePanelData();
 
+  const isAdmin = user?.role === "admin";
+  const todayKey = useMemo(() => dateKeyFromLocalDate(new Date()), []);
+  const todayWeekday = useMemo(() => new Date().getDay(), []);
+  const nowMinutes = useMemo(() => {
+    const now = new Date();
+    return (now.getHours() * 60) + now.getMinutes();
+  }, [attendanceRecords, attendanceSchedules]);
+
   const activeAttendanceEmployees = useMemo(
     () => attendanceEmployees.filter((employee) => Number(employee.active ?? 1) === 1),
     [attendanceEmployees],
@@ -192,7 +269,82 @@ export default function PontoPage() {
     filteredRecords.filter((record) => Number.isFinite(Number(record.lat)) && Number.isFinite(Number(record.lng)) && !(Number(record.lat) === 0 && Number(record.lng) === 0))
   ), [filteredRecords]);
 
+  const todayRecords = useMemo(
+    () => filteredRecords.filter((record) => String(record.date || "") === todayKey),
+    [filteredRecords, todayKey],
+  );
+
+  const todaySchedules = useMemo(
+    () => filteredSchedules.filter((schedule) => Number(schedule.weekday) === Number(todayWeekday)),
+    [filteredSchedules, todayWeekday],
+  );
+
+  const todayRecordByEmployee = useMemo(() => {
+    const map = new Map<string, { entries: number; exits: number }>();
+    todayRecords.forEach((record) => {
+      const key = String(record.employeeId || "");
+      if (!key) return;
+      const current = map.get(key) || { entries: 0, exits: 0 };
+      if (record.type === "entrada") current.entries += 1;
+      if (record.type === "saida") current.exits += 1;
+      map.set(key, current);
+    });
+    return map;
+  }, [todayRecords]);
+
+  const todayStats = useMemo(() => {
+    const scheduledEmployeeIds = Array.from(new Set(todaySchedules.map((schedule) => String(schedule.employee_id || "")).filter(Boolean)));
+    const entryEmployeeIds = new Set(todayRecords.filter((record) => record.type === "entrada").map((record) => String(record.employeeId || "")));
+    const absentEmployeeIds = scheduledEmployeeIds.filter((employeeId) => !entryEmployeeIds.has(employeeId));
+    const lateEmployeeIds = todaySchedules
+      .filter((schedule) => {
+        const employeeId = String(schedule.employee_id || "");
+        if (!employeeId || entryEmployeeIds.has(employeeId)) return false;
+        const start = parseHHMMToMinutes(schedule.start_time);
+        const tolerance = Number(schedule.tolerance_min || 0);
+        if (start === null) return false;
+        return nowMinutes > (start + Math.max(0, tolerance));
+      })
+      .map((schedule) => String(schedule.employee_id || ""));
+    const openShiftEmployeeIds = Array.from(todayRecordByEmployee.entries())
+      .filter(([, counts]) => counts.entries > counts.exits)
+      .map(([employeeId]) => employeeId);
+    return {
+      scheduledEmployeeIds,
+      absentEmployeeIds,
+      lateEmployeeIds: Array.from(new Set(lateEmployeeIds)),
+      openShiftEmployeeIds,
+      entries: todayRecords.filter((record) => record.type === "entrada").length,
+      exits: todayRecords.filter((record) => record.type === "saida").length,
+    };
+  }, [nowMinutes, todayRecordByEmployee, todayRecords, todaySchedules]);
+
+  const employeeNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    attendanceEmployees.forEach((employee) => {
+      map.set(String(employee.id), employee.name || `Funcionario ${employee.id}`);
+    });
+    return map;
+  }, [attendanceEmployees]);
+
   const [selectedMapRecordId, setSelectedMapRecordId] = useState<string>("");
+  const [mainView, setMainView] = useState<MainView>("today");
+  const [todayView, setTodayView] = useState<TodayView>("overview");
+  const [wizardStep, setWizardStep] = useState(0);
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
+  const [quickEmployeeId, setQuickEmployeeId] = useState("");
+  const [quickNote, setQuickNote] = useState("");
+  const [justificationReason, setJustificationReason] = useState("");
+  const [justificationDate, setJustificationDate] = useState(todayKey);
+  const [sendingManualPunch, setSendingManualPunch] = useState(false);
+  const [sendingJustification, setSendingJustification] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin && mainView !== "today") {
+      setMainView("today");
+    }
+  }, [isAdmin, mainView]);
+
   useEffect(() => {
     if (!geoRecords.length) {
       setSelectedMapRecordId("");
@@ -208,7 +360,6 @@ export default function PontoPage() {
     [geoRecords, selectedMapRecordId],
   );
 
-  const isAdmin = user?.role === "admin";
   const classActivities = useMemo(
     () => attendanceCatalog.filter((item) => String(item.type || "").toLowerCase() === "class" && Number(item.active || 0) === 1),
     [attendanceCatalog],
@@ -229,6 +380,7 @@ export default function PontoPage() {
     () => String(functionActivities[0]?.id || ""),
     [functionActivities],
   );
+
   const [employeeForm, setEmployeeForm] = useState({
     name: "",
     phone: "",
@@ -270,13 +422,16 @@ export default function PontoPage() {
   const [editingEmployee, setEditingEmployee] = useState<EditEmployeeState | null>(null);
 
   useEffect(() => {
+    if (!quickEmployeeId && defaultEmployeeId) {
+      setQuickEmployeeId(defaultEmployeeId);
+    }
     if (!newSchedule.employeeId && defaultEmployeeId) {
       setNewSchedule((prev) => ({ ...prev, employeeId: defaultEmployeeId }));
     }
     if (!applyEmployeeId && defaultEmployeeId) {
       setApplyEmployeeId(defaultEmployeeId);
     }
-  }, [applyEmployeeId, defaultEmployeeId, newSchedule.employeeId]);
+  }, [applyEmployeeId, defaultEmployeeId, newSchedule.employeeId, quickEmployeeId]);
 
   useEffect(() => {
     if (!employeeForm.roleActivityId && defaultRoleActivityId) {
@@ -493,6 +648,847 @@ export default function PontoPage() {
     if (ok) setEditingSchedule(null);
   };
 
+  const handleManualPunch = async (eventType: "entry" | "exit") => {
+    if (!quickEmployeeId) {
+      toast.error("Selecione um funcionario.");
+      return;
+    }
+    setSendingManualPunch(true);
+    try {
+      await apiFetch("/admin/attendance/punch/manual", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          employeeId: Number(quickEmployeeId),
+          eventType,
+          note: quickNote.trim(),
+        }),
+      });
+      toast.success(eventType === "entry" ? "Entrada registrada." : "Saida registrada.");
+      setQuickNote("");
+      await refreshAttendance();
+    } catch (error: any) {
+      toast.error(manualPunchErrorMessage(String(error?.code || "")));
+    } finally {
+      setSendingManualPunch(false);
+    }
+  };
+
+  const handleCreateJustification = async () => {
+    if (!quickEmployeeId) {
+      toast.error("Selecione um funcionario.");
+      return;
+    }
+    if (justificationReason.trim().length < 5) {
+      toast.error("Descreva a justificativa com pelo menos 5 caracteres.");
+      return;
+    }
+    setSendingJustification(true);
+    try {
+      await apiFetch("/admin/attendance/justifications", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          employeeId: Number(quickEmployeeId),
+          date: justificationDate,
+          reason: justificationReason.trim(),
+          status: "approved_manual",
+        }),
+      });
+      toast.success("Justificativa registrada.");
+      setJustificationReason("");
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code === "invalid_payload") {
+        toast.error("Dados invalidos da justificativa.");
+      } else {
+        toast.error("Nao foi possivel salvar a justificativa.");
+      }
+    } finally {
+      setSendingJustification(false);
+    }
+  };
+
+  const wizardProgress = useMemo(() => ((wizardStep + 1) / 4) * 100, [wizardStep]);
+  const wizardReady = useMemo(() => ({
+    employees: activeAttendanceEmployees.length > 0,
+    catalog: attendanceCatalog.length > 0 && classActivities.length > 0 && functionActivities.length > 0,
+    templates: attendanceTemplates.length > 0,
+    schedules: attendanceSchedules.length > 0,
+  }), [activeAttendanceEmployees.length, attendanceCatalog.length, attendanceSchedules.length, attendanceTemplates.length, classActivities.length, functionActivities.length]);
+
+  const canGoToStep = (step: number) => {
+    if (step <= 0) return true;
+    if (step === 1) return wizardReady.employees;
+    if (step === 2) return wizardReady.employees && wizardReady.catalog && wizardReady.templates;
+    if (step === 3) return wizardReady.employees && wizardReady.catalog && wizardReady.templates;
+    return true;
+  };
+
+  const renderRecordsFilters = (
+    <Card>
+      <CardContent className="p-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <Select value={selectedEmployeeValue} onValueChange={setAttendanceSelectedEmployee}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {employeeOptions.map((employee) => (
+                <SelectItem key={employee.id} value={employee.id}>{employee.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">De</div>
+            <Input
+              type="date"
+              value={attendanceFromDate}
+              onChange={(event) => setAttendanceFromDate(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">Ate</div>
+            <Input
+              type="date"
+              value={attendanceToDate}
+              onChange={(event) => setAttendanceToDate(event.target.value)}
+            />
+          </div>
+          <Button
+            variant="ghost"
+            className="md:justify-self-start xl:justify-self-end"
+            onClick={() => {
+              setAttendanceSelectedEmployee("Todos");
+              setAttendanceFromDate("");
+              setAttendanceToDate("");
+            }}
+          >
+            Limpar filtros
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  const renderRecordsTable = (
+    <Card>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Funcionario</TableHead>
+              <TableHead>Tipo</TableHead>
+              <TableHead>Data</TableHead>
+              <TableHead>Hora</TableHead>
+              <TableHead>Localizacao</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredRecords.length ? filteredRecords.map((record) => (
+              <TableRow key={record.id}>
+                <TableCell className="font-medium">{record.employee || "-"}</TableCell>
+                <TableCell>
+                  <Badge variant={record.type === "entrada" ? "default" : "secondary"}>
+                    {record.type === "entrada" ? "Entrada" : "Saida"}
+                  </Badge>
+                </TableCell>
+                <TableCell>{formatDateBr(record.date)}</TableCell>
+                <TableCell className="font-mono">{record.time || "--:--"}</TableCell>
+                <TableCell>
+                  <span className="text-xs text-muted-foreground">
+                    {record.lat ? Number(record.lat).toFixed(4) : "--"}, {record.lng ? Number(record.lng).toFixed(4) : "--"}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  {record.withinRadius ? (
+                    <div className="flex items-center gap-1 text-primary">
+                      <CheckCircle className="h-4 w-4" />
+                      <span className="text-xs">No raio</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-destructive">
+                      <XCircle className="h-4 w-4" />
+                      <span className="text-xs">Fora do raio</span>
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            )) : (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                  Nenhum registro encontrado para este filtro.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+
+  const renderMap = (
+    <TabsContent value="map" className="space-y-4">
+      {selectedMapRecord ? (
+        <>
+          <Card>
+            <CardContent className="p-4 flex flex-wrap items-center gap-3">
+              <Select value={String(selectedMapRecord.id)} onValueChange={setSelectedMapRecordId}>
+                <SelectTrigger className="w-full md:w-[28rem]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {geoRecords.map((record) => (
+                    <SelectItem key={record.id} value={String(record.id)}>
+                      {`${record.employee || "Funcionario"} - ${formatDateBr(record.date)} ${record.time || "--:--"}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" asChild>
+                <a
+                  href={`https://www.google.com/maps?q=${selectedMapRecord.lat},${selectedMapRecord.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Abrir no Google Maps
+                </a>
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-0">
+              <iframe
+                title="Mapa de localizacao"
+                src={buildMapEmbedUrl(Number(selectedMapRecord.lat), Number(selectedMapRecord.lng))}
+                className="w-full h-[28rem] border-0"
+                loading="lazy"
+              />
+            </CardContent>
+          </Card>
+        </>
+      ) : (
+        <Card>
+          <CardContent className="p-6">
+            <div className="text-center text-muted-foreground">
+              Nenhum registro com coordenadas para exibir no mapa.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </TabsContent>
+  );
+
+  const renderEmployeesSection = (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Cadastrar funcionario</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <Input
+              value={employeeForm.name}
+              onChange={(event) => setEmployeeForm((prev) => ({ ...prev, name: event.target.value }))}
+              placeholder="Nome"
+            />
+            <Input
+              value={employeeForm.phone}
+              onChange={(event) => setEmployeeForm((prev) => ({ ...prev, phone: event.target.value }))}
+              placeholder="WhatsApp com DDD"
+            />
+            <Select
+              value={employeeForm.roleActivityId || defaultRoleActivityId}
+              onValueChange={(value) => setEmployeeForm((prev) => ({ ...prev, roleActivityId: value }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Funcao" />
+              </SelectTrigger>
+              <SelectContent>
+                {functionActivities.map((activity) => (
+                  <SelectItem key={activity.id} value={String(activity.id)}>
+                    {activity.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              value={employeeForm.notes}
+              onChange={(event) => setEmployeeForm((prev) => ({ ...prev, notes: event.target.value }))}
+              placeholder="Observacoes"
+            />
+            <Button
+              onClick={submitEmployeeForm}
+              className="gap-1"
+              disabled={!employeeForm.name.trim() || !employeeForm.phone.trim() || !(employeeForm.roleActivityId || defaultRoleActivityId)}
+            >
+              <Plus className="h-4 w-4" />
+              Adicionar
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Funcionarios do ponto</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Nome</TableHead>
+                <TableHead>WhatsApp</TableHead>
+                <TableHead>Funcao</TableHead>
+                <TableHead>Escalas</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Acoes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {attendanceEmployees.length ? attendanceEmployees.map((employee) => {
+                const editing = editingEmployee?.id === Number(employee.id);
+                return (
+                  <TableRow key={employee.id}>
+                    <TableCell className="font-medium">
+                      {editing ? (
+                        <Input
+                          value={editingEmployee?.name || ""}
+                          onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, name: event.target.value } : prev)}
+                        />
+                      ) : (employee.name || `Funcionario ${employee.id}`)}
+                    </TableCell>
+                    <TableCell>
+                      {editing ? (
+                        <Input
+                          value={editingEmployee?.phone || ""}
+                          onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, phone: event.target.value } : prev)}
+                        />
+                      ) : (employee.whatsapp_phone || "-")}
+                    </TableCell>
+                    <TableCell>
+                      {editing ? (
+                        <Select
+                          value={editingEmployee?.roleActivityId || defaultRoleActivityId}
+                          onValueChange={(value) => setEditingEmployee((prev) => prev ? { ...prev, roleActivityId: value } : prev)}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Funcao" /></SelectTrigger>
+                          <SelectContent>
+                            {functionActivities.map((activity) => (
+                              <SelectItem key={activity.id} value={String(activity.id)}>
+                                {activity.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (employee.role || "-")}
+                    </TableCell>
+                    <TableCell>{Number(employee.schedules_count || 0)}</TableCell>
+                    <TableCell>
+                      {editing ? (
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={!!editingEmployee?.active}
+                            onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, active: event.target.checked } : prev)}
+                          />
+                          Ativo
+                        </label>
+                      ) : (
+                        <Badge variant={Number(employee.active ?? 1) === 1 ? "default" : "secondary"}>
+                          {Number(employee.active ?? 1) === 1 ? "Ativo" : "Inativo"}
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {editing ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" onClick={saveEmployeeEdit}>Salvar</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingEmployee(null)}>Cancelar</Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button variant="ghost" size="icon" aria-label={`Editar ${employee.name || "funcionario"}`} onClick={() => openEmployeeEdit(employee)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" aria-label={`Remover ${employee.name || "funcionario"}`} onClick={() => removeEmployee(employee)} disabled={Number(employee.active ?? 1) !== 1}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              }) : (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                    Nenhum funcionario cadastrado.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  const renderCatalogSection = (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Catalogo de Aulas e Funcoes</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isAdmin ? (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <Select value={catalogForm.type} onValueChange={(value: "class" | "function") => setCatalogForm((prev) => ({ ...prev, type: value }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="class">Aula</SelectItem>
+                <SelectItem value="function">Funcao</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input value={catalogForm.name} onChange={(event) => setCatalogForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome da atividade" />
+            <Input type="number" min={0} step="0.01" value={catalogForm.defaultValue} onChange={(event) => setCatalogForm((prev) => ({ ...prev, defaultValue: event.target.value }))} placeholder="Valor padrao" />
+            <Input type="number" value={catalogForm.sortOrder} onChange={(event) => setCatalogForm((prev) => ({ ...prev, sortOrder: event.target.value }))} placeholder="Ordem" />
+            <Button onClick={submitCatalogForm} disabled={!catalogForm.name.trim()}>Cadastrar</Button>
+          </div>
+        ) : null}
+
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Tipo</TableHead>
+              <TableHead>Nome</TableHead>
+              <TableHead>Valor padrao</TableHead>
+              <TableHead>Ordem</TableHead>
+              {isAdmin ? <TableHead>Acoes</TableHead> : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {attendanceCatalog.length ? attendanceCatalog.map((item) => {
+              const editing = editingCatalog?.id === Number(item.id);
+              return (
+                <TableRow key={item.id}>
+                  <TableCell>{editing ? (
+                    <Select value={editingCatalog?.type || "class"} onValueChange={(value: "class" | "function") => setEditingCatalog((prev) => prev ? { ...prev, type: value } : prev)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="class">Aula</SelectItem>
+                        <SelectItem value="function">Funcao</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : scheduleTypeLabel(item.type)}</TableCell>
+                  <TableCell>{editing ? <Input value={editingCatalog?.name || ""} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, name: event.target.value } : prev)} /> : (item.name || "-")}</TableCell>
+                  <TableCell>{editing ? <Input type="number" min={0} step="0.01" value={editingCatalog?.defaultValue || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, defaultValue: event.target.value } : prev)} /> : Number(item.default_value || 0).toFixed(2)}</TableCell>
+                  <TableCell>{editing ? <Input type="number" value={editingCatalog?.sortOrder || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, sortOrder: event.target.value } : prev)} /> : Number(item.sort_order || 0)}</TableCell>
+                  {isAdmin ? (
+                    <TableCell>
+                      {editing ? (
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={saveCatalogEdit}>Salvar</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingCatalog(null)}>Cancelar</Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button variant="ghost" size="icon" onClick={() => setEditingCatalog({ id: Number(item.id), type: String(item.type || "class").toLowerCase() === "function" ? "function" : "class", name: String(item.name || ""), defaultValue: String(Number(item.default_value || 0)), sortOrder: String(Number(item.sort_order || 0)) })}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => deleteAttendanceCatalogItem(Number(item.id))}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
+                  ) : null}
+                </TableRow>
+              );
+            }) : (
+              <TableRow>
+                <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhuma atividade cadastrada.</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+
+  const renderTemplatesSection = (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Modelos de Escala</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isAdmin ? (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <Select value={templateForm.activityId} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, activityId: value }))}>
+              <SelectTrigger><SelectValue placeholder="Aula" /></SelectTrigger>
+              <SelectContent>
+                {classActivities.map((item) => (
+                  <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={templateForm.weekday} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, weekday: value }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {WEEKDAY_LABELS.map((label, idx) => (
+                  <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input type="time" value={templateForm.startTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, startTime: event.target.value }))} />
+            <Input type="time" value={templateForm.endTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, endTime: event.target.value }))} />
+            <Button onClick={submitTemplateForm} disabled={!templateForm.activityId}>Criar modelo</Button>
+          </div>
+        ) : null}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Aula</TableHead>
+              <TableHead>Dia</TableHead>
+              <TableHead>Inicio</TableHead>
+              <TableHead>Fim</TableHead>
+              {isAdmin ? <TableHead>Acoes</TableHead> : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {attendanceTemplates.length ? attendanceTemplates.map((template) => {
+              const editing = editingTemplate?.id === Number(template.id);
+              return (
+                <TableRow key={template.id}>
+                  <TableCell>{editing ? (
+                    <Select value={editingTemplate?.activityId || ""} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, activityId: value } : prev)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {classActivities.map((item) => (
+                          <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (template.activity_label || template.catalog_name || "Aula")}</TableCell>
+                  <TableCell>{editing ? (
+                    <Select value={editingTemplate?.weekday || "1"} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, weekday: value } : prev)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {WEEKDAY_LABELS.map((label, idx) => (
+                          <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : WEEKDAY_LABELS[Number(template.weekday) || 0]}</TableCell>
+                  <TableCell>{editing ? <Input type="time" value={editingTemplate?.startTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} /> : (template.start_time || "--:--")}</TableCell>
+                  <TableCell>{editing ? <Input type="time" value={editingTemplate?.endTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} /> : (template.end_time || "--:--")}</TableCell>
+                  {isAdmin ? (
+                    <TableCell>
+                      {editing ? (
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={saveTemplateEdit}>Salvar</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingTemplate(null)}>Cancelar</Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button variant="ghost" size="icon" onClick={() => setEditingTemplate({ id: Number(template.id), activityId: String(template.activity_id || ""), weekday: String(template.weekday ?? "1"), startTime: String(template.start_time || "08:00"), endTime: String(template.end_time || "09:00") })}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => deleteAttendanceTemplate(Number(template.id))}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
+                  ) : null}
+                </TableRow>
+              );
+            }) : (
+              <TableRow>
+                <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhum modelo ativo cadastrado.</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+
+  const renderApplyTemplateSection = (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Aplicar pacote no funcionario</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <Select value={applyEmployeeId} onValueChange={setApplyEmployeeId}>
+            <SelectTrigger><SelectValue placeholder="Funcionario" /></SelectTrigger>
+            <SelectContent>
+              {activeAttendanceEmployees.map((employee) => (
+                <SelectItem key={employee.id} value={String(employee.id)}>{employee.name || `Funcionario ${employee.id}`}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input type="number" min={0} max={180} value={applyToleranceMin} onChange={(event) => setApplyToleranceMin(event.target.value)} placeholder="Tolerancia (min)" />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={replaceTemplateSchedules} onChange={(event) => setReplaceTemplateSchedules(event.target.checked)} />
+            Substituir templates atuais
+          </label>
+          <Button onClick={applyTemplates} disabled={!isAdmin || !applyEmployeeId}>Aplicar selecionados</Button>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds(attendanceTemplates.map((item) => String(item.id)))}>Selecionar todos</Button>
+          <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds([])}>Limpar selecao</Button>
+        </div>
+        <div className="max-h-56 overflow-auto border rounded-md p-2 space-y-2">
+          {attendanceTemplates.length ? attendanceTemplates.map((template) => {
+            const id = String(template.id);
+            const checked = selectedTemplateIds.includes(id);
+            return (
+              <label key={id} className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={checked} onChange={() => toggleTemplateSelection(id)} />
+                <span>{template.activity_label || template.catalog_name || "Aula"} - {WEEKDAY_LABELS[Number(template.weekday) || 0]} {template.start_time} as {template.end_time}</span>
+              </label>
+            );
+          }) : (
+            <div className="text-sm text-muted-foreground">Sem modelos para aplicar.</div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  const renderNewScheduleSection = (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Nova escala</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Select value={newSchedule.employeeId || defaultEmployeeId} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, employeeId: value }))}>
+            <SelectTrigger>
+              <SelectValue placeholder="Funcionario" />
+            </SelectTrigger>
+            <SelectContent>
+              {activeAttendanceEmployees.map((employee) => (
+                <SelectItem key={employee.id} value={String(employee.id)}>
+                  {employee.name || `Funcionario ${employee.id}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={scheduleType}
+            onValueChange={(value: "function" | "class") => {
+              const pool = value === "class" ? classActivities : functionActivities;
+              const first = pool[0];
+              setScheduleType(value);
+              setNewSchedule((prev) => ({
+                ...prev,
+                activityId: first ? String(first.id) : "",
+                valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
+              }));
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Tipo" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="function">Funcao</SelectItem>
+              <SelectItem value="class">Aula</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={newSchedule.activityId}
+            onValueChange={(value) => {
+              const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
+              setNewSchedule((prev) => ({
+                ...prev,
+                activityId: value,
+                valuePerClass: scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
+              }));
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Atividade" />
+            </SelectTrigger>
+            <SelectContent>
+              {scheduleActivityOptions.map((activity) => (
+                <SelectItem key={activity.id} value={String(activity.id)}>
+                  {activity.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={newSchedule.weekday} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, weekday: value }))}>
+            <SelectTrigger>
+              <SelectValue placeholder="Dia da semana" />
+            </SelectTrigger>
+            <SelectContent>
+              {WEEKDAY_LABELS.map((label, idx) => (
+                <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Input type="time" value={newSchedule.startTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, startTime: event.target.value }))} />
+          <Input type="time" value={newSchedule.endTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, endTime: event.target.value }))} />
+
+          <Input
+            type="number"
+            min={0}
+            max={180}
+            value={newSchedule.toleranceMin}
+            onChange={(event) => setNewSchedule((prev) => ({ ...prev, toleranceMin: event.target.value }))}
+            placeholder="Tolerancia (min)"
+          />
+          {scheduleType === "class" ? (
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              value={newSchedule.valuePerClass}
+              onChange={(event) => setNewSchedule((prev) => ({ ...prev, valuePerClass: event.target.value }))}
+              placeholder="Valor por aula"
+            />
+          ) : null}
+        </div>
+        <Button onClick={createSchedule} className="gap-1" disabled={!newSchedule.employeeId || !newSchedule.activityId}>
+          <Plus className="h-4 w-4" />
+          Criar escala
+        </Button>
+      </CardContent>
+    </Card>
+  );
+
+  const renderScheduleEditCard = editingSchedule ? (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Editar escala #{editingSchedule.id}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Select
+            value={editingSchedule.scheduleType}
+            onValueChange={(value: "function" | "class") => {
+              const pool = value === "class" ? classActivities : functionActivities;
+              const first = pool[0];
+              setEditingSchedule((prev) => prev ? {
+                ...prev,
+                scheduleType: value,
+                activityId: first ? String(first.id) : "",
+                valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
+              } : prev);
+            }}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="function">Funcao</SelectItem>
+              <SelectItem value="class">Aula</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={editingSchedule.activityId}
+            onValueChange={(value) => {
+              const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
+              setEditingSchedule((prev) => prev ? {
+                ...prev,
+                activityId: value,
+                valuePerClass: prev.scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
+              } : prev);
+            }}
+          >
+            <SelectTrigger><SelectValue placeholder="Atividade" /></SelectTrigger>
+            <SelectContent>
+              {(editingSchedule.scheduleType === "class" ? classActivities : functionActivities).map((activity) => (
+                <SelectItem key={activity.id} value={String(activity.id)}>{activity.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={editingSchedule.weekday} onValueChange={(value) => setEditingSchedule((prev) => prev ? { ...prev, weekday: value } : prev)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {WEEKDAY_LABELS.map((label, idx) => (
+                <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input type="time" value={editingSchedule.startTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} />
+          <Input type="time" value={editingSchedule.endTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} />
+          <Input type="number" min={0} max={180} value={editingSchedule.toleranceMin} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, toleranceMin: event.target.value } : prev)} placeholder="Tolerancia (min)" />
+          {editingSchedule.scheduleType === "class" ? (
+            <Input type="number" min={0} step="0.01" value={editingSchedule.valuePerClass} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, valuePerClass: event.target.value } : prev)} placeholder="Valor por aula" />
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={saveScheduleEdit}>Salvar alteracoes</Button>
+          <Button variant="ghost" onClick={() => setEditingSchedule(null)}>Cancelar</Button>
+        </div>
+      </CardContent>
+    </Card>
+  ) : null;
+
+  const renderSchedulesTable = (
+    <Card>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Funcionario</TableHead>
+              <TableHead>Dia</TableHead>
+              <TableHead>Inicio</TableHead>
+              <TableHead>Fim</TableHead>
+              <TableHead>Atividade</TableHead>
+              <TableHead>Tipo</TableHead>
+              <TableHead>Valor aula</TableHead>
+              <TableHead>Tolerancia</TableHead>
+              {isAdmin ? <TableHead>Acoes</TableHead> : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredSchedules.length ? filteredSchedules.map((schedule) => (
+              <TableRow key={schedule.id}>
+                <TableCell className="font-medium">{schedule.employeeName || `Funcionario ${schedule.employee_id}`}</TableCell>
+                <TableCell>{WEEKDAY_LABELS[Number(schedule.weekday) || 0]}</TableCell>
+                <TableCell className="font-mono">{schedule.start_time || "--:--"}</TableCell>
+                <TableCell className="font-mono">{schedule.end_time || "--:--"}</TableCell>
+                <TableCell>{schedule.activity_label_resolved || schedule.class_name || "-"}</TableCell>
+                <TableCell>{scheduleTypeLabel(schedule.schedule_type)}</TableCell>
+                <TableCell>{Number(schedule.value_per_class || 0).toFixed(2)}</TableCell>
+                <TableCell>{Number(schedule.tolerance_min || 0)} min</TableCell>
+                {isAdmin ? (
+                  <TableCell>
+                    <div className="flex gap-2">
+                      <Button variant="ghost" size="icon" onClick={() => openScheduleEdit(schedule)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => deactivateSchedule(Number(schedule.id))}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                ) : null}
+              </TableRow>
+            )) : (
+              <TableRow>
+                <TableCell colSpan={isAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">
+                  Nenhuma escala ativa para este filtro.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+
+  const lateNames = todayStats.lateEmployeeIds.map((id) => employeeNameById.get(String(id)) || `Funcionario ${id}`);
+  const absentNames = todayStats.absentEmployeeIds.map((id) => employeeNameById.get(String(id)) || `Funcionario ${id}`);
+  const openShiftNames = todayStats.openShiftEmployeeIds.map((id) => employeeNameById.get(String(id)) || `Funcionario ${id}`);
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -516,385 +1512,67 @@ export default function PontoPage() {
 
       <Card>
         <CardContent className="p-4 text-sm text-muted-foreground">
-          Historico carregado pelo periodo selecionado. Se voce deixar em branco, usamos os ultimos 90 dias.
+          Operacao diaria no topo. Configuracao completa no assistente guiado para reduzir ruido e erros.
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {(attendanceSummary.length ? attendanceSummary : activeAttendanceEmployees.slice(0, 3).map((employee) => ({
-          employee: employee.name || `Funcionario ${employee.id}`,
-          entradas: 0,
-          saidas: 0,
-          outsideRadius: 0,
-        }))).map((summary) => (
-          <Card key={summary.employee}>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-                  <User className="h-5 w-5 text-primary" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">{summary.employee}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {summary.entradas} entradas - {summary.saidas} saidas
-                    {summary.outsideRadius > 0 ? (
-                      <span className="text-destructive"> - {summary.outsideRadius} fora do raio</span>
-                    ) : null}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <Tabs defaultValue="records">
-        <TabsList>
-          <TabsTrigger value="records" className="gap-1">
-            <Calendar className="h-4 w-4" /> Historico
-          </TabsTrigger>
-          <TabsTrigger value="schedules" className="gap-1">
-            <ListChecks className="h-4 w-4" /> Escalas
+      <Tabs value={mainView} onValueChange={(value) => setMainView(value as MainView)}>
+        <TabsList className="w-full justify-start overflow-x-auto">
+          <TabsTrigger value="today" className="gap-1">
+            <TimerReset className="h-4 w-4" /> Hoje
           </TabsTrigger>
           {isAdmin ? (
-            <TabsTrigger value="employees" className="gap-1">
+            <TabsTrigger value="schedules" className="gap-1">
+              <ListChecks className="h-4 w-4" /> Escalas
+            </TabsTrigger>
+          ) : null}
+          {isAdmin ? (
+            <TabsTrigger value="team" className="gap-1">
               <User className="h-4 w-4" /> Funcionarios
             </TabsTrigger>
           ) : null}
-          <TabsTrigger value="map" className="gap-1">
-            <MapPin className="h-4 w-4" /> Localizacao
-          </TabsTrigger>
+          {isAdmin ? (
+            <TabsTrigger value="setup" className="gap-1">
+              <Settings2 className="h-4 w-4" /> Configuracao
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
-        <TabsContent value="records" className="space-y-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-                <Select value={selectedEmployeeValue} onValueChange={setAttendanceSelectedEmployee}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {employeeOptions.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>{employee.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">De</div>
-                  <Input
-                    type="date"
-                    value={attendanceFromDate}
-                    onChange={(event) => setAttendanceFromDate(event.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Ate</div>
-                  <Input
-                    type="date"
-                    value={attendanceToDate}
-                    onChange={(event) => setAttendanceToDate(event.target.value)}
-                  />
-                </div>
-                <Button
-                  variant="ghost"
-                  className="md:justify-self-start xl:justify-self-end"
-                  onClick={() => {
-                    setAttendanceSelectedEmployee("Todos");
-                    setAttendanceFromDate("");
-                    setAttendanceToDate("");
-                  }}
-                >
-                  Limpar filtros
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Funcionario</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>Data</TableHead>
-                    <TableHead>Hora</TableHead>
-                    <TableHead>Localizacao</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredRecords.length ? filteredRecords.map((record) => (
-                    <TableRow key={record.id}>
-                      <TableCell className="font-medium">{record.employee || "-"}</TableCell>
-                      <TableCell>
-                        <Badge variant={record.type === "entrada" ? "default" : "secondary"}>
-                          {record.type === "entrada" ? "Entrada" : "Saida"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{formatDateBr(record.date)}</TableCell>
-                      <TableCell className="font-mono">{record.time || "--:--"}</TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground">
-                          {record.lat ? Number(record.lat).toFixed(4) : "--"}, {record.lng ? Number(record.lng).toFixed(4) : "--"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        {record.withinRadius ? (
-                          <div className="flex items-center gap-1 text-primary">
-                            <CheckCircle className="h-4 w-4" />
-                            <span className="text-xs">No raio</span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1 text-destructive">
-                            <XCircle className="h-4 w-4" />
-                            <span className="text-xs">Fora do raio</span>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  )) : (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                        Nenhum registro encontrado para este filtro.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="schedules" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Catalogo de Aulas e Funcoes</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {isAdmin ? (
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                  <Select value={catalogForm.type} onValueChange={(value: "class" | "function") => setCatalogForm((prev) => ({ ...prev, type: value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="class">Aula</SelectItem>
-                      <SelectItem value="function">Funcao</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input value={catalogForm.name} onChange={(event) => setCatalogForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome da atividade" />
-                  <Input type="number" min={0} step="0.01" value={catalogForm.defaultValue} onChange={(event) => setCatalogForm((prev) => ({ ...prev, defaultValue: event.target.value }))} placeholder="Valor padrao" />
-                  <Input type="number" value={catalogForm.sortOrder} onChange={(event) => setCatalogForm((prev) => ({ ...prev, sortOrder: event.target.value }))} placeholder="Ordem" />
-                  <Button onClick={submitCatalogForm} disabled={!catalogForm.name.trim()}>Cadastrar</Button>
-                </div>
-              ) : null}
-
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>Nome</TableHead>
-                    <TableHead>Valor padrao</TableHead>
-                    <TableHead>Ordem</TableHead>
-                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {attendanceCatalog.length ? attendanceCatalog.map((item) => {
-                    const editing = editingCatalog?.id === Number(item.id);
-                    return (
-                      <TableRow key={item.id}>
-                        <TableCell>{editing ? (
-                          <Select value={editingCatalog?.type || "class"} onValueChange={(value: "class" | "function") => setEditingCatalog((prev) => prev ? { ...prev, type: value } : prev)}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="class">Aula</SelectItem>
-                              <SelectItem value="function">Funcao</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : scheduleTypeLabel(item.type)}</TableCell>
-                        <TableCell>{editing ? <Input value={editingCatalog?.name || ""} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, name: event.target.value } : prev)} /> : (item.name || "-")}</TableCell>
-                        <TableCell>{editing ? <Input type="number" min={0} step="0.01" value={editingCatalog?.defaultValue || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, defaultValue: event.target.value } : prev)} /> : Number(item.default_value || 0).toFixed(2)}</TableCell>
-                        <TableCell>{editing ? <Input type="number" value={editingCatalog?.sortOrder || "0"} onChange={(event) => setEditingCatalog((prev) => prev ? { ...prev, sortOrder: event.target.value } : prev)} /> : Number(item.sort_order || 0)}</TableCell>
-                        {isAdmin ? (
-                          <TableCell>
-                            {editing ? (
-                              <div className="flex gap-2">
-                                <Button size="sm" onClick={saveCatalogEdit}>Salvar</Button>
-                                <Button size="sm" variant="ghost" onClick={() => setEditingCatalog(null)}>Cancelar</Button>
-                              </div>
-                            ) : (
-                              <div className="flex gap-2">
-                                <Button variant="ghost" size="icon" onClick={() => setEditingCatalog({ id: Number(item.id), type: String(item.type || "class").toLowerCase() === "function" ? "function" : "class", name: String(item.name || ""), defaultValue: String(Number(item.default_value || 0)), sortOrder: String(Number(item.sort_order || 0)) })}>
-                                  <Pencil className="h-4 w-4" />
-                                </Button>
-                                <Button variant="ghost" size="icon" onClick={() => deleteAttendanceCatalogItem(Number(item.id))}>
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              </div>
-                            )}
-                          </TableCell>
-                        ) : null}
-                      </TableRow>
-                    );
-                  }) : (
-                    <TableRow>
-                      <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhuma atividade cadastrada.</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Modelos de Escala</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {isAdmin ? (
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                  <Select value={templateForm.activityId} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, activityId: value }))}>
-                    <SelectTrigger><SelectValue placeholder="Aula" /></SelectTrigger>
-                    <SelectContent>
-                      {classActivities.map((item) => (
-                        <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={templateForm.weekday} onValueChange={(value) => setTemplateForm((prev) => ({ ...prev, weekday: value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {WEEKDAY_LABELS.map((label, idx) => (
-                        <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input type="time" value={templateForm.startTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, startTime: event.target.value }))} />
-                  <Input type="time" value={templateForm.endTime} onChange={(event) => setTemplateForm((prev) => ({ ...prev, endTime: event.target.value }))} />
-                  <Button onClick={submitTemplateForm} disabled={!templateForm.activityId}>Criar modelo</Button>
-                </div>
-              ) : null}
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Aula</TableHead>
-                    <TableHead>Dia</TableHead>
-                    <TableHead>Inicio</TableHead>
-                    <TableHead>Fim</TableHead>
-                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {attendanceTemplates.length ? attendanceTemplates.map((template) => {
-                    const editing = editingTemplate?.id === Number(template.id);
-                    return (
-                      <TableRow key={template.id}>
-                        <TableCell>{editing ? (
-                          <Select value={editingTemplate?.activityId || ""} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, activityId: value } : prev)}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {classActivities.map((item) => (
-                                <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (template.activity_label || template.catalog_name || "Aula")}</TableCell>
-                        <TableCell>{editing ? (
-                          <Select value={editingTemplate?.weekday || "1"} onValueChange={(value) => setEditingTemplate((prev) => prev ? { ...prev, weekday: value } : prev)}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {WEEKDAY_LABELS.map((label, idx) => (
-                                <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : WEEKDAY_LABELS[Number(template.weekday) || 0]}</TableCell>
-                        <TableCell>{editing ? <Input type="time" value={editingTemplate?.startTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} /> : (template.start_time || "--:--")}</TableCell>
-                        <TableCell>{editing ? <Input type="time" value={editingTemplate?.endTime || ""} onChange={(event) => setEditingTemplate((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} /> : (template.end_time || "--:--")}</TableCell>
-                        {isAdmin ? (
-                          <TableCell>
-                            {editing ? (
-                              <div className="flex gap-2">
-                                <Button size="sm" onClick={saveTemplateEdit}>Salvar</Button>
-                                <Button size="sm" variant="ghost" onClick={() => setEditingTemplate(null)}>Cancelar</Button>
-                              </div>
-                            ) : (
-                              <div className="flex gap-2">
-                                <Button variant="ghost" size="icon" onClick={() => setEditingTemplate({ id: Number(template.id), activityId: String(template.activity_id || ""), weekday: String(template.weekday ?? "1"), startTime: String(template.start_time || "08:00"), endTime: String(template.end_time || "09:00") })}>
-                                  <Pencil className="h-4 w-4" />
-                                </Button>
-                                <Button variant="ghost" size="icon" onClick={() => deleteAttendanceTemplate(Number(template.id))}>
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              </div>
-                            )}
-                          </TableCell>
-                        ) : null}
-                      </TableRow>
-                    );
-                  }) : (
-                    <TableRow>
-                      <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-muted-foreground py-8">Nenhum modelo ativo cadastrado.</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-
-          {isAdmin ? (
+        <TabsContent value="today" className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Aplicar pacote no funcionario</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <Select value={applyEmployeeId} onValueChange={setApplyEmployeeId}>
-                  <SelectTrigger><SelectValue placeholder="Funcionario" /></SelectTrigger>
-                  <SelectContent>
-                    {activeAttendanceEmployees.map((employee) => (
-                      <SelectItem key={employee.id} value={String(employee.id)}>{employee.name || `Funcionario ${employee.id}`}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input type="number" min={0} max={180} value={applyToleranceMin} onChange={(event) => setApplyToleranceMin(event.target.value)} placeholder="Tolerancia (min)" />
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={replaceTemplateSchedules} onChange={(event) => setReplaceTemplateSchedules(event.target.checked)} />
-                  Substituir templates atuais
-                </label>
-                <Button onClick={applyTemplates} disabled={!isAdmin || !applyEmployeeId}>Aplicar selecionados</Button>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds(attendanceTemplates.map((item) => String(item.id)))}>Selecionar todos</Button>
-                <Button variant="outline" size="sm" onClick={() => setSelectedTemplateIds([])}>Limpar selecao</Button>
-              </div>
-              <div className="max-h-56 overflow-auto border rounded-md p-2 space-y-2">
-                {attendanceTemplates.length ? attendanceTemplates.map((template) => {
-                  const id = String(template.id);
-                  const checked = selectedTemplateIds.includes(id);
-                  return (
-                    <label key={id} className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={checked} onChange={() => toggleTemplateSelection(id)} />
-                      <span>{template.activity_label || template.catalog_name || "Aula"} - {WEEKDAY_LABELS[Number(template.weekday) || 0]} {template.start_time} as {template.end_time}</span>
-                    </label>
-                  );
-                }) : (
-                  <div className="text-sm text-muted-foreground">Sem modelos para aplicar.</div>
-                )}
-              </div>
-            </CardContent>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Entradas de hoje</div>
+                <div className="mt-1 text-2xl font-semibold">{todayStats.entries}</div>
+              </CardContent>
             </Card>
-          ) : null}
-
-          {isAdmin ? (
             <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Saidas de hoje</div>
+                <div className="mt-1 text-2xl font-semibold">{todayStats.exits}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Atrasos/Faltas</div>
+                <div className="mt-1 text-2xl font-semibold">{todayStats.lateEmployeeIds.length + todayStats.absentEmployeeIds.length}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Turnos abertos</div>
+                <div className="mt-1 text-2xl font-semibold">{todayStats.openShiftEmployeeIds.length}</div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
             <CardHeader>
-              <CardTitle className="text-base">Nova escala</CardTitle>
+              <CardTitle className="text-base">Acoes rapidas</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <Select value={newSchedule.employeeId || defaultEmployeeId} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, employeeId: value }))}>
+                <Select value={quickEmployeeId || defaultEmployeeId} onValueChange={setQuickEmployeeId}>
                   <SelectTrigger>
                     <SelectValue placeholder="Funcionario" />
                   </SelectTrigger>
@@ -906,418 +1584,323 @@ export default function PontoPage() {
                     ))}
                   </SelectContent>
                 </Select>
-
-                <Select
-                  value={scheduleType}
-                  onValueChange={(value: "function" | "class") => {
-                    const pool = value === "class" ? classActivities : functionActivities;
-                    const first = pool[0];
-                    setScheduleType(value);
-                    setNewSchedule((prev) => ({
-                      ...prev,
-                      activityId: first ? String(first.id) : "",
-                      valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
-                    }));
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Tipo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="function">Funcao</SelectItem>
-                    <SelectItem value="class">Aula</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={newSchedule.activityId}
-                  onValueChange={(value) => {
-                    const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
-                    setNewSchedule((prev) => ({
-                      ...prev,
-                      activityId: value,
-                      valuePerClass: scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
-                    }));
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Atividade" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {scheduleActivityOptions.map((activity) => (
-                      <SelectItem key={activity.id} value={String(activity.id)}>
-                        {activity.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select value={newSchedule.weekday} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, weekday: value }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Dia da semana" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {WEEKDAY_LABELS.map((label, idx) => (
-                      <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Input type="time" value={newSchedule.startTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, startTime: event.target.value }))} />
-                <Input type="time" value={newSchedule.endTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, endTime: event.target.value }))} />
-
                 <Input
-                  type="number"
-                  min={0}
-                  max={180}
-                  value={newSchedule.toleranceMin}
-                  onChange={(event) => setNewSchedule((prev) => ({ ...prev, toleranceMin: event.target.value }))}
-                  placeholder="Tolerancia (min)"
+                  value={quickNote}
+                  onChange={(event) => setQuickNote(event.target.value)}
+                  placeholder="Observacao opcional"
                 />
-                {scheduleType === "class" ? (
-                  <Input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={newSchedule.valuePerClass}
-                    onChange={(event) => setNewSchedule((prev) => ({ ...prev, valuePerClass: event.target.value }))}
-                    placeholder="Valor por aula"
-                  />
-                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {isAdmin ? (
+                    <Button onClick={() => handleManualPunch("entry")} disabled={sendingManualPunch || !quickEmployeeId} className="gap-1">
+                      <LogIn className="h-4 w-4" /> Registrar entrada
+                    </Button>
+                  ) : null}
+                  {isAdmin ? (
+                    <Button onClick={() => handleManualPunch("exit")} disabled={sendingManualPunch || !quickEmployeeId} variant="secondary" className="gap-1">
+                      <LogOut className="h-4 w-4" /> Registrar saida
+                    </Button>
+                  ) : null}
+                  <Button variant="outline" onClick={() => setTodayView("history")} className="gap-1">
+                    <Calendar className="h-4 w-4" /> Ver historico
+                  </Button>
+                </div>
               </div>
-              <Button onClick={createSchedule} className="gap-1" disabled={!newSchedule.employeeId || !newSchedule.activityId}>
-                <Plus className="h-4 w-4" />
-                Criar escala
-              </Button>
-            </CardContent>
-            </Card>
-          ) : null}
 
-          {isAdmin && editingSchedule ? (
-            <Card>
+              {isAdmin ? (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  <Input type="date" value={justificationDate} onChange={(event) => setJustificationDate(event.target.value)} />
+                  <Textarea
+                    value={justificationReason}
+                    onChange={(event) => setJustificationReason(event.target.value)}
+                    placeholder="Motivo da justificativa"
+                    className="lg:col-span-2"
+                  />
+                  <Button variant="outline" onClick={handleCreateJustification} disabled={sendingJustification || !quickEmployeeId} className="w-fit gap-1">
+                    <FileWarning className="h-4 w-4" /> Justificar falta
+                  </Button>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <Card className="xl:col-span-2">
               <CardHeader>
-                <CardTitle className="text-base">Editar escala #{editingSchedule.id}</CardTitle>
+                <CardTitle className="text-base">Pendencias de hoje</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <Select
-                    value={editingSchedule.scheduleType}
-                    onValueChange={(value: "function" | "class") => {
-                      const pool = value === "class" ? classActivities : functionActivities;
-                      const first = pool[0];
-                      setEditingSchedule((prev) => prev ? {
-                        ...prev,
-                        scheduleType: value,
-                        activityId: first ? String(first.id) : "",
-                        valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
-                      } : prev);
-                    }}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="function">Funcao</SelectItem>
-                      <SelectItem value="class">Aula</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={editingSchedule.activityId}
-                    onValueChange={(value) => {
-                      const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
-                      setEditingSchedule((prev) => prev ? {
-                        ...prev,
-                        activityId: value,
-                        valuePerClass: prev.scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
-                      } : prev);
-                    }}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Atividade" /></SelectTrigger>
-                    <SelectContent>
-                      {(editingSchedule.scheduleType === "class" ? classActivities : functionActivities).map((activity) => (
-                        <SelectItem key={activity.id} value={String(activity.id)}>{activity.name}</SelectItem>
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-1">Atrasados</div>
+                  {lateNames.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {lateNames.map((name) => (
+                        <Badge key={name} variant="secondary">{name}</Badge>
                       ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={editingSchedule.weekday} onValueChange={(value) => setEditingSchedule((prev) => prev ? { ...prev, weekday: value } : prev)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {WEEKDAY_LABELS.map((label, idx) => (
-                        <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input type="time" value={editingSchedule.startTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, startTime: event.target.value } : prev)} />
-                  <Input type="time" value={editingSchedule.endTime} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, endTime: event.target.value } : prev)} />
-                  <Input type="number" min={0} max={180} value={editingSchedule.toleranceMin} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, toleranceMin: event.target.value } : prev)} placeholder="Tolerancia (min)" />
-                  {editingSchedule.scheduleType === "class" ? (
-                    <Input type="number" min={0} step="0.01" value={editingSchedule.valuePerClass} onChange={(event) => setEditingSchedule((prev) => prev ? { ...prev, valuePerClass: event.target.value } : prev)} placeholder="Valor por aula" />
-                  ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">Sem atrasos no momento.</div>
+                  )}
                 </div>
-                <div className="flex gap-2">
-                  <Button onClick={saveScheduleEdit}>Salvar alteracoes</Button>
-                  <Button variant="ghost" onClick={() => setEditingSchedule(null)}>Cancelar</Button>
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-1">Sem entrada registrada</div>
+                  {absentNames.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {absentNames.map((name) => (
+                        <Badge key={name} variant="outline">{name}</Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">Ninguem pendente nesta janela.</div>
+                  )}
                 </div>
               </CardContent>
             </Card>
-          ) : null}
 
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Funcionario</TableHead>
-                    <TableHead>Dia</TableHead>
-                    <TableHead>Inicio</TableHead>
-                    <TableHead>Fim</TableHead>
-                    <TableHead>Atividade</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>Valor aula</TableHead>
-                    <TableHead>Tolerancia</TableHead>
-                    {isAdmin ? <TableHead>Acoes</TableHead> : null}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredSchedules.length ? filteredSchedules.map((schedule) => (
-                    <TableRow key={schedule.id}>
-                      <TableCell className="font-medium">{schedule.employeeName || `Funcionario ${schedule.employee_id}`}</TableCell>
-                      <TableCell>{WEEKDAY_LABELS[Number(schedule.weekday) || 0]}</TableCell>
-                      <TableCell className="font-mono">{schedule.start_time || "--:--"}</TableCell>
-                      <TableCell className="font-mono">{schedule.end_time || "--:--"}</TableCell>
-                      <TableCell>{schedule.activity_label_resolved || schedule.class_name || "-"}</TableCell>
-                      <TableCell>{scheduleTypeLabel(schedule.schedule_type)}</TableCell>
-                      <TableCell>{Number(schedule.value_per_class || 0).toFixed(2)}</TableCell>
-                      <TableCell>{Number(schedule.tolerance_min || 0)} min</TableCell>
-                      {isAdmin ? (
-                        <TableCell>
-                          <div className="flex gap-2">
-                            <Button variant="ghost" size="icon" onClick={() => openScheduleEdit(schedule)}>
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon" onClick={() => deactivateSchedule(Number(schedule.id))}>
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      ) : null}
-                    </TableRow>
-                  )) : (
-                    <TableRow>
-                      <TableCell colSpan={isAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">
-                        Nenhuma escala ativa para este filtro.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Turnos em aberto</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {openShiftNames.length ? (
+                  <div className="space-y-2">
+                    {openShiftNames.map((name) => (
+                      <div key={name} className="text-sm">{name}</div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Sem turnos em aberto agora.</div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Tabs value={todayView} onValueChange={(value) => setTodayView(value as TodayView)}>
+            <TabsList>
+              <TabsTrigger value="overview" className="gap-1">
+                <ShieldCheck className="h-4 w-4" /> Escala do dia
+              </TabsTrigger>
+              <TabsTrigger value="history" className="gap-1">
+                <Calendar className="h-4 w-4" /> Historico
+              </TabsTrigger>
+              <TabsTrigger value="map" className="gap-1">
+                <MapPin className="h-4 w-4" /> Mapa
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Escalas de hoje ({WEEKDAY_LABELS[todayWeekday]})</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Funcionario</TableHead>
+                        <TableHead>Inicio</TableHead>
+                        <TableHead>Fim</TableHead>
+                        <TableHead>Atividade</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {todaySchedules.length ? todaySchedules.map((schedule) => {
+                        const counts = todayRecordByEmployee.get(String(schedule.employee_id || ""));
+                        const status = !counts
+                          ? "Sem entrada"
+                          : counts.entries > counts.exits
+                            ? "Em turno"
+                            : "Concluido";
+                        return (
+                          <TableRow key={schedule.id}>
+                            <TableCell className="font-medium">{schedule.employeeName || `Funcionario ${schedule.employee_id}`}</TableCell>
+                            <TableCell>{schedule.start_time || "--:--"}</TableCell>
+                            <TableCell>{schedule.end_time || "--:--"}</TableCell>
+                            <TableCell>{schedule.activity_label_resolved || schedule.class_name || "-"}</TableCell>
+                            <TableCell>
+                              <Badge variant={status === "Em turno" ? "default" : "secondary"}>{status}</Badge>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      }) : (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                            Nenhuma escala para hoje.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="history" className="space-y-4">
+              {renderRecordsFilters}
+              {renderRecordsTable}
+            </TabsContent>
+
+            {renderMap}
+          </Tabs>
         </TabsContent>
 
         {isAdmin ? (
-          <TabsContent value="employees" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Cadastrar funcionario</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                  <Input
-                    value={employeeForm.name}
-                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, name: event.target.value }))}
-                    placeholder="Nome"
-                  />
-                  <Input
-                    value={employeeForm.phone}
-                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, phone: event.target.value }))}
-                    placeholder="WhatsApp com DDD"
-                  />
-                  <Select
-                    value={employeeForm.roleActivityId || defaultRoleActivityId}
-                    onValueChange={(value) => setEmployeeForm((prev) => ({ ...prev, roleActivityId: value }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Funcao" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {functionActivities.map((activity) => (
-                        <SelectItem key={activity.id} value={String(activity.id)}>
-                          {activity.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    value={employeeForm.notes}
-                    onChange={(event) => setEmployeeForm((prev) => ({ ...prev, notes: event.target.value }))}
-                    placeholder="Observacoes"
-                  />
-                  <Button
-                    onClick={submitEmployeeForm}
-                    className="gap-1"
-                    disabled={!employeeForm.name.trim() || !employeeForm.phone.trim() || !(employeeForm.roleActivityId || defaultRoleActivityId)}
-                  >
-                    <Plus className="h-4 w-4" />
-                    Adicionar
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Funcionarios do ponto</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Nome</TableHead>
-                      <TableHead>WhatsApp</TableHead>
-                      <TableHead>Funcao</TableHead>
-                      <TableHead>Escalas</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Acoes</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {attendanceEmployees.length ? attendanceEmployees.map((employee) => {
-                      const editing = editingEmployee?.id === Number(employee.id);
-                      return (
-                        <TableRow key={employee.id}>
-                          <TableCell className="font-medium">
-                            {editing ? (
-                              <Input
-                                value={editingEmployee?.name || ""}
-                                onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, name: event.target.value } : prev)}
-                              />
-                            ) : (employee.name || `Funcionario ${employee.id}`)}
-                          </TableCell>
-                          <TableCell>
-                            {editing ? (
-                              <Input
-                                value={editingEmployee?.phone || ""}
-                                onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, phone: event.target.value } : prev)}
-                              />
-                            ) : (employee.whatsapp_phone || "-")}
-                          </TableCell>
-                          <TableCell>
-                            {editing ? (
-                              <Select
-                                value={editingEmployee?.roleActivityId || defaultRoleActivityId}
-                                onValueChange={(value) => setEditingEmployee((prev) => prev ? { ...prev, roleActivityId: value } : prev)}
-                              >
-                                <SelectTrigger><SelectValue placeholder="Funcao" /></SelectTrigger>
-                                <SelectContent>
-                                  {functionActivities.map((activity) => (
-                                    <SelectItem key={activity.id} value={String(activity.id)}>
-                                      {activity.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ) : (employee.role || "-")}
-                          </TableCell>
-                          <TableCell>{Number(employee.schedules_count || 0)}</TableCell>
-                          <TableCell>
-                            {editing ? (
-                              <label className="flex items-center gap-2 text-sm">
-                                <input
-                                  type="checkbox"
-                                  checked={!!editingEmployee?.active}
-                                  onChange={(event) => setEditingEmployee((prev) => prev ? { ...prev, active: event.target.checked } : prev)}
-                                />
-                                Ativo
-                              </label>
-                            ) : (
-                              <Badge variant={Number(employee.active ?? 1) === 1 ? "default" : "secondary"}>
-                                {Number(employee.active ?? 1) === 1 ? "Ativo" : "Inativo"}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {editing ? (
-                              <div className="flex flex-wrap gap-2">
-                                <Button size="sm" onClick={saveEmployeeEdit}>Salvar</Button>
-                                <Button size="sm" variant="ghost" onClick={() => setEditingEmployee(null)}>Cancelar</Button>
-                              </div>
-                            ) : (
-                              <div className="flex gap-2">
-                                <Button variant="ghost" size="icon" aria-label={`Editar ${employee.name || "funcionario"}`} onClick={() => openEmployeeEdit(employee)}>
-                                  <Pencil className="h-4 w-4" />
-                                </Button>
-                                <Button variant="ghost" size="icon" aria-label={`Remover ${employee.name || "funcionario"}`} onClick={() => removeEmployee(employee)} disabled={Number(employee.active ?? 1) !== 1}>
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              </div>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    }) : (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                          Nenhum funcionario cadastrado.
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
+          <TabsContent value="schedules" className="space-y-4">
+            {renderRecordsFilters}
+            {renderScheduleEditCard}
+            {renderSchedulesTable}
           </TabsContent>
         ) : null}
 
-        <TabsContent value="map" className="space-y-4">
-          {selectedMapRecord ? (
-            <>
-              <Card>
-                <CardContent className="p-4 flex flex-wrap items-center gap-3">
-                  <Select value={String(selectedMapRecord.id)} onValueChange={setSelectedMapRecordId}>
-                    <SelectTrigger className="w-full md:w-[28rem]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {geoRecords.map((record) => (
-                        <SelectItem key={record.id} value={String(record.id)}>
-                          {`${record.employee || "Funcionario"} - ${formatDateBr(record.date)} ${record.time || "--:--"}`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button variant="outline" asChild>
-                    <a
-                      href={`https://www.google.com/maps?q=${selectedMapRecord.lat},${selectedMapRecord.lng}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Abrir no Google Maps
-                    </a>
-                  </Button>
-                </CardContent>
-              </Card>
+        {isAdmin ? (
+          <TabsContent value="team" className="space-y-4">
+            {renderEmployeesSection}
+          </TabsContent>
+        ) : null}
 
-              <Card>
-                <CardContent className="p-0">
-                  <iframe
-                    title="Mapa de localizacao"
-                    src={buildMapEmbedUrl(Number(selectedMapRecord.lat), Number(selectedMapRecord.lng))}
-                    className="w-full h-[28rem] border-0"
-                    loading="lazy"
-                  />
-                </CardContent>
-              </Card>
-            </>
-          ) : (
+        {isAdmin ? (
+          <TabsContent value="setup" className="space-y-4">
             <Card>
-              <CardContent className="p-6">
-                <div className="text-center text-muted-foreground">
-                  Nenhum registro com coordenadas para exibir no mapa.
+              <CardHeader>
+                <CardTitle className="text-base">Assistente de configuracao</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Progress value={wizardProgress} />
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  {[
+                    { label: "1. Funcionarios", ready: wizardReady.employees },
+                    { label: "2. Catalogo", ready: wizardReady.catalog },
+                    { label: "3. Modelos e aplicacao", ready: wizardReady.templates },
+                    { label: "4. Revisao", ready: wizardReady.schedules },
+                  ].map((step, index) => (
+                    <Button
+                      key={step.label}
+                      variant={wizardStep === index ? "default" : "outline"}
+                      onClick={() => {
+                        if (!canGoToStep(index)) {
+                          toast.error("Conclua as etapas anteriores para avancar.");
+                          return;
+                        }
+                        setWizardStep(index);
+                      }}
+                      className="justify-between"
+                    >
+                      <span>{step.label}</span>
+                      {step.ready ? <CheckCircle className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </Button>
+                  ))}
                 </div>
               </CardContent>
             </Card>
-          )}
-        </TabsContent>
+
+            {wizardStep === 0 ? renderEmployeesSection : null}
+            {wizardStep === 1 ? (
+              <div className="space-y-4">
+                {renderCatalogSection}
+                {renderTemplatesSection}
+              </div>
+            ) : null}
+            {wizardStep === 2 ? (
+              <div className="space-y-4">
+                {renderApplyTemplateSection}
+                {renderNewScheduleSection}
+              </div>
+            ) : null}
+            {wizardStep === 3 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Revisao final</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-xs text-muted-foreground">Funcionarios ativos</div>
+                        <div className="text-xl font-semibold">{activeAttendanceEmployees.length}</div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-xs text-muted-foreground">Itens de catalogo</div>
+                        <div className="text-xl font-semibold">{attendanceCatalog.length}</div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-xs text-muted-foreground">Modelos ativos</div>
+                        <div className="text-xl font-semibold">{attendanceTemplates.length}</div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-xs text-muted-foreground">Escalas ativas</div>
+                        <div className="text-xl font-semibold">{attendanceSchedules.length}</div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={() => setMainView("schedules")}>Ir para Escalas</Button>
+                    <Button variant="outline" onClick={() => setMainView("today")}>Ir para Operacao de Hoje</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <Collapsible open={showAdvancedConfig} onOpenChange={setShowAdvancedConfig}>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-base">Modo avancado</CardTitle>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      {showAdvancedConfig ? "Ocultar" : "Mostrar"}
+                    </Button>
+                  </CollapsibleTrigger>
+                </CardHeader>
+                <CollapsibleContent>
+                  <CardContent className="space-y-4">
+                    {renderScheduleEditCard}
+                    {renderNewScheduleSection}
+                    {renderSchedulesTable}
+                  </CardContent>
+                </CollapsibleContent>
+              </Card>
+            </Collapsible>
+          </TabsContent>
+        ) : null}
       </Tabs>
+
+      <Card>
+        <CardContent className="p-4 text-sm text-muted-foreground">
+          {isAdmin
+            ? "Admin: operacao diaria no painel Hoje, configuracao no assistente e ajustes finos no modo avancado."
+            : "Usuario: acesso focado na operacao e consultas do dia para evitar configuracoes acidentais."}
+        </CardContent>
+      </Card>
+
+      {!isAdmin && attendanceSummary.length ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {attendanceSummary.slice(0, 3).map((summary) => (
+            <Card key={summary.employee}>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <User className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">{summary.employee}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {summary.entradas} entradas - {summary.saidas} saidas
+                      {summary.outsideRadius > 0 ? (
+                        <span className="text-destructive"> - {summary.outsideRadius} fora do raio</span>
+                      ) : null}
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
