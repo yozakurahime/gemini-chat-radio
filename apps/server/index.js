@@ -112,7 +112,13 @@ const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
 const { registerPixAdminRoutes } = require('./routes/pix_admin_routes');
-const { registerScaImportRoutes } = require('./routes/sca_import_routes');
+let registerScaImportRoutes = () => {};
+try {
+    ({ registerScaImportRoutes } = require('./routes/sca_import_routes'));
+} catch (error) {
+    if (String(error?.code || '') !== 'MODULE_NOT_FOUND') throw error;
+    console.warn('[sca] routes/sca_import_routes.js ausente; importacao SCA manual desativada nesta instancia.');
+}
 const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
 const { startRuntimeServices } = require('./bootstrap/runtime_startup');
 const {
