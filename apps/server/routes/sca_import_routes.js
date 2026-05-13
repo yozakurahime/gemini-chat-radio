@@ -139,6 +139,7 @@ function registerScaImportRoutes({
             cpf: ['cpf', 'cpfcnpj', 'cnpj'],
             plan: ['plano', 'modalidade', 'produto', 'plan', 'pacote', 'turma'],
             enrollment_status: ['status', 'situacao', 'situacaodamatricula', 'statusmatricula', 'situacaomatricula', 'bloqueio', 'motivo'],
+            start_at: ['inicio', 'datainicio', 'iniciomatricula', 'iniciodamatricula', 'start'],
             due_at: ['vencimento', 'datavencimento', 'proximovencimento', 'vencimentoem', 'fim'],
             end_at: ['fim', 'datatermino', 'termino', 'validade', 'fimdamatricula', 'expiraem', 'vencimento']
         }
@@ -169,6 +170,7 @@ function registerScaImportRoutes({
                 cpf: '',
                 plan: '',
                 enrollment_status: '',
+                start_at: '',
                 due_at: '',
                 end_at: ''
             },
@@ -259,7 +261,7 @@ function registerScaImportRoutes({
             if (!resolved.external_id && !resolved.phone && !resolved.name) missing.push('external_id|phone|name');
         } else if (type === 'enrollments') {
             if (!resolved.external_id && !resolved.cpf && !resolved.phone && !resolved.name) missing.push('external_id|cpf|phone|name');
-            if (!resolved.enrollment_status && !resolved.due_at && !resolved.end_at) missing.push('enrollment_status|due_at|end_at');
+            if (!resolved.enrollment_status && !resolved.start_at && !resolved.due_at && !resolved.end_at) missing.push('enrollment_status|start_at|due_at|end_at');
         }
         return {
             mapping: resolved,
@@ -278,8 +280,8 @@ function registerScaImportRoutes({
 
     function parseEventType(raw) {
         const text = String(raw ?? '').trim();
-        if (/^-?\d+$/.test(text)) {
-            const numeric = Number(text);
+        if (/^-?\d+(?:[.,]\d+)?$/.test(text)) {
+            const numeric = Number(text.replace(',', '.'));
             if (Number.isFinite(numeric)) {
                 if (numeric === 0) return 'entry';
                 if (numeric > 0) return 'denied';
@@ -295,6 +297,9 @@ function registerScaImportRoutes({
     }
 
     function parseEventAt(raw) {
+        if (raw instanceof Date && Number.isFinite(raw.getTime())) {
+            return raw.getTime();
+        }
         if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
             return raw > 1e12 ? Math.floor(raw) : Math.floor(raw * 1000);
         }
@@ -340,6 +345,32 @@ function registerScaImportRoutes({
             return reference < Number(now || Date.now()) ? 'vencido' : 'ativo';
         }
         return '';
+    }
+
+    function readRowByAliases(rowObj = {}, aliases = []) {
+        const rows = Object.entries(rowObj || {});
+        for (const alias of aliases) {
+            const normalizedAlias = normalizeHeaderKey(alias);
+            const found = rows.find(([header]) => normalizeHeaderKey(header) === normalizedAlias);
+            if (found) return found[1];
+        }
+        for (const alias of aliases) {
+            const normalizedAlias = normalizeHeaderKey(alias);
+            const found = rows.find(([header]) => normalizeHeaderKey(header).includes(normalizedAlias));
+            if (found) return found[1];
+        }
+        return '';
+    }
+
+    function inferAccessEventType(rawType, rowObj = {}) {
+        const direct = parseEventType(rawType);
+        if (direct) return direct;
+        const blockedRaw = readRowByAliases(rowObj, ['bloqueado', 'bloqueio', 'status']);
+        const blockedType = parseEventType(blockedRaw);
+        if (blockedType) return blockedType;
+        const reasonRaw = String(readRowByAliases(rowObj, ['motivo', 'bloqueio', 'obs', 'observacao']) || '').trim();
+        if (reasonRaw) return 'denied';
+        return 'entry';
     }
 
     function buildSourceEventId({ rowObject, mapping, eventAt, eventType, externalId, phone, name, gate }) {
@@ -627,16 +658,16 @@ function registerScaImportRoutes({
             } else if (type === 'access') {
                 const events = [];
                 parsed.dataRows.forEach((raw, index) => {
-                    const rowObj = toRowObject(parsed.headers, raw);
-                    const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
-                    const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
-                    const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
-                    const eventType = parseEventType(rowObj[mapping.event_type] || '');
-                    const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
-                    const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
-                    if (!eventType || !eventAt || (!externalId && !phone && !name)) {
-                        rejected.push({ row: index + 2, error: 'invalid_access_row' });
-                        return;
+                        const rowObj = toRowObject(parsed.headers, raw);
+                        const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
+                        const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
+                        const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                        const eventType = inferAccessEventType(rowObj[mapping.event_type] || '', rowObj);
+                        const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
+                        const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
+                        if (!eventType || !eventAt || (!externalId && !phone && !name)) {
+                            rejected.push({ row: index + 2, error: 'invalid_access_row' });
+                            return;
                     }
                     const sourceEventId = buildSourceEventId({
                         rowObject: rowObj,
@@ -696,9 +727,10 @@ function registerScaImportRoutes({
                         const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
                         const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
                         const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
+                        const startAt = parseEventAt(rowObj[mapping.start_at] || '');
                         const dueAt = parseEventAt(rowObj[mapping.due_at] || '');
                         const endAt = parseEventAt(rowObj[mapping.end_at] || '');
-                        const enrollmentStatus = deriveEnrollmentStatus(
+                        let enrollmentStatus = deriveEnrollmentStatus(
                             rowObj[mapping.enrollment_status] || '',
                             dueAt,
                             endAt,
@@ -708,7 +740,10 @@ function registerScaImportRoutes({
                             rejected.push({ row: index + 2, error: 'identity_required' });
                             return;
                         }
-                        if (!enrollmentStatus && !dueAt && !endAt) {
+                        if (!enrollmentStatus && startAt > 0) {
+                            enrollmentStatus = 'ativo';
+                        }
+                        if (!enrollmentStatus && !startAt && !dueAt && !endAt) {
                             rejected.push({ row: index + 2, error: 'enrollment_status_or_due_required' });
                             return;
                         }
