@@ -77,6 +77,25 @@ function registerScaImportRoutes({
         return '';
     }
 
+    function normalizeExternalId(raw) {
+        if (raw == null) return '';
+        if (typeof raw === 'number' && Number.isFinite(raw)) {
+            const normalized = String(Math.trunc(raw));
+            return /^0+$/.test(normalized) ? '' : normalized;
+        }
+        const text = sanitizePublicText(String(raw || ''), 120).trim();
+        if (!text) return '';
+        const numericWithZeroDecimals = text.match(/^(\d+)[.,]0+$/);
+        if (numericWithZeroDecimals) {
+            const normalized = numericWithZeroDecimals[1];
+            return /^0+$/.test(normalized) ? '' : normalized;
+        }
+        if (/^\d+$/.test(text)) {
+            return /^0+$/.test(text) ? '' : text;
+        }
+        return text;
+    }
+
     function normalizeExt(filename = '') {
         return String(path.extname(String(filename || '')) || '').toLowerCase();
     }
@@ -638,7 +657,7 @@ function registerScaImportRoutes({
                 const tx = db.transaction(() => {
                     parsed.dataRows.forEach((raw, index) => {
                         const rowObj = toRowObject(parsed.headers, raw);
-                        const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
+                        const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
                         const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
                         const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
                         const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
@@ -658,10 +677,10 @@ function registerScaImportRoutes({
             } else if (type === 'access') {
                 const events = [];
                 parsed.dataRows.forEach((raw, index) => {
-                        const rowObj = toRowObject(parsed.headers, raw);
-                        const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
-                        const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
-                        const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                    const rowObj = toRowObject(parsed.headers, raw);
+                    const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
+                    const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
+                    const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
                         const eventType = inferAccessEventType(rowObj[mapping.event_type] || '', rowObj);
                         const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
                         const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
@@ -722,7 +741,7 @@ function registerScaImportRoutes({
                 const tx = db.transaction(() => {
                     parsed.dataRows.forEach((raw, index) => {
                         const rowObj = toRowObject(parsed.headers, raw);
-                        const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
+                        const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
                         const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
                         const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
                         const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
