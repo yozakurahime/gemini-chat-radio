@@ -1074,6 +1074,23 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const refreshOpsDailySummary = useCallback(async () => {
+    if (!user) {
+      setOpsDailySummary(null);
+      return null;
+    }
+    try {
+      const res = await apiFetch("/admin/system/ops/daily-summary");
+      const data = await res.json();
+      const next = (data?.summary || null) as OpsDailySummary | null;
+      setOpsDailySummary(next);
+      return next;
+    } catch {
+      setOpsDailySummary(null);
+      return null;
+    }
+  }, [user]);
+
   const confirmPixScaDone = useCallback(async (chargeId: number) => {
     if (!chargeId) return false;
     try {
@@ -1442,23 +1459,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
   }, [user?.role]);
-
-  const refreshOpsDailySummary = useCallback(async () => {
-    if (!user) {
-      setOpsDailySummary(null);
-      return null;
-    }
-    try {
-      const res = await apiFetch("/admin/system/ops/daily-summary");
-      const data = await res.json();
-      const next = (data?.summary || null) as OpsDailySummary | null;
-      setOpsDailySummary(next);
-      return next;
-    } catch {
-      setOpsDailySummary(null);
-      return null;
-    }
-  }, [user]);
 
   const refreshAll = useCallback(async () => {
     requestInitialLists();
