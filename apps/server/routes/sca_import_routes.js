@@ -121,7 +121,7 @@ function registerScaImportRoutes({
             external_id: ['matricula', 'idaluno', 'alunoid', 'codigo', 'codigoaluno', 'externalid', 'id'],
             name: ['nome', 'aluno', 'fullname', 'name'],
             phone: ['telefone', 'celular', 'whatsapp', 'fone', 'phone'],
-            event_type: ['tipo', 'evento', 'movimento', 'eventtype', 'tipoevento', 'tipoacesso'],
+            event_type: ['tipo', 'evento', 'movimento', 'eventtype', 'tipoevento', 'tipoacesso', 'bloqueado', 'bloqueio', 'status'],
             event_at: ['datahora', 'data', 'horario', 'datetime', 'timestamp', 'eventat', 'acessoem'],
             gate: ['catraca', 'equipamento', 'unidade', 'gate']
         }
@@ -246,11 +246,20 @@ function registerScaImportRoutes({
     }
 
     function parseEventType(raw) {
+        const text = String(raw ?? '').trim();
+        if (/^-?\d+$/.test(text)) {
+            const numeric = Number(text);
+            if (Number.isFinite(numeric)) {
+                if (numeric === 0) return 'entry';
+                if (numeric > 0) return 'denied';
+            }
+        }
         const value = normalizeHeaderKey(raw);
         if (!value) return '';
         if (['entrada', 'entry', 'in', 'entrou', 'acesso'].includes(value)) return 'entry';
         if (['saida', 'exit', 'out', 'saiu'].includes(value)) return 'exit';
-        if (['denied', 'negado', 'bloqueado', 'recusado'].includes(value)) return 'denied';
+        if (['denied', 'negado', 'bloqueado', 'recusado', 'blocked'].includes(value)) return 'denied';
+        if (['liberado', 'allow', 'allowed', 'autorizado'].includes(value)) return 'entry';
         return '';
     }
 
