@@ -73,8 +73,8 @@ export default function ScaPage() {
     void Promise.all([refreshScaImportHistory(undefined, 60), loadMappings()]);
   }, [isAdmin, refreshScaImportHistory]);
 
-  const handleUpload = async (type: ImportType) => {
-    const file = type === "students" ? studentsFile : accessFile;
+  const handleUpload = async (type: ImportType, selectedFile?: File | null) => {
+    const file = selectedFile ?? (type === "students" ? studentsFile : accessFile);
     if (!file || sendingType) return;
     setSendingType(type);
     try {
@@ -93,6 +93,12 @@ export default function ScaPage() {
     } finally {
       setSendingType("");
     }
+  };
+
+  const handleFileSelected = (type: ImportType, file: File | null) => {
+    if (type === "students") setStudentsFile(file);
+    else setAccessFile(file);
+    if (file) void handleUpload(type, file);
   };
 
   const handleSaveMapping = async (type: ImportType) => {
@@ -137,12 +143,13 @@ export default function ScaPage() {
             <Input
               type="file"
               accept=".csv,.xls,.xlsx"
-              onChange={(event) => setStudentsFile(event.target.files?.[0] || null)}
+              onChange={(event) => handleFileSelected("students", event.target.files?.[0] || null)}
               disabled={sendingType !== ""}
             />
             <Button className="gap-1" onClick={() => handleUpload("students")} disabled={!studentsFile || sendingType !== ""}>
               <Upload className="h-4 w-4" /> {sendingType === "students" ? "Enviando..." : "Importar alunos"}
             </Button>
+            {studentsFile ? <p className="text-xs text-muted-foreground">Arquivo: {studentsFile.name}</p> : null}
             {studentsLastResult ? (
               <div className="rounded-md border p-3 text-sm space-y-1">
                 <p><strong>Status:</strong> {studentsLastResult.ok ? "ok" : studentsLastResult.error || "erro"}</p>
@@ -162,12 +169,13 @@ export default function ScaPage() {
             <Input
               type="file"
               accept=".csv,.xls,.xlsx"
-              onChange={(event) => setAccessFile(event.target.files?.[0] || null)}
+              onChange={(event) => handleFileSelected("access", event.target.files?.[0] || null)}
               disabled={sendingType !== ""}
             />
             <Button className="gap-1" onClick={() => handleUpload("access")} disabled={!accessFile || sendingType !== ""}>
               <Upload className="h-4 w-4" /> {sendingType === "access" ? "Enviando..." : "Importar acessos"}
             </Button>
+            {accessFile ? <p className="text-xs text-muted-foreground">Arquivo: {accessFile.name}</p> : null}
             {accessLastResult ? (
               <div className="rounded-md border p-3 text-sm space-y-1">
                 <p><strong>Status:</strong> {accessLastResult.ok ? "ok" : accessLastResult.error || "erro"}</p>
@@ -264,4 +272,3 @@ export default function ScaPage() {
     </div>
   );
 }
-
