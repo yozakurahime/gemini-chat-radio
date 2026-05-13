@@ -28,8 +28,54 @@ function registerChatAdminRoutes({
     acknowledgeConversationAttention,
     getAiContextPreviewForConversation,
     registerAiFeedbackForConversation,
-    listAiFeedbackEvents
+    listAiFeedbackEvents,
+    normalizePhoneDigits,
+    toWhatsappJid
 }) {
+    app.post('/admin/conversations/open-by-phone', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        if (typeof normalizePhoneDigits !== 'function' || typeof toWhatsappJid !== 'function') {
+            return res.status(503).json({ ok: false, error: 'phone_open_unavailable' });
+        }
+        const phoneRaw = req.body?.phone || '';
+        const contactName = sanitizePublicText(req.body?.name || '', 120) || '';
+        const phone = normalizePhoneDigits(phoneRaw);
+        if (!phone || phone.length < 10) {
+            return res.status(400).json({ ok: false, error: 'invalid_phone' });
+        }
+        const contactId = toWhatsappJid(phone);
+        const now = Date.now();
+        if (!conversationState[contactId]) {
+            conversationState[contactId] = {
+                history: [],
+                messageBuffer: [],
+                typingTimer: null,
+                pausedByHuman: false,
+                pendingHumanHandoff: null,
+                name: contactName || phone,
+                lastActivityTimestamp: now,
+                tags: [],
+                notes: "",
+                status: 'active',
+                routeJid: contactId,
+                slaPendingSince: 0,
+                slaStatus: 'ok',
+                slaUpdatedAt: now
+            };
+            saveChat(contactId);
+            broadcast({ type: 'request_initial_lists' });
+        } else if (contactName && !String(conversationState[contactId].name || '').trim()) {
+            conversationState[contactId].name = contactName;
+            saveChat(contactId);
+            broadcast({ type: 'request_initial_lists' });
+        }
+        return res.json({
+            ok: true,
+            contactId,
+            name: conversationState[contactId]?.name || contactName || phone
+        });
+    });
+
     app.get('/admin/chat/media/:filename', (req, res) => {
         const user = requirePanelAuth(req, res); if (!user) return;
         const rawName = String(req.params.filename || '').trim();

@@ -56,7 +56,8 @@ function registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS
+    WEEKDAY_LABELS,
+    sendWhatsappText
 }) {
 const SCA_ALLOWED_EVENT_TYPES = new Set(['entry', 'exit', 'access', 'denied']);
 
@@ -103,6 +104,22 @@ db.prepare(`
 `).run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_diag_created_at ON sca_connector_diagnostics(created_at DESC)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_diag_connector ON sca_connector_diagnostics(connector)').run();
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS sca_reactivation_sends (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL DEFAULT 0,
+        external_id TEXT NOT NULL DEFAULT '',
+        phone TEXT NOT NULL DEFAULT '',
+        template_name TEXT NOT NULL DEFAULT '',
+        message_text TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'sent',
+        error_text TEXT NOT NULL DEFAULT '',
+        sent_at INTEGER NOT NULL DEFAULT 0
+    )
+`).run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_reactivation_sends_sent_at ON sca_reactivation_sends(sent_at DESC)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_reactivation_sends_phone_sent_at ON sca_reactivation_sends(phone, sent_at DESC)').run();
 
 function formatLocalDateTime(value) {
     const ts = Number(value || 0);
@@ -124,6 +141,18 @@ function normalizeOptionalNumberInput(value) {
 
 function normalizeScaToken(value) {
     return String(value || '').trim();
+}
+
+function buildReactivationMessage(template, student) {
+    const rawTemplate = sanitizePublicText(template || '', 1200) || 'Oi {{nome}}, sentimos sua falta na academia. Posso te ajudar com algo?';
+    const safeName = sanitizePublicText(student?.name || '', 120) || 'tudo bem';
+    const safePlan = sanitizePublicText(student?.plan || '', 120) || 'seu plano';
+    const safeDays = Number(student?.days_without_visit || 0);
+    return rawTemplate
+        .replace(/\{\{\s*nome\s*\}\}/gi, safeName)
+        .replace(/\{\{\s*plano\s*\}\}/gi, safePlan)
+        .replace(/\{\{\s*dias\s*\}\}/gi, Number.isFinite(safeDays) ? String(Math.max(0, Math.floor(safeDays))) : '0')
+        .trim();
 }
 
 function normalizeScaEventType(raw) {
@@ -487,6 +516,142 @@ app.get('/admin/sca/students/inactive', (req, res) => {
         generated_at: now,
         total: items.length,
         items
+    });
+});
+
+app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    if (typeof sendWhatsappText !== 'function') {
+        return res.status(503).json({ ok: false, error: 'whatsapp_unavailable' });
+    }
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const studentIdsRaw = Array.isArray(body.studentIds) ? body.studentIds : [];
+    const studentIds = studentIdsRaw
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .slice(0, 60);
+    if (!studentIds.length) return res.status(400).json({ ok: false, error: 'missing_students' });
+
+    const template = sanitizePublicText(body.template || '', 1200);
+    if (!template) return res.status(400).json({ ok: false, error: 'missing_template' });
+    const templateName = sanitizePublicText(body.templateName || 'reativacao', 120) || 'reativacao';
+    const maxPerHourRaw = Number(body.maxPerHour || 40);
+    const maxPerHour = Number.isFinite(maxPerHourRaw)
+        ? Math.max(1, Math.min(200, Math.floor(maxPerHourRaw)))
+        : 40;
+    const delayMsRaw = Number(body.delayMs || 700);
+    const delayMs = Number.isFinite(delayMsRaw) ? Math.max(0, Math.min(5000, Math.floor(delayMsRaw))) : 700;
+    const now = Date.now();
+    const hourAgo = now - (60 * 60 * 1000);
+    const sentLastHour = Number(db.prepare(`
+        SELECT COUNT(1) AS total
+        FROM sca_reactivation_sends
+        WHERE sent_at >= ?
+          AND status='sent'
+    `).get(hourAgo)?.total || 0);
+    const availableSlots = Math.max(0, maxPerHour - sentLastHour);
+    if (availableSlots <= 0) {
+        return res.status(429).json({
+            ok: false,
+            error: 'hourly_limit_reached',
+            maxPerHour,
+            sentLastHour
+        });
+    }
+
+    const placeholders = studentIds.map(() => '?').join(', ');
+    const people = db.prepare(`
+        SELECT id, external_id, name, phone, plan, last_access_at, updated_at
+        FROM sca_people
+        WHERE id IN (${placeholders})
+    `).all(...studentIds);
+    const byId = new Map(people.map((row) => [Number(row.id || 0), row]));
+    const selected = studentIds.map((id) => byId.get(id)).filter(Boolean).slice(0, availableSlots);
+    if (!selected.length) {
+        return res.status(400).json({ ok: false, error: 'students_not_found' });
+    }
+
+    const results = [];
+    for (let index = 0; index < selected.length; index += 1) {
+        const row = selected[index];
+        const phone = normalizePhoneDigits(String(row.phone || ''));
+        const studentId = Number(row.id || 0);
+        const externalId = sanitizePublicText(row.external_id || '', 120) || '';
+        const message = buildReactivationMessage(template, {
+            name: row.name,
+            plan: row.plan,
+            days_without_visit: Math.max(0, Math.floor((now - Number(row.last_access_at || row.updated_at || now)) / (24 * 60 * 60 * 1000)))
+        });
+        if (!phone || !message) {
+            db.prepare(`
+                INSERT INTO sca_reactivation_sends (student_id, external_id, phone, template_name, message_text, actor, status, error_text, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?)
+            `).run(studentId, externalId, phone, templateName, message, String(user.username || ''), 'missing_phone_or_message', Date.now());
+            results.push({ id: studentId, phone, ok: false, error: 'missing_phone_or_message' });
+            continue;
+        }
+        const jid = toWhatsappJid(phone);
+        try {
+            await sendWhatsappText(jid, message);
+            db.prepare(`
+                INSERT INTO sca_reactivation_sends (student_id, external_id, phone, template_name, message_text, actor, status, error_text, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'sent', '', ?)
+            `).run(studentId, externalId, phone, templateName, message, String(user.username || ''), Date.now());
+            results.push({ id: studentId, phone, ok: true });
+        } catch (error) {
+            const errorText = sanitizePublicText(error?.message || 'send_failed', 240) || 'send_failed';
+            db.prepare(`
+                INSERT INTO sca_reactivation_sends (student_id, external_id, phone, template_name, message_text, actor, status, error_text, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?)
+            `).run(studentId, externalId, phone, templateName, message, String(user.username || ''), errorText, Date.now());
+            results.push({ id: studentId, phone, ok: false, error: errorText });
+        }
+        if (delayMs > 0 && index < selected.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+    const sentCount = results.filter((item) => item.ok).length;
+    const failedCount = results.length - sentCount;
+    logAdminAction('sca.reactivation.send_batch', user.username, String(results.length), {
+        templateName,
+        maxPerHour,
+        sentLastHour,
+        selected: selected.length,
+        sent: sentCount,
+        failed: failedCount
+    }, req.ip);
+    return res.json({
+        ok: true,
+        templateName,
+        maxPerHour,
+        sentLastHour,
+        selectedCount: selected.length,
+        sentCount,
+        failedCount,
+        results
+    });
+});
+
+app.get('/admin/sca/reactivation/stats', (req, res) => {
+    const user = requireAdmin(req, res); if (!user) return;
+    const now = Date.now();
+    const hourAgo = now - (60 * 60 * 1000);
+    const dayAgo = now - (24 * 60 * 60 * 1000);
+    const sentLastHour = Number(db.prepare(`
+        SELECT COUNT(1) AS total FROM sca_reactivation_sends WHERE status='sent' AND sent_at>=?
+    `).get(hourAgo)?.total || 0);
+    const sentLast24h = Number(db.prepare(`
+        SELECT COUNT(1) AS total FROM sca_reactivation_sends WHERE status='sent' AND sent_at>=?
+    `).get(dayAgo)?.total || 0);
+    const failedLast24h = Number(db.prepare(`
+        SELECT COUNT(1) AS total FROM sca_reactivation_sends WHERE status='failed' AND sent_at>=?
+    `).get(dayAgo)?.total || 0);
+    return res.json({
+        ok: true,
+        now,
+        sentLastHour,
+        sentLast24h,
+        failedLast24h
     });
 });
 

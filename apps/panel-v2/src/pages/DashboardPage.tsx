@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CheckCircle2, CreditCard, MessageSquare, RefreshCcw, UserRoundX, Wallet } from "lucide-react";
+import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { formatDateTimeBr } from "@/lib/date-time";
 
@@ -16,13 +17,6 @@ function digitsOnly(value: string) {
   return String(value || "").replace(/\D+/g, "");
 }
 
-function buildWhatsappLink(phone: string, studentName: string) {
-  const digits = digitsOnly(phone);
-  if (!digits) return "";
-  const text = encodeURIComponent(`Oi ${studentName || "tudo bem"}! Sentimos sua falta na academia. Posso te ajudar com algo?`);
-  return `https://wa.me/${digits}?text=${text}`;
-}
-
 export default function DashboardPage() {
   const navigate = useNavigate();
   const {
@@ -31,27 +25,41 @@ export default function DashboardPage() {
     pixCharges,
     scaInactiveStudents,
     opsDailySummary,
+    systemHealth,
     refreshPixCharges,
     refreshScaInactiveStudents,
     refreshOpsDailySummary: rawRefreshOpsDailySummary,
     confirmPixScaDone,
+    retryPixCharge,
     selectChat,
+    openConversationByPhone,
+    sendScaReactivationBatch,
+    loadScaReactivationStats,
   } = usePanelData();
   const refreshOpsDailySummary = rawRefreshOpsDailySummary || (async () => null);
   const isAdmin = user?.role === "admin";
   const [daysFilter, setDaysFilter] = useState("5");
+  const [trendWindow, setTrendWindow] = useState<"d7" | "d30">("d7");
+  const [reactivationTemplate, setReactivationTemplate] = useState("Oi {{nome}}, sentimos sua falta na academia. Vi que voce esta ha {{dias}} dias sem treinar. Posso te ajudar a voltar com seu plano {{plano}}?");
+  const [reactivationMaxPerHour, setReactivationMaxPerHour] = useState("30");
+  const [reactivationDelayMs, setReactivationDelayMs] = useState("700");
+  const [reactivationStats, setReactivationStats] = useState<{ sentLastHour?: number; sentLast24h?: number; failedLast24h?: number } | null>(null);
   const [busyChargeId, setBusyChargeId] = useState(0);
+  const [busyRetryChargeId, setBusyRetryChargeId] = useState(0);
+  const [sendingReactivation, setSendingReactivation] = useState(false);
   const [loadingQueues, setLoadingQueues] = useState(false);
 
   const runRefresh = async () => {
     setLoadingQueues(true);
     const days = Math.max(1, Math.min(180, Number(daysFilter) || 5));
     try {
-      await Promise.all([
+      const [, , , stats] = await Promise.all([
         refreshOpsDailySummary(),
         refreshPixCharges({ status: "paid", sca_manual_status: "pending" }),
         refreshScaInactiveStudents(days, 200, ""),
+        loadScaReactivationStats(),
       ]);
+      setReactivationStats(stats);
     } finally {
       setLoadingQueues(false);
     }
@@ -79,10 +87,38 @@ export default function DashboardPage() {
     [chats],
   );
 
+  const trendRows = useMemo(() => {
+    const rows = (trendWindow === "d7" ? opsDailySummary?.trend?.d7 : opsDailySummary?.trend?.d30) || [];
+    const max = rows.reduce((acc, row) => Math.max(acc, Number(row?.paid || 0), Number(row?.newStudents || 0)), 1);
+    return rows.map((row) => ({
+      date: row.date,
+      paid: Number(row?.paid || 0),
+      newStudents: Number(row?.newStudents || 0),
+      paidWidth: `${Math.max(2, Math.round((Number(row?.paid || 0) / max) * 100))}%`,
+      studentsWidth: `${Math.max(2, Math.round((Number(row?.newStudents || 0) / max) * 100))}%`,
+    }));
+  }, [opsDailySummary?.trend?.d30, opsDailySummary?.trend?.d7, trendWindow]);
+
   const openConversation = (contactId: string) => {
     if (!contactId) return;
     navigate("/atendimento");
     selectChat(contactId);
+  };
+
+  const openConversationFromStudent = async (phone: string, name: string) => {
+    const digits = digitsOnly(phone);
+    if (!digits || digits.length < 10) {
+      toast.error("Aluno sem telefone valido.");
+      return;
+    }
+    navigate("/atendimento");
+    const existing = (chats || []).find((chat) => digitsOnly(chat.id || "").endsWith(digits) || digitsOnly(chat.id || "") === digits);
+    if (existing?.id) {
+      selectChat(existing.id);
+      return;
+    }
+    const opened = await openConversationByPhone(digits, name);
+    if (!opened) toast.error("Nao consegui abrir a conversa no painel.");
   };
 
   const completeScaCharge = async (chargeId: number) => {
@@ -96,6 +132,50 @@ export default function DashboardPage() {
     }
   };
 
+  const retryCharge = async (chargeId: number) => {
+    if (!chargeId || busyRetryChargeId) return;
+    setBusyRetryChargeId(chargeId);
+    try {
+      await retryPixCharge(chargeId);
+      await refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
+    } finally {
+      setBusyRetryChargeId(0);
+    }
+  };
+
+  const sendReactivationBatch = async () => {
+    if (!isAdmin || sendingReactivation) return;
+    const targetIds = inactiveQueue
+      .filter((student) => String(student.phone || "").replace(/\D+/g, "").length >= 10)
+      .map((student) => Number(student.id || 0))
+      .filter((id) => id > 0)
+      .slice(0, 60);
+    if (!targetIds.length) {
+      toast.error("Nao ha alunos com telefone valido na fila atual.");
+      return;
+    }
+    setSendingReactivation(true);
+    try {
+      const result = await sendScaReactivationBatch({
+        studentIds: targetIds,
+        template: reactivationTemplate,
+        templateName: `dias_${Math.max(1, Number(daysFilter) || 5)}`,
+        maxPerHour: Math.max(1, Math.min(200, Number(reactivationMaxPerHour) || 30)),
+        delayMs: Math.max(0, Math.min(5000, Number(reactivationDelayMs) || 700)),
+      });
+      if (!result.ok) {
+        toast.error(`Falha no disparo: ${result.error || "send_failed"}`);
+      } else {
+        toast.success(`Reativacao enviada: ${Number(result.sentCount || 0)} sucesso(s), ${Number(result.failedCount || 0)} falha(s).`);
+      }
+      const stats = await loadScaReactivationStats();
+      setReactivationStats(stats);
+      await runRefresh();
+    } finally {
+      setSendingReactivation(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -104,13 +184,20 @@ export default function DashboardPage() {
           <p className="text-sm text-muted-foreground">Fila diaria de cobranca e reativacao da academia.</p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {[5, 10, 15, 30].map((days) => (
+              <Button key={`preset-${days}`} variant={Number(daysFilter) === days ? "default" : "outline"} size="sm" onClick={() => setDaysFilter(String(days))}>
+                {days}d
+              </Button>
+            ))}
+          </div>
           <Input
             type="number"
             min={1}
             max={180}
             value={daysFilter}
             onChange={(event) => setDaysFilter(event.target.value)}
-            className="w-28"
+            className="w-24"
             placeholder="Dias"
           />
           <Button variant="outline" className="gap-1" onClick={runRefresh} disabled={loadingQueues}>
@@ -158,6 +245,43 @@ export default function DashboardPage() {
         </Card>
       </div>
 
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <Card><CardHeader className="pb-2"><CardDescription>Novos alunos (7d)</CardDescription><CardTitle className="text-2xl">{Number(opsDailySummary?.kpis?.studentsNew7d || 0)}</CardTitle></CardHeader></Card>
+        <Card><CardHeader className="pb-2"><CardDescription>Alunos ativos</CardDescription><CardTitle className="text-2xl">{Number(opsDailySummary?.kpis?.studentsActive || 0)}</CardTitle></CardHeader></Card>
+        <Card><CardHeader className="pb-2"><CardDescription>Alunos inativos</CardDescription><CardTitle className="text-2xl">{Number(opsDailySummary?.kpis?.studentsInactive || 0)}</CardTitle></CardHeader></Card>
+        <Card><CardHeader className="pb-2"><CardDescription>Pix pagos (7d)</CardDescription><CardTitle className="text-2xl">{Number(opsDailySummary?.kpis?.pixPaid7d || 0)}</CardTitle></CardHeader></Card>
+        <Card><CardHeader className="pb-2"><CardDescription>Pix pendentes</CardDescription><CardTitle className="text-2xl">{Number(opsDailySummary?.kpis?.pixPending || 0)}</CardTitle></CardHeader></Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Tendencia operacional</CardTitle>
+          <CardDescription>Comparativo diario de pagamentos Pix e novos alunos.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex gap-2">
+            <Button size="sm" variant={trendWindow === "d7" ? "default" : "outline"} onClick={() => setTrendWindow("d7")}>7 dias</Button>
+            <Button size="sm" variant={trendWindow === "d30" ? "default" : "outline"} onClick={() => setTrendWindow("d30")}>30 dias</Button>
+          </div>
+          {trendRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sem dados para tendencia.</p>
+          ) : (
+            <div className="space-y-2">
+              {trendRows.map((row) => (
+                <div key={row.date} className="rounded-md border p-2">
+                  <div className="flex items-center justify-between text-xs mb-2">
+                    <span>{row.date}</span>
+                    <span>Pix: {row.paid} | Novos: {row.newStudents}</span>
+                  </div>
+                  <div className="h-2 rounded bg-muted overflow-hidden mb-1"><div className="h-full bg-emerald-500" style={{ width: row.paidWidth }} /></div>
+                  <div className="h-2 rounded bg-muted overflow-hidden"><div className="h-full bg-blue-500" style={{ width: row.studentsWidth }} /></div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {isAdmin ? (
         <Card>
           <CardHeader>
@@ -180,15 +304,14 @@ export default function DashboardPage() {
                   <Button size="sm" variant="outline" className="gap-1" onClick={() => openConversation(charge.contact_id)}>
                     <MessageSquare className="h-4 w-4" /> Abrir conversa
                   </Button>
-                  <Button
-                    size="sm"
-                    className="gap-1"
-                    onClick={() => completeScaCharge(Number(charge.id))}
-                    disabled={busyChargeId === Number(charge.id)}
-                  >
+                  <Button size="sm" variant="outline" onClick={() => retryCharge(Number(charge.id))} disabled={busyRetryChargeId === Number(charge.id)}>
+                    {busyRetryChargeId === Number(charge.id) ? "Reprocessando..." : "Reprocessar cobranca"}
+                  </Button>
+                  <Button size="sm" className="gap-1" onClick={() => completeScaCharge(Number(charge.id))} disabled={busyChargeId === Number(charge.id)}>
                     <CheckCircle2 className="h-4 w-4" /> {busyChargeId === Number(charge.id) ? "Confirmando..." : "Confirmar baixa SCA"}
                   </Button>
                 </div>
+                {charge.last_error ? <p className="text-xs text-red-500">Ultimo erro Asaas: {charge.last_error}</p> : null}
               </div>
             ))}
           </CardContent>
@@ -204,7 +327,6 @@ export default function DashboardPage() {
           {inactiveQueue.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum aluno acima do limite informado.</p>
           ) : inactiveQueue.map((student) => {
-            const waLink = buildWhatsappLink(student.phone, student.name);
             return (
               <div key={`${student.id}-${student.external_id}`} className="rounded-md border p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -216,12 +338,10 @@ export default function DashboardPage() {
                   Telefone: {student.phone || "-"} | Ultimo acesso: {student.last_access_at ? formatDateTimeBr(student.last_access_at, "-") : "Sem acesso registrado"}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {waLink ? (
-                    <a href={waLink} target="_blank" rel="noreferrer">
-                      <Button size="sm" variant="outline" className="gap-1">
-                        <MessageSquare className="h-4 w-4" /> Chamar no WhatsApp
-                      </Button>
-                    </a>
+                  {String(student.phone || "").replace(/\D+/g, "").length >= 10 ? (
+                    <Button size="sm" variant="outline" className="gap-1" onClick={() => void openConversationFromStudent(student.phone || "", student.name || "")}>
+                      <MessageSquare className="h-4 w-4" /> Abrir chat no painel
+                    </Button>
                   ) : (
                     <Badge variant="outline">Sem telefone</Badge>
                   )}
@@ -229,6 +349,63 @@ export default function DashboardPage() {
               </div>
             );
           })}
+        </CardContent>
+      </Card>
+
+      {isAdmin ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Campanhas de reativacao</CardTitle>
+            <CardDescription>Envio de WhatsApp com template e limite por hora.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Limite por hora</p>
+                <Input type="number" min={1} max={200} value={reactivationMaxPerHour} onChange={(event) => setReactivationMaxPerHour(event.target.value)} />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Delay entre envios (ms)</p>
+                <Input type="number" min={0} max={5000} value={reactivationDelayMs} onChange={(event) => setReactivationDelayMs(event.target.value)} />
+              </div>
+              <div className="flex items-end">
+                <Button className="w-full" onClick={sendReactivationBatch} disabled={sendingReactivation}>
+                  {sendingReactivation ? "Enviando..." : "Enviar campanha da fila atual"}
+                </Button>
+              </div>
+            </div>
+            <Input value={reactivationTemplate} onChange={(event) => setReactivationTemplate(event.target.value)} />
+            <p className="text-xs text-muted-foreground">Placeholders: {"{{nome}}"}, {"{{dias}}"}, {"{{plano}}"}</p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">Enviados (1h): {Number(reactivationStats?.sentLastHour || 0)}</Badge>
+              <Badge variant="outline">Enviados (24h): {Number(reactivationStats?.sentLast24h || 0)}</Badge>
+              <Badge variant="outline">Falhas (24h): {Number(reactivationStats?.failedLast24h || 0)}</Badge>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Hardening de producao</CardTitle>
+          <CardDescription>Saude operacional com diagnostico rapido.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {!systemHealth?.components ? (
+            <p className="text-sm text-muted-foreground">Diagnostico indisponivel no momento.</p>
+          ) : (
+            Object.entries(systemHealth.components).slice(0, 8).map(([key, component]) => (
+              <div key={`health-${key}`} className="rounded-md border p-2 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">{key}</p>
+                  <p className="text-xs text-muted-foreground">{String(component?.message || "-")}</p>
+                </div>
+                <Badge variant={component?.status === "critical" ? "destructive" : component?.status === "degraded" ? "secondary" : "outline"}>
+                  {String(component?.status || "ok")}
+                </Badge>
+              </div>
+            ))
+          )}
         </CardContent>
       </Card>
 

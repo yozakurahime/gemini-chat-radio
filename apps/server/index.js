@@ -1522,6 +1522,9 @@ db.prepare(`CREATE TABLE IF NOT EXISTS pix_charges (
     sca_manual_status TEXT DEFAULT 'pending',
     sca_done_by TEXT DEFAULT '',
     sca_done_at INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    last_error_at INTEGER DEFAULT 0,
+    retry_count INTEGER DEFAULT 0,
     paid_at INTEGER DEFAULT 0,
     expires_at INTEGER DEFAULT 0,
     created_at INTEGER,
@@ -1677,6 +1680,9 @@ try { db.prepare("ALTER TABLE attendance_geo_pending ADD COLUMN block_start_min 
 try { db.prepare("ALTER TABLE attendance_geo_pending ADD COLUMN block_end_min INTEGER").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE pix_charges ADD COLUMN payer_full_name TEXT DEFAULT ''").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE pix_charges ADD COLUMN payer_cpf_cnpj TEXT DEFAULT ''").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE pix_charges ADD COLUMN last_error TEXT DEFAULT ''").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE pix_charges ADD COLUMN last_error_at INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE pix_charges ADD COLUMN retry_count INTEGER DEFAULT 0").run(); } catch(e) {}
 
 try {
     const segCount = Number(db.prepare('SELECT COUNT(1) AS c FROM business_segments').get()?.c || 0);
@@ -7654,6 +7660,15 @@ function buildPixChargeSummary(plan, studentFullName, payerFullName, payerCpfCnp
     ].join('\n');
 }
 
+function extractAsaasErrorDetail(error) {
+    const payload = error?.payload && typeof error.payload === 'object' ? error.payload : {};
+    const first = Array.isArray(payload?.errors) && payload.errors.length ? payload.errors[0] : null;
+    const desc = sanitizePublicText(first?.description || payload?.message || error?.message || '', 240);
+    if (desc) return desc;
+    const code = sanitizePublicText(first?.code || error?.code || '', 80);
+    return code || 'erro_desconhecido';
+}
+
 async function generatePixChargeForConversation({ sender, user, studentFullName, payerFullName, payerCpfCnpj, plan }) {
     const phoneDigits = sanitizePhoneDigits(sender);
     const customer = await createOrReuseAsaasCustomer(ASAAS_CONFIG, {
@@ -7916,7 +7931,16 @@ async function handlePixConversationMessage({ sender, user, text, msgTimestampMs
             await sendPixCopyPasteCode({ sender, user, copyPaste });
             return { consumed: true };
         } catch (error) {
-            console.error('[pix] erro ao gerar cobranca:', error?.message || error);
+            const detail = extractAsaasErrorDetail(error);
+            console.error('[pix] erro ao gerar cobranca:', detail);
+            appendHistoryEntry(user.history, 'Sistema', `Falha Pix Asaas: ${detail}`, Date.now());
+            saveChat(sender);
+            broadcast({
+                type: 'pix_charge_error',
+                from: sender,
+                detail,
+                timestamp: Date.now()
+            });
             clearPixState(sender);
             await sendPixBotReply({ sender, user, text: 'Nao consegui gerar o Pix agora. Vou chamar um atendente para te ajudar.' });
             return { consumed: true };
@@ -8110,6 +8134,71 @@ async function confirmPixChargeScaDone({ id, actor, actorUsername, ip }) {
     return updated;
 }
 
+async function retryPixChargeById({ id, actor = 'admin', ip = '' }) {
+    const charge = getPixChargeById(Number(id || 0));
+    if (!charge) {
+        const err = new Error('not_found');
+        err.code = 'not_found';
+        throw err;
+    }
+    if (String(charge.sca_manual_status || '') === 'done') {
+        const err = new Error('already_done');
+        err.code = 'already_done';
+        throw err;
+    }
+    if (!ASAAS_CONFIG.enabled) {
+        const err = new Error('asaas_not_configured');
+        err.code = 'asaas_not_configured';
+        throw err;
+    }
+    const paymentId = String(charge.asaas_payment_id || '').trim();
+    if (!paymentId) {
+        const err = new Error('missing_asaas_payment_id');
+        err.code = 'missing_asaas_payment_id';
+        throw err;
+    }
+    const now = Date.now();
+    try {
+        const payment = await fetchPayment(ASAAS_CONFIG, paymentId);
+        const qr = await fetchPixQrCode(ASAAS_CONFIG, paymentId);
+        const copyPaste = String(qr?.payload || qr?.encodedImage || qr?.qrCode || charge.pix_copy_paste || '').trim();
+        const qrPayload = String(qr?.encodedImage || qr?.qrCodeImage || charge.pix_qr_payload || '').trim();
+        const nextStatus = asaasStatusToInternal(payment?.status || charge.status || 'PENDING');
+        db.prepare(`
+            UPDATE pix_charges
+               SET status=?,
+                   pix_copy_paste=?,
+                   pix_qr_payload=?,
+                   last_error='',
+                   last_error_at=0,
+                   retry_count=COALESCE(retry_count, 0) + 1,
+                   updated_at=?
+             WHERE id=?
+        `).run(nextStatus, copyPaste, qrPayload, now, Number(charge.id));
+        const updated = getPixChargeById(Number(charge.id));
+        logAdminAction('pix.charge.retry', actor, String(charge.id), {
+            status: nextStatus,
+            hasCopyPaste: !!copyPaste
+        }, ip);
+        return updated;
+    } catch (error) {
+        const detail = extractAsaasErrorDetail(error);
+        db.prepare(`
+            UPDATE pix_charges
+               SET last_error=?,
+                   last_error_at=?,
+                   retry_count=COALESCE(retry_count, 0) + 1,
+                   updated_at=?
+             WHERE id=?
+        `).run(detail, now, now, Number(charge.id));
+        logAdminAction('pix.charge.retry_failed', actor, String(charge.id), { detail }, ip);
+        const err = new Error('retry_failed');
+        err.code = 'retry_failed';
+        err.detail = detail;
+        throw err;
+    }
+}
+
 function getPendingPixForContact(contactId) {
     return getLatestPendingScaChargeByContact(contactId);
 }
@@ -8163,6 +8252,59 @@ function getDailyOperationsSnapshot() {
         WHERE created_at >= ? AND created_at < ?
     `, startTs, endTs);
 
+    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
+    const studentsNew7d = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM sca_people
+        WHERE created_at >= ?
+    `, sevenDaysAgo);
+    const studentsActive = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM sca_people
+        WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('ativo', 'active', 'regular')
+    `);
+    const studentsInactive = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM sca_people
+        WHERE (last_access_at > 0 AND last_access_at <= ?)
+           OR LOWER(TRIM(COALESCE(status, ''))) IN ('inativo', 'inactive', 'vencido', 'cancelado')
+    `, now - (10 * 24 * 60 * 60 * 1000));
+    const pixPaid7d = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM pix_charges
+        WHERE status='paid' AND paid_at >= ?
+    `, sevenDaysAgo);
+    const pixPending = countSafe(`
+        SELECT COUNT(1) AS total
+        FROM pix_charges
+        WHERE status IN ('pending', 'overdue') AND sca_manual_status='pending'
+    `);
+
+    function buildTrendSeries(days = 7) {
+        const safeDays = Math.max(1, Math.min(30, Number(days || 7)));
+        const points = [];
+        for (let i = safeDays - 1; i >= 0; i -= 1) {
+            const start = new Date(now - (i * 24 * 60 * 60 * 1000));
+            start.setHours(0, 0, 0, 0);
+            const startAt = start.getTime();
+            const endAt = startAt + (24 * 60 * 60 * 1000);
+            const dateLabel = start.toISOString().slice(0, 10);
+            const paid = countSafe(`
+                SELECT COUNT(1) AS total
+                FROM pix_charges
+                WHERE status='paid' AND paid_at >= ? AND paid_at < ?
+            `, startAt, endAt);
+            const newStudents = countSafe(`
+                SELECT COUNT(1) AS total
+                FROM sca_people
+                WHERE created_at >= ? AND created_at < ?
+            `, startAt, endAt);
+            points.push({ date: dateLabel, paid, newStudents });
+        }
+        return points;
+    }
+
     return {
         generatedAt: now,
         period: {
@@ -8180,6 +8322,17 @@ function getDailyOperationsSnapshot() {
         },
         ai: {
             feedbackToday: aiFeedbackToday
+        },
+        kpis: {
+            studentsNew7d,
+            studentsActive,
+            studentsInactive,
+            pixPaid7d,
+            pixPending
+        },
+        trend: {
+            d7: buildTrendSeries(7),
+            d30: buildTrendSeries(30)
         },
         webhook: getPixWebhookMonitorSnapshot()
     };
@@ -8441,7 +8594,9 @@ registerChatAdminRoutes({
     acknowledgeConversationAttention,
     getAiContextPreviewForConversation: buildAiContextPreviewForConversation,
     registerAiFeedbackForConversation,
-    listAiFeedbackEvents
+    listAiFeedbackEvents,
+    normalizePhoneDigits,
+    toWhatsappJid
 });
 
 registerPixAdminRoutes({
@@ -8457,6 +8612,7 @@ registerPixAdminRoutes({
     listPixCharges,
     getPixChargeById,
     confirmPixChargeScaDone,
+    retryPixChargeById,
     processAsaasWebhook,
     getPixSafeConfig,
     normalizePixSafeConfigInput,
@@ -8564,7 +8720,13 @@ registerAttendanceAdminRoutes({
     createAttendanceEvent,
     computeAttendanceReport,
     formatCurrencyBRL,
-    WEEKDAY_LABELS
+    WEEKDAY_LABELS,
+    sendWhatsappText: async (jid, text) => {
+        const targetJid = String(jid || '').trim();
+        const message = String(text || '');
+        if (!targetJid || !message || !sock) throw new Error('whatsapp_unavailable');
+        await sock.sendMessage(targetJid, { text: message });
+    }
 });
 
 function parseTimeInputMs(v, fallback = null) {

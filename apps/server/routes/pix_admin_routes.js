@@ -17,6 +17,7 @@ function registerPixAdminRoutes({
     listPixCharges,
     getPixChargeById,
     confirmPixChargeScaDone,
+    retryPixChargeById,
     processAsaasWebhook,
     getPixSafeConfig,
     normalizePixSafeConfigInput,
@@ -198,6 +199,25 @@ function registerPixAdminRoutes({
             ip: req.ip
         });
         return res.json({ ok: true, charge: result });
+    });
+
+    app.post('/admin/pix/charges/:id/retry', async (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const id = toInt(req.params?.id, 0);
+        if (!id) return res.status(400).json({ ok: false, error: 'invalid_id' });
+        if (typeof retryPixChargeById !== 'function') {
+            return res.status(503).json({ ok: false, error: 'retry_unavailable' });
+        }
+        try {
+            const result = await retryPixChargeById({ id, actor: user.username || 'admin', ip: req.ip });
+            return res.json({ ok: true, item: result });
+        } catch (error) {
+            return res.status(400).json({
+                ok: false,
+                error: String(error?.code || error?.message || 'retry_failed'),
+                detail: String(error?.detail || error?.message || 'retry_failed')
+            });
+        }
     });
 
     app.post('/api/payments/webhook/asaas', async (req, res) => {

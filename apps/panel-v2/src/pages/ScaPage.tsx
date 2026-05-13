@@ -21,6 +21,13 @@ const REJECTION_REASON_LABELS: Record<string, string> = {
   enrollment_status_or_due_required: "Matricula sem status e sem data de vencimento/validade",
   unknown_error: "Erro nao especificado",
 };
+const QUALITY_REASON_LABELS: Record<string, string> = {
+  missing_phone: "Sem telefone",
+  invalid_external_id: "Matricula invalida",
+  cpf_empty: "CPF vazio",
+  duplicate_phone: "Telefone duplicado",
+  duplicate_external_id: "Matricula duplicada",
+};
 
 function formatRejectedReason(reason: string) {
   return REJECTION_REASON_LABELS[String(reason || "").trim()] || String(reason || "unknown_error").replace(/_/g, " ");
@@ -67,6 +74,10 @@ export default function ScaPage() {
     scaImportHistory,
     refreshScaImportHistory,
     uploadScaImportFile,
+    uploadScaImportBundle,
+    scaQualityIssues,
+    refreshScaQualityIssues,
+    updateScaPerson,
   } = usePanelData();
 
   const isAdmin = user?.role === "admin";
@@ -77,6 +88,10 @@ export default function ScaPage() {
   const [studentsLastResult, setStudentsLastResult] = useState<any>(null);
   const [accessLastResult, setAccessLastResult] = useState<any>(null);
   const [enrollmentsLastResult, setEnrollmentsLastResult] = useState<any>(null);
+  const [bundleSending, setBundleSending] = useState(false);
+  const [bundleReport, setBundleReport] = useState<any>(null);
+  const [editingIssueId, setEditingIssueId] = useState<number>(0);
+  const [editingIssueDraft, setEditingIssueDraft] = useState<Record<string, string>>({});
 
   const historyItems = useMemo(() => scaImportHistory || [], [scaImportHistory]);
   const latestStudents = useMemo(
@@ -94,8 +109,11 @@ export default function ScaPage() {
 
   useEffect(() => {
     if (!isAdmin) return;
-    void refreshScaImportHistory(undefined, 60);
-  }, [isAdmin, refreshScaImportHistory]);
+    void Promise.all([
+      refreshScaImportHistory(undefined, 60),
+      refreshScaQualityIssues(200),
+    ]);
+  }, [isAdmin, refreshScaImportHistory, refreshScaQualityIssues]);
 
   const handleUpload = async (type: ImportType, selectedFile?: File | null) => {
     const file = selectedFile ?? (type === "students" ? studentsFile : type === "access" ? accessFile : enrollmentsFile);
@@ -107,6 +125,7 @@ export default function ScaPage() {
       else if (type === "access") setAccessLastResult(result);
       else setEnrollmentsLastResult(result);
       await refreshScaImportHistory(undefined, 60);
+      await refreshScaQualityIssues(200);
       if (result.ok) {
         if (type === "students") setStudentsFile(null);
         else if (type === "access") setAccessFile(null);
@@ -121,7 +140,49 @@ export default function ScaPage() {
     if (type === "students") setStudentsFile(file);
     else if (type === "access") setAccessFile(file);
     else setEnrollmentsFile(file);
-    if (file) void handleUpload(type, file);
+  };
+
+  const handleImportBundle = async () => {
+    if (bundleSending) return;
+    setBundleSending(true);
+    try {
+      const result = await uploadScaImportBundle({
+        students: studentsFile,
+        enrollments: enrollmentsFile,
+        access: accessFile,
+      });
+      if (result.ok) {
+        setBundleReport(result.report || null);
+        setStudentsFile(null);
+        setEnrollmentsFile(null);
+        setAccessFile(null);
+        await Promise.all([refreshScaImportHistory(undefined, 60), refreshScaQualityIssues(200)]);
+      }
+    } finally {
+      setBundleSending(false);
+    }
+  };
+
+  const startIssueEdit = (issue: any) => {
+    setEditingIssueId(Number(issue.id || 0));
+    setEditingIssueDraft({
+      external_id: String(issue.external_id || ""),
+      name: String(issue.name || ""),
+      phone: String(issue.phone || ""),
+      cpf: String(issue.cpf || ""),
+      status: String(issue.status || ""),
+      plan: String(issue.plan || ""),
+    });
+  };
+
+  const saveIssueEdit = async () => {
+    if (!editingIssueId) return;
+    const ok = await updateScaPerson(editingIssueId, editingIssueDraft);
+    if (ok) {
+      setEditingIssueId(0);
+      setEditingIssueDraft({});
+      await refreshScaQualityIssues(200);
+    }
   };
 
   if (!isAdmin) {
@@ -143,6 +204,23 @@ export default function ScaPage() {
         <Database className="h-6 w-6 text-primary" />
         <h1 className="text-2xl font-bold">SCA - Importacao Manual</h1>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Importacao SCA 1 clique</CardTitle>
+          <CardDescription>Envie alunos + matriculas + acessos e processe tudo em sequencia com relatorio unico.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <Button className="gap-1" onClick={handleImportBundle} disabled={bundleSending || (!studentsFile && !enrollmentsFile && !accessFile)}>
+            <Upload className="h-4 w-4" /> {bundleSending ? "Importando pacote..." : "Importar pacote do dia"}
+          </Button>
+          {bundleReport ? (
+            <p className="text-muted-foreground">
+              Relatorio final: Linhas {Number(bundleReport.rowsTotal || 0)} | Aceitos {Number(bundleReport.acceptedTotal || 0)} | Rejeitados {Number(bundleReport.rejectedTotal || 0)}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card>
@@ -329,6 +407,57 @@ export default function ScaPage() {
                     <Download className="h-4 w-4" /> Baixar CSV convertido
                   </Button>
                 </a>
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Qualidade dos dados</CardTitle>
+          <CardDescription>Pendencias de cadastro com correcao rapida na tela.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex gap-2">
+            <Button variant="outline" className="gap-1" onClick={() => refreshScaQualityIssues(200)}>
+              <RefreshCcw className="h-4 w-4" /> Atualizar pendencias
+            </Button>
+          </div>
+          {scaQualityIssues.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nenhuma pendencia encontrada.</p>
+          ) : (
+            scaQualityIssues.map((issue) => (
+              <div key={`issue-${issue.id}`} className="rounded-md border p-3 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {Array.isArray(issue.reasons) ? issue.reasons.map((reason) => (
+                    <Badge key={`${issue.id}-${reason}`} variant="secondary">{QUALITY_REASON_LABELS[reason] || reason}</Badge>
+                  )) : null}
+                </div>
+                {editingIssueId === Number(issue.id) ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <Input placeholder="Matricula" value={editingIssueDraft.external_id || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, external_id: e.target.value }))} />
+                    <Input placeholder="Nome" value={editingIssueDraft.name || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, name: e.target.value }))} />
+                    <Input placeholder="Telefone" value={editingIssueDraft.phone || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, phone: e.target.value }))} />
+                    <Input placeholder="CPF" value={editingIssueDraft.cpf || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, cpf: e.target.value }))} />
+                    <Input placeholder="Status" value={editingIssueDraft.status || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, status: e.target.value }))} />
+                    <Input placeholder="Plano" value={editingIssueDraft.plan || ""} onChange={(e) => setEditingIssueDraft((prev) => ({ ...prev, plan: e.target.value }))} />
+                  </div>
+                ) : (
+                  <p className="text-sm">
+                    <strong>{issue.name || "Aluno sem nome"}</strong> | Matricula: {issue.external_id || "-"} | Telefone: {issue.phone || "-"} | CPF: {issue.cpf || "-"}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  {editingIssueId === Number(issue.id) ? (
+                    <>
+                      <Button size="sm" onClick={saveIssueEdit}>Salvar</Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditingIssueId(0)}>Cancelar</Button>
+                    </>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => startIssueEdit(issue)}>Corrigir</Button>
+                  )}
+                </div>
               </div>
             ))
           )}

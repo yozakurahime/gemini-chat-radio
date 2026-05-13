@@ -545,6 +545,235 @@ function registerScaImportRoutes({
         return full;
     }
 
+    function processImportFile({ type, fileBuffer, originalFilename, username }) {
+        const ext = normalizeExt(originalFilename || '');
+        if (!['.csv', '.xls', '.xlsx'].includes(ext)) {
+            return { ok: false, statusCode: 400, error: 'invalid_file_type' };
+        }
+        const now = Date.now();
+        ensureDir(scaImportsDir);
+        let parsed = null;
+        try {
+            parsed = parseSheetBuffer(fileBuffer, originalFilename || '');
+        } catch (error) {
+            return { ok: false, statusCode: 400, error: error?.message || 'spreadsheet_parse_failed' };
+        }
+
+        const csvFilename = `${type}-import-${new Date(now).toISOString().replace(/[:.]/g, '-')}.csv`;
+        const csvPath = path.join(scaImportsDir, csvFilename);
+        fs.writeFileSync(csvPath, parsed.csvText, 'utf8');
+
+        const savedMappings = readMappings();
+        const resolved = resolveMapping(type, parsed.headers, savedMappings[type] || {});
+        const minConfidenceByType = {
+            students: 0.55,
+            access: 0.55,
+            enrollments: 0.35
+        };
+        const minConfidence = Number(minConfidenceByType[type] ?? 0.55);
+        const mappingInsufficient = resolved.confidence < minConfidence || resolved.missingRequired.length > 0;
+        const mappingWarnings = [];
+        if (mappingInsufficient) {
+            mappingWarnings.push('low_confidence_or_missing_required_fields');
+        }
+        if (resolved.confidence < minConfidence) {
+            mappingWarnings.push(`confidence_below_threshold:${resolved.confidence.toFixed(2)}<${minConfidence.toFixed(2)}`);
+        }
+        if (resolved.missingRequired.length > 0) {
+            mappingWarnings.push(`missing_required:${resolved.missingRequired.join('|')}`);
+        }
+
+        const mapping = resolved.mapping;
+        const rejected = [];
+        let acceptedCount = 0;
+        let insertedCount = 0;
+        let updatedCount = 0;
+        let syncResult = null;
+
+        if (type === 'students') {
+            const tx = db.transaction(() => {
+                parsed.dataRows.forEach((raw, index) => {
+                    const rowObj = toRowObject(parsed.headers, raw);
+                    const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
+                    const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
+                    const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                    const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
+                    const status = sanitizePublicText(rowObj[mapping.status] || '', 40);
+                    const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
+                    if (!name && !externalId && !phone && !cpf) {
+                        rejected.push({ row: index + 2, error: 'identity_required' });
+                        return;
+                    }
+                    const result = upsertStudentRow({ externalId, name, phone, cpf, status, plan, now });
+                    acceptedCount += 1;
+                    insertedCount += Number(result.inserted || 0);
+                    updatedCount += Number(result.updated || 0);
+                });
+            });
+            tx();
+        } else if (type === 'access') {
+            const events = [];
+            parsed.dataRows.forEach((raw, index) => {
+                const rowObj = toRowObject(parsed.headers, raw);
+                const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
+                const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
+                const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                const eventType = inferAccessEventType(rowObj[mapping.event_type] || '', rowObj);
+                const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
+                const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
+                if (!eventType || !eventAt || (!externalId && !phone && !name)) {
+                    rejected.push({ row: index + 2, error: 'invalid_access_row' });
+                    return;
+                }
+                const sourceEventId = buildSourceEventId({
+                    rowObject: rowObj,
+                    mapping,
+                    eventAt,
+                    eventType,
+                    externalId,
+                    phone,
+                    name,
+                    gate
+                });
+                events.push({
+                    source_event_id: sourceEventId,
+                    external_id: externalId,
+                    name,
+                    phone,
+                    event_type: eventType,
+                    event_at: eventAt,
+                    status: '',
+                    plan: '',
+                    gate,
+                    raw: rowObj
+                });
+            });
+            acceptedCount = events.length;
+            syncResult = upsertScaAccessBatch({
+                source: DEFAULT_SOURCE,
+                actor: 'sca_manual_import',
+                events,
+                connector: {
+                    source: DEFAULT_SOURCE,
+                    engine: 'manual_upload',
+                    db_file: '',
+                    last_scan_at: now,
+                    lag_sec: 0,
+                    meta: {
+                        importType: 'access',
+                        rowsTotal: parsed.rowCount
+                    }
+                }
+            });
+            insertedCount = Number(syncResult?.inserted_count || 0);
+            updatedCount = Number(syncResult?.duplicate_count || 0);
+        } else if (type === 'enrollments') {
+            const statusCounts = {
+                ativo: 0,
+                atrasado: 0,
+                vencido: 0,
+                inativo: 0,
+                outros: 0
+            };
+            const tx = db.transaction(() => {
+                parsed.dataRows.forEach((raw, index) => {
+                    const rowObj = toRowObject(parsed.headers, raw);
+                    const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
+                    const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
+                    const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                    const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
+                    const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
+                    const startAt = parseEventAt(rowObj[mapping.start_at] || '');
+                    const dueAt = parseEventAt(rowObj[mapping.due_at] || '');
+                    const endAt = parseEventAt(rowObj[mapping.end_at] || '');
+                    let enrollmentStatus = deriveEnrollmentStatus(
+                        rowObj[mapping.enrollment_status] || '',
+                        dueAt,
+                        endAt,
+                        now
+                    );
+                    if (!externalId && !name && !phone && !cpf) {
+                        rejected.push({ row: index + 2, error: 'identity_required' });
+                        return;
+                    }
+                    if (!enrollmentStatus && startAt > 0) {
+                        enrollmentStatus = 'ativo';
+                    }
+                    if (!enrollmentStatus && !startAt && !dueAt && !endAt) {
+                        rejected.push({ row: index + 2, error: 'enrollment_status_or_due_required' });
+                        return;
+                    }
+                    const result = upsertStudentRow({
+                        externalId,
+                        name,
+                        phone,
+                        cpf,
+                        status: enrollmentStatus,
+                        plan,
+                        membershipDueAt: dueAt,
+                        membershipEndAt: endAt,
+                        now
+                    });
+                    acceptedCount += 1;
+                    insertedCount += Number(result.inserted || 0);
+                    updatedCount += Number(result.updated || 0);
+
+                    if (enrollmentStatus === 'ativo') statusCounts.ativo += 1;
+                    else if (enrollmentStatus === 'atrasado') statusCounts.atrasado += 1;
+                    else if (enrollmentStatus === 'vencido') statusCounts.vencido += 1;
+                    else if (enrollmentStatus === 'inativo') statusCounts.inativo += 1;
+                    else statusCounts.outros += 1;
+                });
+            });
+            tx();
+            syncResult = { statusCounts };
+        }
+
+        const importId = insertImportHistory({
+            importType: type,
+            originalFilename: sanitizePublicText(originalFilename || '', 180) || `${type}.csv`,
+            sourceExt: ext,
+            csvFilename,
+            status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
+            rowsTotal: parsed.rowCount,
+            acceptedCount,
+            rejectedCount: rejected.length,
+            mappingConfidence: resolved.confidence,
+            mapping,
+            result: {
+                mappingWarnings,
+                missingRequired: resolved.missingRequired,
+                headers: parsed.headers,
+                rejected,
+                rejectedSummary: summarizeRejectedRows(rejected),
+                insertedCount,
+                updatedCount,
+                syncResult
+            },
+            uploadedBy: String(username || ''),
+            createdAt: now
+        });
+
+        return {
+            ok: true,
+            importId,
+            type,
+            status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
+            rowsTotal: parsed.rowCount,
+            acceptedCount,
+            rejectedCount: rejected.length,
+            insertedCount,
+            updatedCount,
+            rejected,
+            rejectedSummary: summarizeRejectedRows(rejected),
+            mappingConfidence: resolved.confidence,
+            mapping,
+            mappingWarnings,
+            missingRequired: resolved.missingRequired,
+            headers: parsed.headers
+        };
+    }
+
     app.get('/admin/sca/imports/mapping', (req, res) => {
         const user = requireAdmin(req, res); if (!user) return;
         const type = sanitizeImportType(req.query?.type || '');
@@ -623,240 +852,168 @@ function registerScaImportRoutes({
             if (!file || !Buffer.isBuffer(file.buffer)) {
                 return res.status(400).json({ ok: false, error: 'missing_file' });
             }
-            const ext = normalizeExt(file.originalname || '');
-            if (!['.csv', '.xls', '.xlsx'].includes(ext)) {
-                return res.status(400).json({ ok: false, error: 'invalid_file_type' });
-            }
-            const now = Date.now();
-            ensureDir(scaImportsDir);
-            let parsed = null;
-            try {
-                parsed = parseSheetBuffer(file.buffer, file.originalname || '');
-            } catch (error) {
-                return res.status(400).json({ ok: false, error: error?.message || 'spreadsheet_parse_failed' });
-            }
-
-            const csvFilename = `${type}-import-${new Date(now).toISOString().replace(/[:.]/g, '-')}.csv`;
-            const csvPath = path.join(scaImportsDir, csvFilename);
-            fs.writeFileSync(csvPath, parsed.csvText, 'utf8');
-
-            const savedMappings = readMappings();
-            const resolved = resolveMapping(type, parsed.headers, savedMappings[type] || {});
-            const minConfidenceByType = {
-                students: 0.55,
-                access: 0.55,
-                enrollments: 0.35
-            };
-            const minConfidence = Number(minConfidenceByType[type] ?? 0.55);
-            const mappingInsufficient = resolved.confidence < minConfidence || resolved.missingRequired.length > 0;
-            const mappingWarnings = [];
-            if (mappingInsufficient) {
-                mappingWarnings.push('low_confidence_or_missing_required_fields');
-            }
-            if (resolved.confidence < minConfidence) {
-                mappingWarnings.push(`confidence_below_threshold:${resolved.confidence.toFixed(2)}<${minConfidence.toFixed(2)}`);
-            }
-            if (resolved.missingRequired.length > 0) {
-                mappingWarnings.push(`missing_required:${resolved.missingRequired.join('|')}`);
-            }
-
-            const mapping = resolved.mapping;
-            const rejected = [];
-            let acceptedCount = 0;
-            let insertedCount = 0;
-            let updatedCount = 0;
-            let syncResult = null;
-
-            if (type === 'students') {
-                const tx = db.transaction(() => {
-                    parsed.dataRows.forEach((raw, index) => {
-                        const rowObj = toRowObject(parsed.headers, raw);
-                        const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
-                        const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
-                        const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
-                        const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
-                        const status = sanitizePublicText(rowObj[mapping.status] || '', 40);
-                        const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
-                        if (!name && !externalId && !phone && !cpf) {
-                            rejected.push({ row: index + 2, error: 'identity_required' });
-                            return;
-                        }
-                        const result = upsertStudentRow({ externalId, name, phone, cpf, status, plan, now });
-                        acceptedCount += 1;
-                        insertedCount += Number(result.inserted || 0);
-                        updatedCount += Number(result.updated || 0);
-                    });
-                });
-                tx();
-            } else if (type === 'access') {
-                const events = [];
-                parsed.dataRows.forEach((raw, index) => {
-                    const rowObj = toRowObject(parsed.headers, raw);
-                    const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
-                    const name = sanitizePublicText(rowObj[mapping.name] || '', 120);
-                    const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
-                        const eventType = inferAccessEventType(rowObj[mapping.event_type] || '', rowObj);
-                        const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
-                        const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
-                        if (!eventType || !eventAt || (!externalId && !phone && !name)) {
-                            rejected.push({ row: index + 2, error: 'invalid_access_row' });
-                            return;
-                    }
-                    const sourceEventId = buildSourceEventId({
-                        rowObject: rowObj,
-                        mapping,
-                        eventAt,
-                        eventType,
-                        externalId,
-                        phone,
-                        name,
-                        gate
-                    });
-                    events.push({
-                        source_event_id: sourceEventId,
-                        external_id: externalId,
-                        name,
-                        phone,
-                        event_type: eventType,
-                        event_at: eventAt,
-                        status: '',
-                        plan: '',
-                        gate,
-                        raw: rowObj
-                    });
-                });
-                acceptedCount = events.length;
-                syncResult = upsertScaAccessBatch({
-                    source: DEFAULT_SOURCE,
-                    actor: 'sca_manual_import',
-                    events,
-                    connector: {
-                        source: DEFAULT_SOURCE,
-                        engine: 'manual_upload',
-                        db_file: '',
-                        last_scan_at: now,
-                        lag_sec: 0,
-                        meta: {
-                            importType: 'access',
-                            rowsTotal: parsed.rowCount
-                        }
-                    }
-                });
-                insertedCount = Number(syncResult?.inserted_count || 0);
-                updatedCount = Number(syncResult?.duplicate_count || 0);
-            } else if (type === 'enrollments') {
-                const statusCounts = {
-                    ativo: 0,
-                    atrasado: 0,
-                    vencido: 0,
-                    inativo: 0,
-                    outros: 0
-                };
-                const tx = db.transaction(() => {
-                    parsed.dataRows.forEach((raw, index) => {
-                        const rowObj = toRowObject(parsed.headers, raw);
-                        const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
-                        const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
-                        const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
-                        const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
-                        const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
-                        const startAt = parseEventAt(rowObj[mapping.start_at] || '');
-                        const dueAt = parseEventAt(rowObj[mapping.due_at] || '');
-                        const endAt = parseEventAt(rowObj[mapping.end_at] || '');
-                        let enrollmentStatus = deriveEnrollmentStatus(
-                            rowObj[mapping.enrollment_status] || '',
-                            dueAt,
-                            endAt,
-                            now
-                        );
-                        if (!externalId && !name && !phone && !cpf) {
-                            rejected.push({ row: index + 2, error: 'identity_required' });
-                            return;
-                        }
-                        if (!enrollmentStatus && startAt > 0) {
-                            enrollmentStatus = 'ativo';
-                        }
-                        if (!enrollmentStatus && !startAt && !dueAt && !endAt) {
-                            rejected.push({ row: index + 2, error: 'enrollment_status_or_due_required' });
-                            return;
-                        }
-                        const result = upsertStudentRow({
-                            externalId,
-                            name,
-                            phone,
-                            cpf,
-                            status: enrollmentStatus,
-                            plan,
-                            membershipDueAt: dueAt,
-                            membershipEndAt: endAt,
-                            now
-                        });
-                        acceptedCount += 1;
-                        insertedCount += Number(result.inserted || 0);
-                        updatedCount += Number(result.updated || 0);
-
-                        if (enrollmentStatus === 'ativo') statusCounts.ativo += 1;
-                        else if (enrollmentStatus === 'atrasado') statusCounts.atrasado += 1;
-                        else if (enrollmentStatus === 'vencido') statusCounts.vencido += 1;
-                        else if (enrollmentStatus === 'inativo') statusCounts.inativo += 1;
-                        else statusCounts.outros += 1;
-                    });
-                });
-                tx();
-                syncResult = { statusCounts };
-            }
-
-            const importId = insertImportHistory({
-                importType: type,
-                originalFilename: sanitizePublicText(file.originalname || '', 180) || `${type}.csv`,
-                sourceExt: ext,
-                csvFilename,
-                status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
-                rowsTotal: parsed.rowCount,
-                acceptedCount,
-                rejectedCount: rejected.length,
-                mappingConfidence: resolved.confidence,
-                mapping,
-                result: {
-                    mappingWarnings,
-                    missingRequired: resolved.missingRequired,
-                    headers: parsed.headers,
-                    rejected,
-                    rejectedSummary: summarizeRejectedRows(rejected),
-                    insertedCount,
-                    updatedCount,
-                    syncResult
-                },
-                uploadedBy: String(user.username || ''),
-                createdAt: now
+            const result = processImportFile({
+                type,
+                fileBuffer: file.buffer,
+                originalFilename: file.originalname || '',
+                username: String(user.username || '')
             });
-
-            logAdminAction('sca.import.upload', user.username, String(importId), {
+            if (!result.ok) {
+                return res.status(Number(result.statusCode || 400)).json({ ok: false, error: result.error || 'import_failed' });
+            }
+            logAdminAction('sca.import.upload', user.username, String(result.importId || 0), {
                 type,
-                acceptedCount,
-                rejectedCount: rejected.length,
-                rowsTotal: parsed.rowCount
+                acceptedCount: Number(result.acceptedCount || 0),
+                rejectedCount: Number(result.rejectedCount || 0),
+                rowsTotal: Number(result.rowsTotal || 0)
             }, req.ip);
+            return res.json(result);
+        });
+    });
 
-            return res.json({
-                ok: true,
-                importId,
-                type,
-                status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
-                rowsTotal: parsed.rowCount,
-                acceptedCount,
-                rejectedCount: rejected.length,
-                insertedCount,
-                updatedCount,
-                rejected,
-                rejectedSummary: summarizeRejectedRows(rejected),
-                mappingConfidence: resolved.confidence,
-                mapping,
-                mappingWarnings,
-                missingRequired: resolved.missingRequired,
-                headers: parsed.headers
+    app.post('/admin/sca/imports/upload-bundle', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        if (!scaImportUpload || typeof scaImportUpload.fields !== 'function') {
+            return res.status(503).json({ ok: false, error: 'upload_unavailable' });
+        }
+        const middleware = scaImportUpload.fields([
+            { name: 'students', maxCount: 1 },
+            { name: 'enrollments', maxCount: 1 },
+            { name: 'access', maxCount: 1 }
+        ]);
+        middleware(req, res, (err) => {
+            if (err) {
+                if (String(err?.code || '') === 'LIMIT_FILE_SIZE') {
+                    return res.status(413).json({
+                        ok: false,
+                        error: 'file_too_large',
+                        maxBytes: Number(SCA_IMPORT_MAX_BYTES || 0)
+                    });
+                }
+                return res.status(400).json({ ok: false, error: 'upload_failed', detail: String(err?.message || err) });
+            }
+            const files = req.files && typeof req.files === 'object' ? req.files : {};
+            const order = ['students', 'enrollments', 'access'];
+            const results = [];
+            for (const type of order) {
+                const picked = Array.isArray(files[type]) ? files[type][0] : null;
+                if (!picked || !Buffer.isBuffer(picked.buffer)) continue;
+                const result = processImportFile({
+                    type,
+                    fileBuffer: picked.buffer,
+                    originalFilename: picked.originalname || '',
+                    username: String(user.username || '')
+                });
+                if (!result.ok) {
+                    return res.status(Number(result.statusCode || 400)).json({
+                        ok: false,
+                        error: result.error || 'bundle_import_failed',
+                        failedType: type,
+                        partialResults: results
+                    });
+                }
+                results.push(result);
+                logAdminAction('sca.import.upload_bundle.item', user.username, String(result.importId || 0), {
+                    type,
+                    acceptedCount: Number(result.acceptedCount || 0),
+                    rejectedCount: Number(result.rejectedCount || 0),
+                    rowsTotal: Number(result.rowsTotal || 0)
+                }, req.ip);
+            }
+            if (!results.length) {
+                return res.status(400).json({ ok: false, error: 'missing_files' });
+            }
+            const report = results.reduce((acc, item) => {
+                acc.rowsTotal += Number(item.rowsTotal || 0);
+                acc.acceptedTotal += Number(item.acceptedCount || 0);
+                acc.rejectedTotal += Number(item.rejectedCount || 0);
+                return acc;
+            }, { rowsTotal: 0, acceptedTotal: 0, rejectedTotal: 0 });
+            logAdminAction('sca.import.upload_bundle', user.username, 'bundle', {
+                files: results.map((item) => item.type),
+                rowsTotal: report.rowsTotal,
+                acceptedTotal: report.acceptedTotal,
+                rejectedTotal: report.rejectedTotal
+            }, req.ip);
+            return res.json({ ok: true, items: results, report });
+        });
+    });
+
+    app.get('/admin/sca/quality/issues', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const limit = Math.max(1, Math.min(400, Number(req.query?.limit || 200)));
+        const rows = db.prepare(`
+            SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, updated_at
+            FROM sca_people
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+        `).all(limit);
+        const duplicatesByPhone = new Set(
+            db.prepare(`SELECT phone FROM sca_people WHERE phone<>'' GROUP BY phone HAVING COUNT(1) > 1`).all().map((row) => String(row.phone || ''))
+        );
+        const duplicatesByExternalId = new Set(
+            db.prepare(`SELECT external_id FROM sca_people WHERE external_id<>'' GROUP BY external_id HAVING COUNT(1) > 1`).all().map((row) => String(row.external_id || ''))
+        );
+        const items = [];
+        rows.forEach((row) => {
+            const phone = String(row.phone || '');
+            const externalId = String(row.external_id || '');
+            const cpf = String(row.cpf || '');
+            const reasons = [];
+            if (!phone) reasons.push('missing_phone');
+            if (!cpf) reasons.push('cpf_empty');
+            if (!externalId || !/^\d+$/.test(externalId)) reasons.push('invalid_external_id');
+            if (phone && duplicatesByPhone.has(phone)) reasons.push('duplicate_phone');
+            if (externalId && duplicatesByExternalId.has(externalId)) reasons.push('duplicate_external_id');
+            if (!reasons.length) return;
+            items.push({
+                id: Number(row.id || 0),
+                external_id: externalId,
+                name: String(row.name || ''),
+                phone,
+                cpf,
+                status: String(row.status || ''),
+                plan: String(row.plan || ''),
+                last_access_at: Number(row.last_access_at || 0),
+                updated_at: Number(row.updated_at || 0),
+                reasons
             });
         });
+        return res.json({ ok: true, total: items.length, items });
+    });
+
+    app.put('/admin/sca/people/:id', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const id = Number(req.params?.id || 0);
+        if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: 'invalid_id' });
+        const current = db.prepare('SELECT * FROM sca_people WHERE id=?').get(id);
+        if (!current) return res.status(404).json({ ok: false, error: 'not_found' });
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const patch = {
+            external_id: body.external_id !== undefined ? normalizeExternalId(body.external_id) : String(current.external_id || ''),
+            name: body.name !== undefined ? sanitizePublicText(body.name, 160) : String(current.name || ''),
+            phone: body.phone !== undefined ? normalizePhoneDigits(body.phone || '') : String(current.phone || ''),
+            cpf: body.cpf !== undefined ? normalizeCpf(body.cpf || '') : String(current.cpf || ''),
+            status: body.status !== undefined ? sanitizePublicText(body.status, 40) : String(current.status || ''),
+            plan: body.plan !== undefined ? sanitizePublicText(body.plan, 120) : String(current.plan || '')
+        };
+        db.prepare(`
+            UPDATE sca_people
+            SET external_id=?, name=?, phone=?, cpf=?, status=?, plan=?, updated_at=?
+            WHERE id=?
+        `).run(
+            patch.external_id,
+            patch.name,
+            patch.phone,
+            patch.cpf,
+            patch.status,
+            patch.plan,
+            Date.now(),
+            id
+        );
+        const updated = db.prepare('SELECT * FROM sca_people WHERE id=?').get(id);
+        logAdminAction('sca.people.update', user.username, String(id), patch, req.ip);
+        return res.json({ ok: true, item: updated });
     });
 }
 
