@@ -467,10 +467,10 @@ app.get('/admin/sca/students/inactive', (req, res) => {
                                 OR
                                 (p.phone <> '' AND e.phone = p.phone)
                             )
+                            AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
                             AND e.event_at > 0
                             AND e.event_at <= ?
                     ),
-                    p.last_access_at,
                     0
                 ) AS resolved_last_access_at
             FROM sca_people p
@@ -561,9 +561,30 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
 
     const placeholders = studentIds.map(() => '?').join(', ');
     const people = db.prepare(`
-        SELECT id, external_id, name, phone, plan, last_access_at, updated_at
-        FROM sca_people
-        WHERE id IN (${placeholders})
+        SELECT
+            p.id,
+            p.external_id,
+            p.name,
+            p.phone,
+            p.plan,
+            p.updated_at,
+            COALESCE(
+                (
+                    SELECT MAX(e.event_at)
+                    FROM sca_access_events e
+                    WHERE
+                        (
+                            (p.external_id <> '' AND e.external_id = p.external_id)
+                            OR
+                            (p.phone <> '' AND e.phone = p.phone)
+                        )
+                        AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
+                        AND e.event_at > 0
+                ),
+                0
+            ) AS resolved_last_access_at
+        FROM sca_people p
+        WHERE p.id IN (${placeholders})
     `).all(...studentIds);
     const byId = new Map(people.map((row) => [Number(row.id || 0), row]));
     const selected = studentIds.map((id) => byId.get(id)).filter(Boolean).slice(0, availableSlots);
@@ -580,7 +601,7 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
         const message = buildReactivationMessage(template, {
             name: row.name,
             plan: row.plan,
-            days_without_visit: Math.max(0, Math.floor((now - Number(row.last_access_at || row.updated_at || now)) / (24 * 60 * 60 * 1000)))
+            days_without_visit: Math.max(0, Math.floor((now - Number(row.resolved_last_access_at || row.updated_at || now)) / (24 * 60 * 60 * 1000)))
         });
         if (!phone || !message) {
             db.prepare(`

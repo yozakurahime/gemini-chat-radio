@@ -1907,13 +1907,20 @@ function formatDaysWithoutAccess(ts) {
     return Math.floor(diff / (24 * 60 * 60 * 1000));
 }
 
+function isScaPresenceEventType(eventTypeRaw) {
+    const eventType = sanitizePublicText(eventTypeRaw || '', 24).toLowerCase();
+    return eventType === 'entry' || eventType === 'exit';
+}
+
 function upsertScaPersonSnapshot(event) {
     const externalId = sanitizePublicText(event.external_id || '', 120);
     const name = sanitizePublicText(event.name || '', 120);
     const phone = normalizePhoneDigits(event.phone || '');
     const status = sanitizePublicText(event.status || '', 40);
     const plan = sanitizePublicText(event.plan || '', 80);
+    const eventType = sanitizePublicText(event.event_type || '', 24).toLowerCase();
     const eventAt = Number(event.event_at || 0);
+    const shouldUpdateLastAccess = isScaPresenceEventType(eventType);
     let row = null;
     if (externalId) {
         row = db.prepare('SELECT * FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
@@ -1926,7 +1933,7 @@ function upsertScaPersonSnapshot(event) {
         db.prepare(`
             INSERT INTO sca_people (external_id, name, phone, status, plan, last_access_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(externalId, name, phone, status, plan, eventAt || 0, now, now);
+        `).run(externalId, name, phone, status, plan, shouldUpdateLastAccess ? (eventAt || 0) : 0, now, now);
         return;
     }
     const nextExternalId = externalId || String(row.external_id || '');
@@ -1934,7 +1941,9 @@ function upsertScaPersonSnapshot(event) {
     const nextPhone = phone || String(row.phone || '');
     const nextStatus = status || String(row.status || '');
     const nextPlan = plan || String(row.plan || '');
-    const nextLastAccessAt = Math.max(Number(row.last_access_at || 0), Number(eventAt || 0));
+    const nextLastAccessAt = shouldUpdateLastAccess
+        ? Math.max(Number(row.last_access_at || 0), Number(eventAt || 0))
+        : Number(row.last_access_at || 0);
     db.prepare(`
         UPDATE sca_people
         SET external_id=?, name=?, phone=?, status=?, plan=?, last_access_at=?, updated_at=?
@@ -2060,6 +2069,7 @@ function upsertScaAccessBatch({ source = 'sca_csv', actor = 'system', events = [
                     external_id: externalId,
                     name,
                     phone,
+                    event_type: eventType,
                     status,
                     plan,
                     event_at: eventAt
@@ -8226,6 +8236,35 @@ function getDailyOperationsSnapshot() {
             return 0;
         }
     };
+    const countInactiveByDays = (days = 5) => {
+        const safeDays = Number.isFinite(Number(days)) ? Math.max(1, Math.min(180, Math.floor(Number(days)))) : 5;
+        const cutoffAt = now - (safeDays * 24 * 60 * 60 * 1000);
+        return countSafe(`
+            WITH resolved AS (
+                SELECT
+                    p.id,
+                    COALESCE(
+                        (
+                            SELECT MAX(e.event_at)
+                            FROM sca_access_events e
+                            WHERE
+                                (
+                                    (p.external_id <> '' AND e.external_id = p.external_id)
+                                    OR
+                                    (p.phone <> '' AND e.phone = p.phone)
+                                )
+                                AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
+                                AND e.event_at > 0
+                        ),
+                        0
+                    ) AS resolved_last_access_at
+                FROM sca_people p
+            )
+            SELECT COUNT(1) AS total
+            FROM resolved
+            WHERE resolved_last_access_at = 0 OR resolved_last_access_at <= ?
+        `, cutoffAt);
+    };
     const pixGeneratedToday = countSafe(`
         SELECT COUNT(1) AS total
         FROM pix_charges
@@ -8241,11 +8280,7 @@ function getDailyOperationsSnapshot() {
         FROM pix_charges
         WHERE status='paid' AND sca_manual_status='pending'
     `);
-    const inactiveStudents5d = countSafe(`
-        SELECT COUNT(1) AS total
-        FROM sca_people
-        WHERE last_access_at > 0 AND last_access_at <= ?
-    `, now - (5 * 24 * 60 * 60 * 1000));
+    const inactiveStudents5d = countInactiveByDays(5);
     const aiFeedbackToday = countSafe(`
         SELECT COUNT(1) AS total
         FROM ai_feedback_events
@@ -8264,12 +8299,13 @@ function getDailyOperationsSnapshot() {
         FROM sca_people
         WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('ativo', 'active', 'regular')
     `);
-    const studentsInactive = countSafe(`
+    const studentsInactiveByAccess = countInactiveByDays(10);
+    const studentsInactiveByStatus = countSafe(`
         SELECT COUNT(1) AS total
         FROM sca_people
-        WHERE (last_access_at > 0 AND last_access_at <= ?)
-           OR LOWER(TRIM(COALESCE(status, ''))) IN ('inativo', 'inactive', 'vencido', 'cancelado')
-    `, now - (10 * 24 * 60 * 60 * 1000));
+        WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('inativo', 'inactive', 'vencido', 'cancelado')
+    `);
+    const studentsInactive = Math.max(studentsInactiveByAccess, studentsInactiveByStatus);
     const pixPaid7d = countSafe(`
         SELECT COUNT(1) AS total
         FROM pix_charges
