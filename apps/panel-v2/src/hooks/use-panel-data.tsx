@@ -64,8 +64,9 @@ type ScaInactiveStudent = {
   phone: string;
   status: string;
   plan: string;
-  last_access_at: number;
+  last_access_at: number | null;
   days_without_visit: number;
+  inactive_reason?: "no_recent_access" | "no_access_record" | string;
 };
 type ScaImportType = "students" | "access" | "enrollments";
 type ScaImportHistoryItem = {

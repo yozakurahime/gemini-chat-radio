@@ -120,8 +120,9 @@ type ScaInactiveStudent = {
   phone: string;
   status: string;
   plan: string;
-  last_access_at: number;
+  last_access_at: number | null;
   days_without_visit: number;
+  inactive_reason?: "no_recent_access" | "no_access_record" | string;
 };
 
 const PIX_SAFE_DEFAULT: PixSafeConfig = {
@@ -1502,7 +1503,7 @@ export default function ConfiguracoesPage() {
                               Sem vir ha {Number(item.days_without_visit || 0)} dias
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              Ultimo acesso: {formatDateTimeBr(item.last_access_at)}
+                              Ultimo acesso: {item.last_access_at ? formatDateTimeBr(item.last_access_at) : "Sem acesso registrado"}
                             </p>
                           </div>
                           {waLink ? (

@@ -213,7 +213,7 @@ export default function DashboardPage() {
                 </div>
                 <p className="text-sm font-medium">{student.name || "Aluno sem nome"}</p>
                 <p className="text-xs text-muted-foreground">
-                  Telefone: {student.phone || "-"} | Ultimo acesso: {formatDateTimeBr(student.last_access_at, "-")}
+                  Telefone: {student.phone || "-"} | Ultimo acesso: {student.last_access_at ? formatDateTimeBr(student.last_access_at, "-") : "Sem acesso registrado"}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {waLink ? (
@@ -246,4 +246,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-
