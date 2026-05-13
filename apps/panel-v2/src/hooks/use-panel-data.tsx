@@ -67,7 +67,7 @@ type ScaInactiveStudent = {
   last_access_at: number;
   days_without_visit: number;
 };
-type ScaImportType = "students" | "access";
+type ScaImportType = "students" | "access" | "enrollments";
 type ScaImportHistoryItem = {
   id: number;
   import_type: ScaImportType;
@@ -93,6 +93,9 @@ type ScaImportMapping = {
   event_type?: string;
   event_at?: string;
   gate?: string;
+  enrollment_status?: string;
+  due_at?: string;
+  end_at?: string;
 };
 type ScaImportUploadResult = {
   ok: boolean;

@@ -16,7 +16,7 @@ function registerScaImportRoutes({
     scaImportsDir,
     upsertScaAccessBatch
 }) {
-    const IMPORT_TYPES = new Set(['students', 'access']);
+    const IMPORT_TYPES = new Set(['students', 'access', 'enrollments']);
     const MAPPING_FILE = path.join(scaImportsDir, 'sca_import_mappings.json');
     const DEFAULT_SOURCE = 'sca_manual_upload';
     const MAPPING_THRESHOLD = 0.55;
@@ -44,6 +44,15 @@ function registerScaImportRoutes({
 
     try {
         db.prepare('ALTER TABLE sca_people ADD COLUMN cpf TEXT DEFAULT \'\'').run();
+    } catch (_) {}
+    try {
+        db.prepare('ALTER TABLE sca_people ADD COLUMN membership_due_at INTEGER DEFAULT 0').run();
+    } catch (_) {}
+    try {
+        db.prepare('ALTER TABLE sca_people ADD COLUMN membership_end_at INTEGER DEFAULT 0').run();
+    } catch (_) {}
+    try {
+        db.prepare('ALTER TABLE sca_people ADD COLUMN membership_updated_at INTEGER DEFAULT 0').run();
     } catch (_) {}
     db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_cpf ON sca_people(cpf)').run();
 
@@ -124,6 +133,16 @@ function registerScaImportRoutes({
             event_type: ['tipo', 'evento', 'movimento', 'eventtype', 'tipoevento', 'tipoacesso', 'bloqueado', 'bloqueio', 'status'],
             event_at: ['datahora', 'data', 'horario', 'datetime', 'timestamp', 'eventat', 'acessoem'],
             gate: ['catraca', 'equipamento', 'unidade', 'gate']
+        },
+        enrollments: {
+            external_id: ['matricula', 'idaluno', 'alunoid', 'codigo', 'codigoaluno', 'externalid', 'id'],
+            name: ['nome', 'nomecompleto', 'aluno', 'fullname', 'name'],
+            phone: ['telefone', 'celular', 'whatsapp', 'fone', 'phone', 'telefone1', 'telefone2'],
+            cpf: ['cpf', 'cpfcnpj', 'cnpj'],
+            plan: ['plano', 'modalidade', 'produto', 'plan', 'pacote', 'turma'],
+            enrollment_status: ['status', 'situacao', 'situacaodamatricula', 'statusmatricula', 'situacaomatricula', 'bloqueio', 'motivo'],
+            due_at: ['vencimento', 'datavencimento', 'proximovencimento', 'vencimentoem'],
+            end_at: ['fim', 'datatermino', 'termino', 'validade', 'fimdamatricula', 'expiraem']
         }
     };
 
@@ -145,6 +164,16 @@ function registerScaImportRoutes({
                 event_at: '',
                 gate: ''
             },
+            enrollments: {
+                external_id: '',
+                name: '',
+                phone: '',
+                cpf: '',
+                plan: '',
+                enrollment_status: '',
+                due_at: '',
+                end_at: ''
+            },
             updated_at: 0,
             updated_by: ''
         };
@@ -160,7 +189,8 @@ function registerScaImportRoutes({
                 ...fallback,
                 ...(parsed || {}),
                 students: { ...fallback.students, ...(parsed?.students || {}) },
-                access: { ...fallback.access, ...(parsed?.access || {}) }
+                access: { ...fallback.access, ...(parsed?.access || {}) },
+                enrollments: { ...fallback.enrollments, ...(parsed?.enrollments || {}) }
             };
         } catch (_) {
             return getDefaultMapping();
@@ -229,6 +259,9 @@ function registerScaImportRoutes({
             if (!resolved.event_type) missing.push('event_type');
             if (!resolved.event_at) missing.push('event_at');
             if (!resolved.external_id && !resolved.phone && !resolved.name) missing.push('external_id|phone|name');
+        } else if (type === 'enrollments') {
+            if (!resolved.external_id && !resolved.cpf && !resolved.phone && !resolved.name) missing.push('external_id|cpf|phone|name');
+            if (!resolved.enrollment_status && !resolved.due_at && !resolved.end_at) missing.push('enrollment_status|due_at|end_at');
         }
         return {
             mapping: resolved,
@@ -289,6 +322,18 @@ function registerScaImportRoutes({
         return Number.isFinite(parsed) ? parsed : 0;
     }
 
+    function parseEnrollmentStatus(raw) {
+        const text = String(raw || '').trim();
+        if (!text) return '';
+        const norm = normalizeHeaderKey(text);
+        if (!norm) return '';
+        if (norm.includes('atras') || norm.includes('debito') || norm.includes('inadimpl')) return 'atrasado';
+        if (norm.includes('vencid') || norm.includes('expir') || norm.includes('venc')) return 'vencido';
+        if (norm.includes('cancel') || norm.includes('tranc') || norm.includes('inativ')) return 'inativo';
+        if (norm.includes('ativ') || norm.includes('regular') || norm.includes('adimpl') || norm.includes('ok') || norm.includes('liber')) return 'ativo';
+        return text.toLowerCase();
+    }
+
     function buildSourceEventId({ rowObject, mapping, eventAt, eventType, externalId, phone, name, gate }) {
         const fromFile = sanitizePublicText(rowObject[mapping.source_event_id] || '', 180);
         if (fromFile) return fromFile;
@@ -296,22 +341,22 @@ function registerScaImportRoutes({
         return `manual_${crypto.createHash('sha1').update(payload).digest('hex')}`;
     }
 
-    function upsertStudentRow({ externalId, name, phone, cpf, status, plan, now }) {
+    function upsertStudentRow({ externalId, name, phone, cpf, status, plan, membershipDueAt = 0, membershipEndAt = 0, now }) {
         let row = null;
         if (externalId) {
-            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
+            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
         }
         if (!row && cpf) {
-            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at FROM sca_people WHERE cpf=? LIMIT 1').get(cpf);
+            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE cpf=? LIMIT 1').get(cpf);
         }
         if (!row && phone) {
-            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at FROM sca_people WHERE phone=? LIMIT 1').get(phone);
+            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE phone=? LIMIT 1').get(phone);
         }
         if (!row) {
             db.prepare(`
-                INSERT INTO sca_people (external_id, name, phone, cpf, status, plan, last_access_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(externalId, name, phone, cpf, status, plan, 0, now, now);
+                INSERT INTO sca_people (external_id, name, phone, cpf, status, plan, membership_due_at, membership_end_at, membership_updated_at, last_access_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(externalId, name, phone, cpf, status, plan, Number(membershipDueAt || 0), Number(membershipEndAt || 0), now, 0, now, now);
             return { inserted: 1, updated: 0 };
         }
         db.prepare(`
@@ -322,6 +367,9 @@ function registerScaImportRoutes({
                    cpf=?,
                    status=?,
                    plan=?,
+                   membership_due_at=?,
+                   membership_end_at=?,
+                   membership_updated_at=?,
                    updated_at=?
              WHERE id=?
         `).run(
@@ -331,6 +379,9 @@ function registerScaImportRoutes({
             cpf || row.cpf || '',
             status || row.status || '',
             plan || row.plan || '',
+            Number(membershipDueAt || row.membership_due_at || 0),
+            Number(membershipEndAt || row.membership_end_at || 0),
+            now,
             now,
             Number(row.id || 0)
         );
@@ -568,7 +619,7 @@ function registerScaImportRoutes({
                     });
                 });
                 tx();
-            } else {
+            } else if (type === 'access') {
                 const events = [];
                 parsed.dataRows.forEach((raw, index) => {
                     const rowObj = toRowObject(parsed.headers, raw);
@@ -624,6 +675,57 @@ function registerScaImportRoutes({
                 });
                 insertedCount = Number(syncResult?.inserted_count || 0);
                 updatedCount = Number(syncResult?.duplicate_count || 0);
+            } else if (type === 'enrollments') {
+                const statusCounts = {
+                    ativo: 0,
+                    atrasado: 0,
+                    vencido: 0,
+                    inativo: 0,
+                    outros: 0
+                };
+                const tx = db.transaction(() => {
+                    parsed.dataRows.forEach((raw, index) => {
+                        const rowObj = toRowObject(parsed.headers, raw);
+                        const externalId = sanitizePublicText(rowObj[mapping.external_id] || '', 120);
+                        const name = sanitizePublicText(rowObj[mapping.name] || '', 160);
+                        const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
+                        const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
+                        const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
+                        const enrollmentStatus = parseEnrollmentStatus(rowObj[mapping.enrollment_status] || '');
+                        const dueAt = parseEventAt(rowObj[mapping.due_at] || '');
+                        const endAt = parseEventAt(rowObj[mapping.end_at] || '');
+                        if (!externalId && !name && !phone && !cpf) {
+                            rejected.push({ row: index + 2, error: 'identity_required' });
+                            return;
+                        }
+                        if (!enrollmentStatus && !dueAt && !endAt) {
+                            rejected.push({ row: index + 2, error: 'enrollment_status_or_due_required' });
+                            return;
+                        }
+                        const result = upsertStudentRow({
+                            externalId,
+                            name,
+                            phone,
+                            cpf,
+                            status: enrollmentStatus,
+                            plan,
+                            membershipDueAt: dueAt,
+                            membershipEndAt: endAt,
+                            now
+                        });
+                        acceptedCount += 1;
+                        insertedCount += Number(result.inserted || 0);
+                        updatedCount += Number(result.updated || 0);
+
+                        if (enrollmentStatus === 'ativo') statusCounts.ativo += 1;
+                        else if (enrollmentStatus === 'atrasado') statusCounts.atrasado += 1;
+                        else if (enrollmentStatus === 'vencido') statusCounts.vencido += 1;
+                        else if (enrollmentStatus === 'inativo') statusCounts.inativo += 1;
+                        else statusCounts.outros += 1;
+                    });
+                });
+                tx();
+                syncResult = { statusCounts };
             }
 
             const importId = insertImportHistory({
