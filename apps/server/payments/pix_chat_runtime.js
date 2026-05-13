@@ -15,12 +15,16 @@ function detectPixMonthlyIntent(text) {
     if (!hasPlanTopic) return false;
 
     const asksOnlyPrice = /\b(quanto|valor|preco|custa|mensalidade quanto)\b/.test(normalized);
-    const hasPayAction = /\b(pagar|pagamento|quitar|acertar|liquidar|fechar|gerar|emitir|fazer)\b/.test(normalized);
+    const hasInfoIntent = /\b(como funciona|quero saber|queria saber|duvida|explica|me explica|informacao|informacoes|sobre|primeiro mes|1o mes)\b/.test(normalized);
+    const hasImmediatePayIntent = /\b(quero pagar|vou pagar|pagar agora|pagar ja|pagar hoje|quero quitar|quero acertar|quitar agora|fechar pagamento)\b/.test(normalized);
+    const hasChargeCreationIntent = /\b(gerar|emitir|fazer)\b/.test(normalized)
+        && /\b(pix|cobranca|pagamento)\b/.test(normalized);
     const hasPix = /\bpix\b/.test(normalized);
     const hasPixIntent = hasPix && /\b(pagar|gerar|emitir|manda|enviar|copia|cola|codigo)\b/.test(normalized);
 
-    if (asksOnlyPrice && !hasPayAction && !hasPixIntent) return false;
-    return hasPayAction || hasPixIntent;
+    if (asksOnlyPrice && !hasImmediatePayIntent && !hasPixIntent && !hasChargeCreationIntent) return false;
+    if (hasInfoIntent && !hasImmediatePayIntent && !hasPixIntent && !hasChargeCreationIntent) return false;
+    return hasImmediatePayIntent || hasPixIntent || hasChargeCreationIntent;
 }
 
 function parseYesNo(text) {
