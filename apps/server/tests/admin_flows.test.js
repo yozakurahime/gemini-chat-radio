@@ -699,3 +699,83 @@ test('SCA sync endpoints are disabled', async (t) => {
   assert.equal(syncStatus.data.error, 'sca_import_disabled');
 });
 
+test('SCA manual import endpoints process students and access files', async (t) => {
+  const server = await startServer({
+    dataRoot: makeTempDataRoot(),
+    port: randomPort(),
+  });
+  t.after(async () => {
+    await stopServer(server);
+    fs.rmSync(server.dataRoot, { recursive: true, force: true });
+  });
+
+  const auth = await login(server.baseUrl, server.panelUser, server.panelPass);
+  assert.equal(auth.res.status, 200);
+
+  const putStudentsMapping = await reqJson(server.baseUrl, '/admin/sca/imports/mapping?type=students', {
+    method: 'PUT',
+    cookie: auth.cookie,
+    body: {
+      mapping: {
+        external_id: 'Matricula',
+        name: 'Nome',
+        phone: 'Telefone',
+        cpf: 'CPF',
+        status: 'Status',
+        plan: 'Plano',
+      },
+    },
+  });
+  assert.equal(putStudentsMapping.res.status, 200);
+  assert.equal(putStudentsMapping.data.ok, true);
+
+  const studentsCsv = [
+    'Matricula;Nome;Telefone;CPF;Status;Plano',
+    'A100;Bruno QA;62999998888;12345678901;Ativo;Mensal',
+  ].join('\n');
+  const studentsForm = new FormData();
+  studentsForm.append('file', new Blob([studentsCsv], { type: 'text/csv' }), 'students.csv');
+  const uploadStudentsRes = await fetch(`${server.baseUrl}/admin/sca/imports/upload?type=students`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie },
+    body: studentsForm,
+    signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(uploadStudentsRes.status, 200);
+  const uploadStudents = await uploadStudentsRes.json();
+  assert.equal(uploadStudents.ok, true);
+  assert.equal(Number(uploadStudents.acceptedCount || 0), 1);
+
+  const accessCsv = [
+    'Matricula;Nome;Telefone;Evento;DataHora;Catraca',
+    'A100;Bruno QA;62999998888;Entrada;10/05/2026 18:00:00;Catraca 1',
+  ].join('\n');
+  const accessForm = new FormData();
+  accessForm.append('file', new Blob([accessCsv], { type: 'text/csv' }), 'access.csv');
+  const uploadAccessRes = await fetch(`${server.baseUrl}/admin/sca/imports/upload?type=access`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie },
+    body: accessForm,
+    signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(uploadAccessRes.status, 200);
+  const uploadAccess = await uploadAccessRes.json();
+  assert.equal(uploadAccess.ok, true);
+  assert.equal(Number(uploadAccess.acceptedCount || 0), 1);
+
+  const history = await reqJson(server.baseUrl, '/admin/sca/imports?limit=10', {
+    cookie: auth.cookie,
+  });
+  assert.equal(history.res.status, 200);
+  assert.equal(history.data.ok, true);
+  const items = Array.isArray(history.data.items) ? history.data.items : [];
+  assert.ok(items.some((item) => item.import_type === 'students'));
+  assert.ok(items.some((item) => item.import_type === 'access'));
+
+  const inactive = await reqJson(server.baseUrl, '/admin/sca/students/inactive?days=1&limit=10', {
+    cookie: auth.cookie,
+  });
+  assert.equal(inactive.res.status, 200);
+  assert.equal(inactive.data.ok, true);
+});
+
