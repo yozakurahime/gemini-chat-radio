@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/AppLayout";
 import { PanelDataProvider, usePanelData } from "@/hooks/use-panel-data";
 import Index from "./pages/Index";
+import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import PontoPage from "./pages/PontoPage";
 import ConfiguracoesPage from "./pages/ConfiguracoesPage";
@@ -30,7 +31,8 @@ function AuthenticatedRoutes() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
-        <Route path="/" element={<Index />} />
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/atendimento" element={<Index />} />
         <Route path="/ponto" element={<PontoPage />} />
         <Route path="/sca" element={<ScaPage />} />
         <Route path="/configuracoes" element={<ConfiguracoesPage />} />

@@ -1,4 +1,4 @@
-import { MessageSquare, Clock, Settings, Dumbbell, Database } from "lucide-react";
+import { MessageSquare, Clock, Settings, Dumbbell, Database, LayoutDashboard } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useMemo } from "react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -23,7 +23,8 @@ export function AppSidebar() {
   const isAdmin = user?.role === "admin";
   const items = useMemo(
     () => [
-      { title: "Atendimento", url: "/", icon: MessageSquare },
+      { title: "Dashboard", url: "/", icon: LayoutDashboard },
+      { title: "Atendimento", url: "/atendimento", icon: MessageSquare },
       { title: "Ponto", url: "/ponto", icon: Clock },
       ...(isAdmin ? [{ title: "SCA", url: "/sca", icon: Database }] : []),
       { title: "Configuracoes", url: "/configuracoes", icon: Settings },
@@ -57,7 +58,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => {
-                const isAtendimento = item.url === "/";
+                const isAtendimento = item.url === "/atendimento";
                 const hasAttention = isAtendimento && attentionTotal > 0;
                 return (
                   <SidebarMenuItem key={item.title}>
@@ -102,4 +103,3 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
-
