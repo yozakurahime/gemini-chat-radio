@@ -106,7 +106,9 @@ function registerScaImportRoutes({
     }
 
     function parseSheetBuffer(fileBuffer, originalFilename = '') {
-        const workbook = XLSX.read(fileBuffer, { type: 'buffer', raw: false, cellDates: true });
+        // Keep dates as formatted text (ex: dd/mm/yyyy hh:mm) from SCA exports
+        // to avoid locale-dependent Date object coercion.
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer', raw: false, cellDates: false });
         const firstSheetName = String(workbook?.SheetNames?.[0] || '');
         if (!firstSheetName || !workbook.Sheets[firstSheetName]) throw new Error('spreadsheet_empty');
         const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { header: 1, defval: '' }) || [];
@@ -315,11 +317,23 @@ function registerScaImportRoutes({
         return '';
     }
 
+    function excelSerialToTimestamp(raw) {
+        const serial = Number(raw);
+        if (!Number.isFinite(serial) || serial <= 0) return 0;
+        // Excel serial date baseline (1900 system)
+        const excelEpochUtc = Date.UTC(1899, 11, 30, 0, 0, 0, 0);
+        return Math.floor(excelEpochUtc + (serial * 86400000));
+    }
+
     function parseEventAt(raw) {
         if (raw instanceof Date && Number.isFinite(raw.getTime())) {
             return raw.getTime();
         }
         if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+            // Excel serial date range safeguard
+            if (raw > 20000 && raw < 70000) {
+                return excelSerialToTimestamp(raw);
+            }
             return raw > 1e12 ? Math.floor(raw) : Math.floor(raw * 1000);
         }
         const text = String(raw || '').trim();
