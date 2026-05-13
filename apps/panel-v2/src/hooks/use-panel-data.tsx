@@ -1156,6 +1156,28 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user?.role]);
 
+  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "") => {
+    if (!user) {
+      setScaInactiveStudents([]);
+      return;
+    }
+    const safeDays = Math.max(1, Math.min(180, Math.floor(Number(days) || 5)));
+    const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
+    const params = new URLSearchParams({
+      days: String(safeDays),
+      limit: String(safeLimit),
+    });
+    const q = String(query || "").trim();
+    if (q) params.set("q", q);
+    try {
+      const res = await apiFetch(`/admin/sca/students/inactive?${params.toString()}`);
+      const data = await res.json();
+      setScaInactiveStudents(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setScaInactiveStudents([]);
+    }
+  }, [user]);
+
   const uploadScaImportFile = useCallback(async (type: ScaImportType, file: File) => {
     if (user?.role !== "admin") return { ok: false, error: "forbidden" } as ScaImportUploadResult;
     if (!file) return { ok: false, error: "missing_file" } as ScaImportUploadResult;
@@ -1187,28 +1209,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       } as ScaImportUploadResult;
     }
   }, [refreshScaImportHistory, refreshScaInactiveStudents, refreshSystemHealth, user?.role]);
-
-  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "") => {
-    if (!user) {
-      setScaInactiveStudents([]);
-      return;
-    }
-    const safeDays = Math.max(1, Math.min(180, Math.floor(Number(days) || 5)));
-    const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
-    const params = new URLSearchParams({
-      days: String(safeDays),
-      limit: String(safeLimit),
-    });
-    const q = String(query || "").trim();
-    if (q) params.set("q", q);
-    try {
-      const res = await apiFetch(`/admin/sca/students/inactive?${params.toString()}`);
-      const data = await res.json();
-      setScaInactiveStudents(Array.isArray(data?.items) ? data.items : []);
-    } catch {
-      setScaInactiveStudents([]);
-    }
-  }, [user]);
 
   const loadAiPlaybooks = useCallback(async () => {
     if (user?.role !== "admin") {
