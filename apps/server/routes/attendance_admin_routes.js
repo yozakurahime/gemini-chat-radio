@@ -467,7 +467,6 @@ app.get('/admin/sca/students/inactive', (req, res) => {
                                 OR
                                 (p.phone <> '' AND e.phone = p.phone)
                             )
-                            AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
                             AND e.event_at > 0
                             AND e.event_at <= ?
                     ),
@@ -578,7 +577,6 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
                             OR
                             (p.phone <> '' AND e.phone = p.phone)
                         )
-                        AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
                         AND e.event_at > 0
                 ),
                 0

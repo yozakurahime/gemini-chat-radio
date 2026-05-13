@@ -1907,20 +1907,13 @@ function formatDaysWithoutAccess(ts) {
     return Math.floor(diff / (24 * 60 * 60 * 1000));
 }
 
-function isScaPresenceEventType(eventTypeRaw) {
-    const eventType = sanitizePublicText(eventTypeRaw || '', 24).toLowerCase();
-    return eventType === 'entry' || eventType === 'exit';
-}
-
 function upsertScaPersonSnapshot(event) {
     const externalId = sanitizePublicText(event.external_id || '', 120);
     const name = sanitizePublicText(event.name || '', 120);
     const phone = normalizePhoneDigits(event.phone || '');
     const status = sanitizePublicText(event.status || '', 40);
     const plan = sanitizePublicText(event.plan || '', 80);
-    const eventType = sanitizePublicText(event.event_type || '', 24).toLowerCase();
     const eventAt = Number(event.event_at || 0);
-    const shouldUpdateLastAccess = isScaPresenceEventType(eventType);
     let row = null;
     if (externalId) {
         row = db.prepare('SELECT * FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
@@ -1933,7 +1926,7 @@ function upsertScaPersonSnapshot(event) {
         db.prepare(`
             INSERT INTO sca_people (external_id, name, phone, status, plan, last_access_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(externalId, name, phone, status, plan, shouldUpdateLastAccess ? (eventAt || 0) : 0, now, now);
+        `).run(externalId, name, phone, status, plan, eventAt || 0, now, now);
         return;
     }
     const nextExternalId = externalId || String(row.external_id || '');
@@ -1941,9 +1934,7 @@ function upsertScaPersonSnapshot(event) {
     const nextPhone = phone || String(row.phone || '');
     const nextStatus = status || String(row.status || '');
     const nextPlan = plan || String(row.plan || '');
-    const nextLastAccessAt = shouldUpdateLastAccess
-        ? Math.max(Number(row.last_access_at || 0), Number(eventAt || 0))
-        : Number(row.last_access_at || 0);
+    const nextLastAccessAt = Math.max(Number(row.last_access_at || 0), Number(eventAt || 0));
     db.prepare(`
         UPDATE sca_people
         SET external_id=?, name=?, phone=?, status=?, plan=?, last_access_at=?, updated_at=?
@@ -8253,7 +8244,6 @@ function getDailyOperationsSnapshot() {
                                     OR
                                     (p.phone <> '' AND e.phone = p.phone)
                                 )
-                                AND LOWER(TRIM(COALESCE(e.event_type, ''))) IN ('entry', 'exit')
                                 AND e.event_at > 0
                         ),
                         0
