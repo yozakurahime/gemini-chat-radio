@@ -485,17 +485,14 @@ app.get('/admin/sca/students/inactive', (req, res) => {
             resolved_last_access_at AS last_access_at,
             updated_at
         FROM resolved
-        WHERE resolved_last_access_at = 0 OR resolved_last_access_at <= ?
+        WHERE resolved_last_access_at > 0
+          AND resolved_last_access_at <= ?
         ORDER BY resolved_last_access_at ASC, id ASC
         LIMIT ?
     `).all(...params);
     const items = rows.map((row) => {
         const lastAccessAt = Number(row.last_access_at || 0);
-        const updatedAt = Number(row.updated_at || 0);
-        const referenceAt = lastAccessAt > 0 ? lastAccessAt : updatedAt;
-        const daysWithoutVisit = referenceAt > 0
-            ? Math.max(days, Math.floor((now - referenceAt) / dayMs))
-            : days;
+        const daysWithoutVisit = Math.max(0, Math.floor((now - lastAccessAt) / dayMs));
         return {
             id: Number(row.id || 0),
             external_id: String(row.external_id || ''),
@@ -503,9 +500,9 @@ app.get('/admin/sca/students/inactive', (req, res) => {
             phone: String(row.phone || ''),
             status: String(row.status || ''),
             plan: String(row.plan || ''),
-            last_access_at: lastAccessAt > 0 ? lastAccessAt : null,
+            last_access_at: lastAccessAt,
             days_without_visit: daysWithoutVisit,
-            inactive_reason: lastAccessAt > 0 ? 'no_recent_access' : 'no_access_record'
+            inactive_reason: 'no_recent_access'
         };
     });
     return res.json({
