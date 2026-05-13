@@ -346,6 +346,10 @@ const PIX_DAILY_IMPORT_MAX_BYTES = Math.max(
     1 * 1024 * 1024,
     Math.floor(envNum(process.env.PIX_DAILY_IMPORT_MAX_MB, 20) * 1024 * 1024)
 );
+const SCA_IMPORT_MAX_BYTES = Math.max(
+    1 * 1024 * 1024,
+    Math.floor(envNum(process.env.SCA_IMPORT_MAX_MB, 50) * 1024 * 1024)
+);
 const RADIO_SILENCE_SAMPLE_SEC = Math.max(5, envNum(process.env.RADIO_SILENCE_SAMPLE_SEC, 22));
 const RADIO_SILENCE_MEAN_DB = envNum(process.env.RADIO_SILENCE_MEAN_DB, -55);
 const RADIO_SILENCE_MAX_DB = envNum(process.env.RADIO_SILENCE_MAX_DB, -45);
@@ -8255,7 +8259,7 @@ const pixDailyImportUpload = multer({
 });
 const scaImportUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024, files: 1 }
+    limits: { fileSize: SCA_IMPORT_MAX_BYTES, files: 1 }
 });
 const chatImageUpload = multer({
     storage: multer.memoryStorage(),
@@ -8479,6 +8483,7 @@ registerScaImportRoutes({
     ensureDir,
     isPathInside,
     scaImportUpload,
+    SCA_IMPORT_MAX_BYTES,
     scaImportsDir: SCA_IMPORTS_DIR,
     upsertScaAccessBatch
 });

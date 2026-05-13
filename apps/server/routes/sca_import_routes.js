@@ -12,6 +12,7 @@ function registerScaImportRoutes({
     ensureDir,
     isPathInside,
     scaImportUpload,
+    SCA_IMPORT_MAX_BYTES,
     scaImportsDir,
     upsertScaAccessBatch
 }) {
@@ -469,6 +470,13 @@ function registerScaImportRoutes({
         const middleware = scaImportUpload.single('file');
         middleware(req, res, (err) => {
             if (err) {
+                if (String(err?.code || '') === 'LIMIT_FILE_SIZE') {
+                    return res.status(413).json({
+                        ok: false,
+                        error: 'file_too_large',
+                        maxBytes: Number(SCA_IMPORT_MAX_BYTES || 0)
+                    });
+                }
                 return res.status(400).json({ ok: false, error: 'upload_failed', detail: String(err?.message || err) });
             }
             const file = req.file;

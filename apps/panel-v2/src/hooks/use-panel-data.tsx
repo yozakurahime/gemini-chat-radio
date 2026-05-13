@@ -1194,9 +1194,15 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return { ok: true, ...(data || {}) } as ScaImportUploadResult;
     } catch (error: any) {
       const code = String(error?.code || "");
+      const status = Number(error?.status || 0);
       const details = (error?.details || {}) as any;
       if (code === "mapping_required") {
-        toast.warning("Mapeamento manual necessario para este arquivo.");
+        const missing = Array.isArray(details?.missingRequired) ? details.missingRequired.join(", ") : "";
+        toast.warning(missing ? `Mapeamento manual necessario (${missing}).` : "Mapeamento manual necessario para este arquivo.");
+      } else if (code === "file_too_large" || status === 413) {
+        const maxBytes = Number(details?.maxBytes || 0);
+        const maxMb = maxBytes > 0 ? Math.floor(maxBytes / (1024 * 1024)) : 0;
+        toast.error(maxMb > 0 ? `Arquivo muito grande. Limite atual: ${maxMb} MB.` : "Arquivo muito grande para upload.");
       } else if (code === "invalid_file_type") {
         toast.error("Arquivo invalido. Envie CSV, XLS ou XLSX.");
       } else {
