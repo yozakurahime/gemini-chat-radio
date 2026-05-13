@@ -19,13 +19,6 @@ function registerScaImportRoutes({
     const IMPORT_TYPES = new Set(['students', 'access', 'enrollments']);
     const MAPPING_FILE = path.join(scaImportsDir, 'sca_import_mappings.json');
     const DEFAULT_SOURCE = 'sca_manual_upload';
-    const MAPPING_THRESHOLD = 0.55;
-    const MAPPING_THRESHOLD_BY_TYPE = {
-        students: 0.55,
-        access: 0.55,
-        enrollments: 0.35
-    };
-
     db.prepare(`
         CREATE TABLE IF NOT EXISTS sca_manual_imports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -356,6 +349,14 @@ function registerScaImportRoutes({
         return `manual_${crypto.createHash('sha1').update(payload).digest('hex')}`;
     }
 
+    function summarizeRejectedRows(rejectedRows = []) {
+        return rejectedRows.reduce((acc, item) => {
+            const key = sanitizePublicText(item?.error || 'unknown_error', 80) || 'unknown_error';
+            acc[key] = Number(acc[key] || 0) + 1;
+            return acc;
+        }, {});
+    }
+
     function upsertStudentRow({ externalId, name, phone, cpf, status, plan, membershipDueAt = 0, membershipEndAt = 0, now }) {
         let row = null;
         if (externalId) {
@@ -577,34 +578,22 @@ function registerScaImportRoutes({
 
             const savedMappings = readMappings();
             const resolved = resolveMapping(type, parsed.headers, savedMappings[type] || {});
-            const minConfidence = Number(MAPPING_THRESHOLD_BY_TYPE[type] ?? MAPPING_THRESHOLD);
+            const minConfidenceByType = {
+                students: 0.55,
+                access: 0.55,
+                enrollments: 0.35
+            };
+            const minConfidence = Number(minConfidenceByType[type] ?? 0.55);
             const mappingInsufficient = resolved.confidence < minConfidence || resolved.missingRequired.length > 0;
+            const mappingWarnings = [];
             if (mappingInsufficient) {
-                const importId = insertImportHistory({
-                    importType: type,
-                    originalFilename: sanitizePublicText(file.originalname || '', 180) || `${type}.csv`,
-                    sourceExt: ext,
-                    csvFilename,
-                    status: 'mapping_required',
-                    rowsTotal: parsed.rowCount,
-                    acceptedCount: 0,
-                    rejectedCount: parsed.rowCount,
-                    mappingConfidence: resolved.confidence,
-                    mapping: resolved.mapping,
-                    result: { missingRequired: resolved.missingRequired, headers: parsed.headers },
-                    uploadedBy: String(user.username || ''),
-                    createdAt: now
-                });
-                return res.status(422).json({
-                    ok: false,
-                    error: 'mapping_required',
-                    importId,
-                    type,
-                    confidence: resolved.confidence,
-                    missingRequired: resolved.missingRequired,
-                    detectedMapping: resolved.mapping,
-                    headers: parsed.headers
-                });
+                mappingWarnings.push('low_confidence_or_missing_required_fields');
+            }
+            if (resolved.confidence < minConfidence) {
+                mappingWarnings.push(`confidence_below_threshold:${resolved.confidence.toFixed(2)}<${minConfidence.toFixed(2)}`);
+            }
+            if (resolved.missingRequired.length > 0) {
+                mappingWarnings.push(`missing_required:${resolved.missingRequired.join('|')}`);
             }
 
             const mapping = resolved.mapping;
@@ -754,14 +743,18 @@ function registerScaImportRoutes({
                 originalFilename: sanitizePublicText(file.originalname || '', 180) || `${type}.csv`,
                 sourceExt: ext,
                 csvFilename,
-                status: 'processed',
+                status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
                 rowsTotal: parsed.rowCount,
                 acceptedCount,
                 rejectedCount: rejected.length,
                 mappingConfidence: resolved.confidence,
                 mapping,
                 result: {
+                    mappingWarnings,
+                    missingRequired: resolved.missingRequired,
+                    headers: parsed.headers,
                     rejected,
+                    rejectedSummary: summarizeRejectedRows(rejected),
                     insertedCount,
                     updatedCount,
                     syncResult
@@ -781,14 +774,19 @@ function registerScaImportRoutes({
                 ok: true,
                 importId,
                 type,
+                status: mappingWarnings.length > 0 ? 'processed_with_warnings' : 'processed',
                 rowsTotal: parsed.rowCount,
                 acceptedCount,
                 rejectedCount: rejected.length,
                 insertedCount,
                 updatedCount,
                 rejected,
+                rejectedSummary: summarizeRejectedRows(rejected),
                 mappingConfidence: resolved.confidence,
-                mapping
+                mapping,
+                mappingWarnings,
+                missingRequired: resolved.missingRequired,
+                headers: parsed.headers
             });
         });
     });

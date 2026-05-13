@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Download, RefreshCcw, Upload, Database } from "lucide-react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -10,40 +9,56 @@ import { formatDateTimeBr } from "@/lib/date-time";
 
 type ImportType = "students" | "access" | "enrollments";
 
-type MappingState = Record<string, string>;
-
-const STUDENTS_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
-  { key: "external_id", label: "Coluna da Matricula/ID", placeholder: "Ex: Matricula" },
-  { key: "name", label: "Coluna do Nome", placeholder: "Ex: Nome Completo" },
-  { key: "phone", label: "Coluna do Telefone", placeholder: "Ex: Telefone" },
-  { key: "cpf", label: "Coluna do CPF/CNPJ", placeholder: "Ex: CPF" },
-  { key: "status", label: "Coluna de Status", placeholder: "Ex: Situacao" },
-  { key: "plan", label: "Coluna de Plano", placeholder: "Ex: Plano" },
-];
-
-const ACCESS_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
-  { key: "external_id", label: "Coluna da Matricula/ID", placeholder: "Ex: Matricula" },
-  { key: "name", label: "Coluna do Nome", placeholder: "Ex: Nome" },
-  { key: "phone", label: "Coluna do Telefone", placeholder: "Ex: Telefone" },
-  { key: "event_type", label: "Coluna do Tipo de Evento", placeholder: "Ex: Evento" },
-  { key: "event_at", label: "Coluna da Data/Hora", placeholder: "Ex: Data Hora" },
-  { key: "gate", label: "Coluna da Catraca/Unidade", placeholder: "Ex: Catraca" },
-];
-const ENROLLMENTS_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
-  { key: "external_id", label: "Coluna da Matricula/ID", placeholder: "Ex: Matricula" },
-  { key: "name", label: "Coluna do Nome", placeholder: "Ex: Nome" },
-  { key: "phone", label: "Coluna do Telefone", placeholder: "Ex: Telefone" },
-  { key: "cpf", label: "Coluna do CPF/CNPJ", placeholder: "Ex: CPF" },
-  { key: "plan", label: "Coluna do Plano", placeholder: "Ex: Plano" },
-  { key: "enrollment_status", label: "Coluna do Status da Matricula", placeholder: "Ex: Situacao" },
-  { key: "due_at", label: "Coluna do Vencimento", placeholder: "Ex: Vencimento" },
-  { key: "end_at", label: "Coluna da Validade/Fim", placeholder: "Ex: Fim" },
-];
-
 function statusBadgeVariant(status?: string): "default" | "secondary" | "destructive" {
   if (status === "mapping_required") return "secondary";
   if (status === "error") return "destructive";
   return "default";
+}
+
+const REJECTION_REASON_LABELS: Record<string, string> = {
+  identity_required: "Identificacao obrigatoria (nome, matricula, telefone ou CPF)",
+  invalid_access_row: "Linha de acesso invalida (tipo/data/identificacao)",
+  enrollment_status_or_due_required: "Matricula sem status e sem data de vencimento/validade",
+  unknown_error: "Erro nao especificado",
+};
+
+function formatRejectedReason(reason: string) {
+  return REJECTION_REASON_LABELS[String(reason || "").trim()] || String(reason || "unknown_error").replace(/_/g, " ");
+}
+
+function getRejectedSummary(payload: any): Array<{ reason: string; count: number }> {
+  const summary = payload?.rejectedSummary && typeof payload.rejectedSummary === "object" ? payload.rejectedSummary : null;
+  if (summary) {
+    return Object.entries(summary)
+      .map(([reason, count]) => ({ reason: String(reason || "unknown_error"), count: Number(count || 0) }))
+      .filter((item) => item.count > 0);
+  }
+
+  const rejected = Array.isArray(payload?.rejected) ? payload.rejected : [];
+  const byReason = rejected.reduce((acc: Record<string, number>, row: any) => {
+    const reason = String(row?.error || "unknown_error");
+    acc[reason] = Number(acc[reason] || 0) + 1;
+    return acc;
+  }, {});
+  return Object.entries(byReason).map(([reason, count]) => ({ reason, count: Number(count || 0) }));
+}
+
+function renderRejectedReasons(payload: any, fallbackRejectedCount = 0) {
+  const items = getRejectedSummary(payload);
+  const totalRejected = Number((payload?.rejectedCount ?? payload?.rejected_count ?? fallbackRejectedCount) || 0);
+  if (totalRejected <= 0 || items.length === 0) return null;
+  return (
+    <div className="pt-1">
+      <p><strong>Motivos rejeicao:</strong></p>
+      <ul className="list-disc pl-5 text-xs text-muted-foreground space-y-0.5">
+        {items.map((item) => (
+          <li key={`${item.reason}-${item.count}`}>
+            {formatRejectedReason(item.reason)}: {item.count}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export default function ScaPage() {
@@ -52,8 +67,6 @@ export default function ScaPage() {
     scaImportHistory,
     refreshScaImportHistory,
     uploadScaImportFile,
-    getScaImportMapping,
-    saveScaImportMapping,
   } = usePanelData();
 
   const isAdmin = user?.role === "admin";
@@ -61,31 +74,27 @@ export default function ScaPage() {
   const [accessFile, setAccessFile] = useState<File | null>(null);
   const [enrollmentsFile, setEnrollmentsFile] = useState<File | null>(null);
   const [sendingType, setSendingType] = useState<ImportType | "">("");
-  const [savingMappingType, setSavingMappingType] = useState<ImportType | "">("");
-  const [studentsMapping, setStudentsMapping] = useState<MappingState>({});
-  const [accessMapping, setAccessMapping] = useState<MappingState>({});
-  const [enrollmentsMapping, setEnrollmentsMapping] = useState<MappingState>({});
   const [studentsLastResult, setStudentsLastResult] = useState<any>(null);
   const [accessLastResult, setAccessLastResult] = useState<any>(null);
   const [enrollmentsLastResult, setEnrollmentsLastResult] = useState<any>(null);
 
   const historyItems = useMemo(() => scaImportHistory || [], [scaImportHistory]);
-
-  const loadMappings = async () => {
-    if (!isAdmin) return;
-    const [students, access, enrollments] = await Promise.all([
-      getScaImportMapping("students"),
-      getScaImportMapping("access"),
-      getScaImportMapping("enrollments"),
-    ]);
-    setStudentsMapping((students || {}) as MappingState);
-    setAccessMapping((access || {}) as MappingState);
-    setEnrollmentsMapping((enrollments || {}) as MappingState);
-  };
+  const latestStudents = useMemo(
+    () => historyItems.find((item) => item.import_type === "students") || null,
+    [historyItems],
+  );
+  const latestAccess = useMemo(
+    () => historyItems.find((item) => item.import_type === "access") || null,
+    [historyItems],
+  );
+  const latestEnrollments = useMemo(
+    () => historyItems.find((item) => item.import_type === "enrollments") || null,
+    [historyItems],
+  );
 
   useEffect(() => {
     if (!isAdmin) return;
-    void Promise.all([refreshScaImportHistory(undefined, 60), loadMappings()]);
+    void refreshScaImportHistory(undefined, 60);
   }, [isAdmin, refreshScaImportHistory]);
 
   const handleUpload = async (type: ImportType, selectedFile?: File | null) => {
@@ -97,11 +106,6 @@ export default function ScaPage() {
       if (type === "students") setStudentsLastResult(result);
       else if (type === "access") setAccessLastResult(result);
       else setEnrollmentsLastResult(result);
-      if (!result.ok && result.error === "mapping_required" && result.detectedMapping) {
-        if (type === "students") setStudentsMapping((prev) => ({ ...prev, ...(result.detectedMapping || {}) }));
-        else if (type === "access") setAccessMapping((prev) => ({ ...prev, ...(result.detectedMapping || {}) }));
-        else setEnrollmentsMapping((prev) => ({ ...prev, ...(result.detectedMapping || {}) }));
-      }
       await refreshScaImportHistory(undefined, 60);
       if (result.ok) {
         if (type === "students") setStudentsFile(null);
@@ -118,18 +122,6 @@ export default function ScaPage() {
     else if (type === "access") setAccessFile(file);
     else setEnrollmentsFile(file);
     if (file) void handleUpload(type, file);
-  };
-
-  const handleSaveMapping = async (type: ImportType) => {
-    if (!isAdmin || savingMappingType) return;
-    setSavingMappingType(type);
-    try {
-      const mapping = type === "students" ? studentsMapping : type === "access" ? accessMapping : enrollmentsMapping;
-      const ok = await saveScaImportMapping(type, mapping);
-      if (ok) await loadMappings();
-    } finally {
-      setSavingMappingType("");
-    }
   };
 
   if (!isAdmin) {
@@ -174,6 +166,7 @@ export default function ScaPage() {
                 <p><strong>Status:</strong> {studentsLastResult.ok ? "ok" : studentsLastResult.error || "erro"}</p>
                 <p><strong>Aceitos:</strong> {Number(studentsLastResult.acceptedCount || 0)} | <strong>Rejeitados:</strong> {Number(studentsLastResult.rejectedCount || 0)}</p>
                 <p><strong>Confianca mapeamento:</strong> {Math.round(Number((studentsLastResult.mappingConfidence ?? studentsLastResult.confidence ?? 0)) * 100)}%</p>
+                {renderRejectedReasons(studentsLastResult, Number(studentsLastResult.rejectedCount || 0))}
               </div>
             ) : null}
           </CardContent>
@@ -200,6 +193,7 @@ export default function ScaPage() {
                 <p><strong>Status:</strong> {accessLastResult.ok ? "ok" : accessLastResult.error || "erro"}</p>
                 <p><strong>Aceitos:</strong> {Number(accessLastResult.acceptedCount || 0)} | <strong>Rejeitados:</strong> {Number(accessLastResult.rejectedCount || 0)}</p>
                 <p><strong>Confianca mapeamento:</strong> {Math.round(Number((accessLastResult.mappingConfidence ?? accessLastResult.confidence ?? 0)) * 100)}%</p>
+                {renderRejectedReasons(accessLastResult, Number(accessLastResult.rejectedCount || 0))}
               </div>
             ) : null}
           </CardContent>
@@ -226,6 +220,7 @@ export default function ScaPage() {
                 <p><strong>Status:</strong> {enrollmentsLastResult.ok ? "ok" : enrollmentsLastResult.error || "erro"}</p>
                 <p><strong>Aceitos:</strong> {Number(enrollmentsLastResult.acceptedCount || 0)} | <strong>Rejeitados:</strong> {Number(enrollmentsLastResult.rejectedCount || 0)}</p>
                 <p><strong>Confianca mapeamento:</strong> {Math.round(Number((enrollmentsLastResult.mappingConfidence ?? enrollmentsLastResult.confidence ?? 0)) * 100)}%</p>
+                {renderRejectedReasons(enrollmentsLastResult, Number(enrollmentsLastResult.rejectedCount || 0))}
               </div>
             ) : null}
           </CardContent>
@@ -235,67 +230,67 @@ export default function ScaPage() {
       <div className="grid gap-6 xl:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Mapeamento Manual - Alunos</CardTitle>
-            <CardDescription>Preencha com o nome exato das colunas do seu arquivo.</CardDescription>
+            <CardTitle className="text-base">Resumo - Alunos</CardTitle>
+            <CardDescription>Ultima importacao de cadastro de alunos.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {STUDENTS_FIELDS.map((field) => (
-              <div key={field.key} className="space-y-1">
-                <Label>{field.label}</Label>
-                <Input
-                  value={String(studentsMapping[field.key] || "")}
-                  onChange={(event) => setStudentsMapping((prev) => ({ ...prev, [field.key]: event.target.value }))}
-                  placeholder={field.placeholder}
-                />
-              </div>
-            ))}
-            <Button className="gap-1" onClick={() => handleSaveMapping("students")} disabled={savingMappingType !== ""}>
-              {savingMappingType === "students" ? "Salvando..." : "Salvar mapeamento de alunos"}
-            </Button>
+          <CardContent className="space-y-1 text-sm">
+            {latestStudents ? (
+              <>
+                <p><strong>Status:</strong> {latestStudents.status || "-"}</p>
+                <p><strong>Arquivo:</strong> {latestStudents.original_filename || "-"}</p>
+                <p><strong>Atualizado em:</strong> {formatDateTimeBr(latestStudents.created_at, "-")}</p>
+                <p><strong>Linhas:</strong> {Number(latestStudents.rows_total || 0)}</p>
+                <p><strong>Aceitos:</strong> {Number(latestStudents.accepted_count || 0)} | <strong>Rejeitados:</strong> {Number(latestStudents.rejected_count || 0)}</p>
+                <p><strong>Confianca mapeamento:</strong> {Math.round(Number(latestStudents.mapping_confidence || 0) * 100)}%</p>
+                {renderRejectedReasons(latestStudents?.result || {}, Number(latestStudents.rejected_count || 0))}
+              </>
+            ) : (
+              <p className="text-muted-foreground">Nenhuma importacao de alunos registrada.</p>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Mapeamento Manual - Acessos</CardTitle>
-            <CardDescription>Use os nomes de colunas para evento, data/hora e identificacao.</CardDescription>
+            <CardTitle className="text-base">Resumo - Acessos</CardTitle>
+            <CardDescription>Ultima importacao de eventos de acesso.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {ACCESS_FIELDS.map((field) => (
-              <div key={field.key} className="space-y-1">
-                <Label>{field.label}</Label>
-                <Input
-                  value={String(accessMapping[field.key] || "")}
-                  onChange={(event) => setAccessMapping((prev) => ({ ...prev, [field.key]: event.target.value }))}
-                  placeholder={field.placeholder}
-                />
-              </div>
-            ))}
-            <Button className="gap-1" onClick={() => handleSaveMapping("access")} disabled={savingMappingType !== ""}>
-              {savingMappingType === "access" ? "Salvando..." : "Salvar mapeamento de acessos"}
-            </Button>
+          <CardContent className="space-y-1 text-sm">
+            {latestAccess ? (
+              <>
+                <p><strong>Status:</strong> {latestAccess.status || "-"}</p>
+                <p><strong>Arquivo:</strong> {latestAccess.original_filename || "-"}</p>
+                <p><strong>Atualizado em:</strong> {formatDateTimeBr(latestAccess.created_at, "-")}</p>
+                <p><strong>Linhas:</strong> {Number(latestAccess.rows_total || 0)}</p>
+                <p><strong>Aceitos:</strong> {Number(latestAccess.accepted_count || 0)} | <strong>Rejeitados:</strong> {Number(latestAccess.rejected_count || 0)}</p>
+                <p><strong>Confianca mapeamento:</strong> {Math.round(Number(latestAccess.mapping_confidence || 0) * 100)}%</p>
+                {renderRejectedReasons(latestAccess?.result || {}, Number(latestAccess.rejected_count || 0))}
+              </>
+            ) : (
+              <p className="text-muted-foreground">Nenhuma importacao de acessos registrada.</p>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Mapeamento Manual - Matriculas</CardTitle>
-            <CardDescription>Mapeie status, vencimento e validade para detectar vencidos/atrasados.</CardDescription>
+            <CardTitle className="text-base">Resumo - Matriculas</CardTitle>
+            <CardDescription>Ultima importacao de vencimento/status de matriculas.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {ENROLLMENTS_FIELDS.map((field) => (
-              <div key={field.key} className="space-y-1">
-                <Label>{field.label}</Label>
-                <Input
-                  value={String(enrollmentsMapping[field.key] || "")}
-                  onChange={(event) => setEnrollmentsMapping((prev) => ({ ...prev, [field.key]: event.target.value }))}
-                  placeholder={field.placeholder}
-                />
-              </div>
-            ))}
-            <Button className="gap-1" onClick={() => handleSaveMapping("enrollments")} disabled={savingMappingType !== ""}>
-              {savingMappingType === "enrollments" ? "Salvando..." : "Salvar mapeamento de matriculas"}
-            </Button>
+          <CardContent className="space-y-1 text-sm">
+            {latestEnrollments ? (
+              <>
+                <p><strong>Status:</strong> {latestEnrollments.status || "-"}</p>
+                <p><strong>Arquivo:</strong> {latestEnrollments.original_filename || "-"}</p>
+                <p><strong>Atualizado em:</strong> {formatDateTimeBr(latestEnrollments.created_at, "-")}</p>
+                <p><strong>Linhas:</strong> {Number(latestEnrollments.rows_total || 0)}</p>
+                <p><strong>Aceitos:</strong> {Number(latestEnrollments.accepted_count || 0)} | <strong>Rejeitados:</strong> {Number(latestEnrollments.rejected_count || 0)}</p>
+                <p><strong>Confianca mapeamento:</strong> {Math.round(Number(latestEnrollments.mapping_confidence || 0) * 100)}%</p>
+                {renderRejectedReasons(latestEnrollments?.result || {}, Number(latestEnrollments.rejected_count || 0))}
+              </>
+            ) : (
+              <p className="text-muted-foreground">Nenhuma importacao de matriculas registrada.</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -328,6 +323,7 @@ export default function ScaPage() {
                 <p className="text-xs text-muted-foreground">
                   Linhas: {Number(item.rows_total || 0)} | Aceitos: {Number(item.accepted_count || 0)} | Rejeitados: {Number(item.rejected_count || 0)}
                 </p>
+                {renderRejectedReasons(item?.result || {}, Number(item.rejected_count || 0))}
                 <a href={`/admin/sca/imports/${encodeURIComponent(String(item.id))}/csv`} target="_blank" rel="noreferrer">
                   <Button size="sm" variant="outline" className="gap-1">
                     <Download className="h-4 w-4" /> Baixar CSV convertido

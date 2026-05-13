@@ -107,6 +107,7 @@ type ScaImportUploadResult = {
   insertedCount?: number;
   updatedCount?: number;
   rejected?: Array<Record<string, any>>;
+  rejectedSummary?: Record<string, number>;
   mappingConfidence?: number;
   mapping?: ScaImportMapping;
   error?: string;
@@ -1193,15 +1194,15 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       });
       const data = await res.json();
       await Promise.all([refreshScaImportHistory(), refreshScaInactiveStudents(5, 200, ""), refreshSystemHealth()]);
-      toast.success(`${type === "students" ? "Alunos" : "Acessos"} importados com sucesso.`);
+      const label = type === "students" ? "Alunos" : type === "access" ? "Acessos" : "Matriculas";
+      toast.success(`${label} importados com sucesso.`);
       return { ok: true, ...(data || {}) } as ScaImportUploadResult;
     } catch (error: any) {
       const code = String(error?.code || "");
       const status = Number(error?.status || 0);
       const details = (error?.details || {}) as any;
       if (code === "mapping_required") {
-        const missing = Array.isArray(details?.missingRequired) ? details.missingRequired.join(", ") : "";
-        toast.warning(missing ? `Mapeamento manual necessario (${missing}).` : "Mapeamento manual necessario para este arquivo.");
+        toast.warning("Arquivo com mapeamento automatico insuficiente. Revise o layout e tente novamente.");
       } else if (code === "file_too_large" || status === 413) {
         const maxBytes = Number(details?.maxBytes || 0);
         const maxMb = maxBytes > 0 ? Math.floor(maxBytes / (1024 * 1024)) : 0;
