@@ -20,6 +20,11 @@ function registerScaImportRoutes({
     const MAPPING_FILE = path.join(scaImportsDir, 'sca_import_mappings.json');
     const DEFAULT_SOURCE = 'sca_manual_upload';
     const MAPPING_THRESHOLD = 0.55;
+    const MAPPING_THRESHOLD_BY_TYPE = {
+        students: 0.55,
+        access: 0.55,
+        enrollments: 0.35
+    };
 
     db.prepare(`
         CREATE TABLE IF NOT EXISTS sca_manual_imports (
@@ -141,8 +146,8 @@ function registerScaImportRoutes({
             cpf: ['cpf', 'cpfcnpj', 'cnpj'],
             plan: ['plano', 'modalidade', 'produto', 'plan', 'pacote', 'turma'],
             enrollment_status: ['status', 'situacao', 'situacaodamatricula', 'statusmatricula', 'situacaomatricula', 'bloqueio', 'motivo'],
-            due_at: ['vencimento', 'datavencimento', 'proximovencimento', 'vencimentoem'],
-            end_at: ['fim', 'datatermino', 'termino', 'validade', 'fimdamatricula', 'expiraem']
+            due_at: ['vencimento', 'datavencimento', 'proximovencimento', 'vencimentoem', 'fim'],
+            end_at: ['fim', 'datatermino', 'termino', 'validade', 'fimdamatricula', 'expiraem', 'vencimento']
         }
     };
 
@@ -332,6 +337,16 @@ function registerScaImportRoutes({
         if (norm.includes('cancel') || norm.includes('tranc') || norm.includes('inativ')) return 'inativo';
         if (norm.includes('ativ') || norm.includes('regular') || norm.includes('adimpl') || norm.includes('ok') || norm.includes('liber')) return 'ativo';
         return text.toLowerCase();
+    }
+
+    function deriveEnrollmentStatus(rawStatus, dueAt, endAt, now) {
+        const parsed = parseEnrollmentStatus(rawStatus);
+        if (parsed) return parsed;
+        const reference = Number(dueAt || endAt || 0);
+        if (Number.isFinite(reference) && reference > 0) {
+            return reference < Number(now || Date.now()) ? 'vencido' : 'ativo';
+        }
+        return '';
     }
 
     function buildSourceEventId({ rowObject, mapping, eventAt, eventType, externalId, phone, name, gate }) {
@@ -562,7 +577,8 @@ function registerScaImportRoutes({
 
             const savedMappings = readMappings();
             const resolved = resolveMapping(type, parsed.headers, savedMappings[type] || {});
-            const mappingInsufficient = resolved.confidence < MAPPING_THRESHOLD || resolved.missingRequired.length > 0;
+            const minConfidence = Number(MAPPING_THRESHOLD_BY_TYPE[type] ?? MAPPING_THRESHOLD);
+            const mappingInsufficient = resolved.confidence < minConfidence || resolved.missingRequired.length > 0;
             if (mappingInsufficient) {
                 const importId = insertImportHistory({
                     importType: type,
@@ -691,9 +707,14 @@ function registerScaImportRoutes({
                         const phone = normalizePhoneDigits(rowObj[mapping.phone] || '');
                         const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
                         const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
-                        const enrollmentStatus = parseEnrollmentStatus(rowObj[mapping.enrollment_status] || '');
                         const dueAt = parseEventAt(rowObj[mapping.due_at] || '');
                         const endAt = parseEventAt(rowObj[mapping.end_at] || '');
+                        const enrollmentStatus = deriveEnrollmentStatus(
+                            rowObj[mapping.enrollment_status] || '',
+                            dueAt,
+                            endAt,
+                            now
+                        );
                         if (!externalId && !name && !phone && !cpf) {
                             rejected.push({ row: index + 2, error: 'identity_required' });
                             return;
