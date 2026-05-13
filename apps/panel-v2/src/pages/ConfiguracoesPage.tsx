@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1412,10 +1413,18 @@ export default function ConfiguracoesPage() {
                   <Upload className="h-4 w-4" /> Base diaria (SCA manual)
                 </CardTitle>
                 <CardDescription>
-                  Envie diariamente a base exportada (CSV/XLS/XLSX). O sistema converte automaticamente para CSV.
+                  Compatibilidade temporaria. O fluxo principal agora fica no modulo SCA, com importacao de Alunos e Acessos separadas.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="rounded-md border bg-muted/40 p-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm text-muted-foreground">Use o novo menu SCA para importacao completa com mapeamento manual.</p>
+                  <Button asChild variant="outline" size="sm" className="gap-1">
+                    <Link to="/sca">
+                      <Upload className="h-4 w-4" /> Abrir modulo SCA
+                    </Link>
+                  </Button>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
                   <Input
                     type="file"

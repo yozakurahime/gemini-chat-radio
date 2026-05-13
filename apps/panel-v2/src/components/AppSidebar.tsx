@@ -1,4 +1,4 @@
-import { MessageSquare, Clock, Settings, Dumbbell } from "lucide-react";
+import { MessageSquare, Clock, Settings, Dumbbell, Database } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useMemo } from "react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -16,16 +16,20 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 
-const items = [
-  { title: "Atendimento", url: "/", icon: MessageSquare },
-  { title: "Ponto", url: "/ponto", icon: Clock },
-  { title: "Configurações", url: "/configuracoes", icon: Settings },
-];
-
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
-  const { chats } = usePanelData();
+  const { chats, user } = usePanelData();
+  const isAdmin = user?.role === "admin";
+  const items = useMemo(
+    () => [
+      { title: "Atendimento", url: "/", icon: MessageSquare },
+      { title: "Ponto", url: "/ponto", icon: Clock },
+      ...(isAdmin ? [{ title: "SCA", url: "/sca", icon: Database }] : []),
+      { title: "Configuracoes", url: "/configuracoes", icon: Settings },
+    ],
+    [isAdmin],
+  );
   const unreadTotal = useMemo(
     () => chats.reduce((sum, chat) => sum + Number(chat.unreadCount || 0), 0),
     [chats],
@@ -66,18 +70,18 @@ export function AppSidebar() {
                       >
                         <span className="relative inline-flex">
                           <item.icon className={`mr-2 h-4 w-4 ${hasAttention ? "text-amber-300" : ""}`} />
-                          {hasAttention && (
+                          {hasAttention ? (
                             <>
                               <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-300" />
                               <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-300 motion-safe:animate-ping motion-reduce:animate-none" />
                             </>
-                          )}
+                          ) : null}
                         </span>
-                        {!collapsed && (
+                        {!collapsed ? (
                           <span className={`${hasAttention ? "font-semibold text-amber-100" : ""}`}>
                             {item.title}
                           </span>
-                        )}
+                        ) : null}
                         {!collapsed && hasAttention ? (
                           <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-200">Urgente</span>
                         ) : null}
@@ -98,3 +102,4 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
+
