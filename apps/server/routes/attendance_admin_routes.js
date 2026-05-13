@@ -405,6 +405,7 @@ app.get('/admin/sca/students/inactive', (req, res) => {
     const q = sanitizePublicText(req.query?.q || '', 120);
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
+    const maxAllowedEventAt = now + (12 * 60 * 60 * 1000);
     const cutoffAt = now - (days * dayMs);
     const where = [];
     const params = [];
@@ -413,6 +414,7 @@ app.get('/admin/sca/students/inactive', (req, res) => {
         const term = `%${q}%`;
         params.push(term, term, term, term);
     }
+    params.push(maxAllowedEventAt);
     params.push(cutoffAt);
     params.push(limit);
     const rows = db.prepare(`
@@ -431,9 +433,13 @@ app.get('/admin/sca/students/inactive', (req, res) => {
                         SELECT MAX(e.event_at)
                         FROM sca_access_events e
                         WHERE
-                            (p.external_id <> '' AND e.external_id = p.external_id)
-                            OR
-                            (p.phone <> '' AND e.phone = p.phone)
+                            (
+                                (p.external_id <> '' AND e.external_id = p.external_id)
+                                OR
+                                (p.phone <> '' AND e.phone = p.phone)
+                            )
+                            AND e.event_at > 0
+                            AND e.event_at <= ?
                     ),
                     p.last_access_at,
                     0
