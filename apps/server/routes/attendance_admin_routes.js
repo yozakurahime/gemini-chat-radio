@@ -406,19 +406,51 @@ app.get('/admin/sca/students/inactive', (req, res) => {
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
     const cutoffAt = now - (days * dayMs);
-    const where = ['last_access_at > 0', 'last_access_at <= ?'];
-    const params = [cutoffAt];
+    const where = [];
+    const params = [];
     if (q) {
-        where.push('(name LIKE ? OR phone LIKE ? OR external_id LIKE ? OR plan LIKE ?)');
+        where.push('(p.name LIKE ? OR p.phone LIKE ? OR p.external_id LIKE ? OR p.plan LIKE ?)');
         const term = `%${q}%`;
         params.push(term, term, term, term);
     }
+    params.push(cutoffAt);
     params.push(limit);
     const rows = db.prepare(`
-        SELECT id, external_id, name, phone, status, plan, last_access_at
-        FROM sca_people
-        WHERE ${where.join(' AND ')}
-        ORDER BY last_access_at ASC, id ASC
+        WITH resolved AS (
+            SELECT
+                p.id,
+                p.external_id,
+                p.name,
+                p.phone,
+                p.status,
+                p.plan,
+                p.last_access_at,
+                COALESCE(
+                    (
+                        SELECT MAX(e.event_at)
+                        FROM sca_access_events e
+                        WHERE
+                            (p.external_id <> '' AND e.external_id = p.external_id)
+                            OR
+                            (p.phone <> '' AND e.phone = p.phone)
+                    ),
+                    p.last_access_at,
+                    0
+                ) AS resolved_last_access_at
+            FROM sca_people p
+            ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        )
+        SELECT
+            id,
+            external_id,
+            name,
+            phone,
+            status,
+            plan,
+            resolved_last_access_at AS last_access_at
+        FROM resolved
+        WHERE resolved_last_access_at > 0 AND resolved_last_access_at <= ?
+        ORDER BY resolved_last_access_at ASC, id ASC
         LIMIT ?
     `).all(...params);
     const items = rows.map((row) => {
