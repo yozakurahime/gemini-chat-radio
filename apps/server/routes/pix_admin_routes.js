@@ -22,6 +22,7 @@ function registerPixAdminRoutes({
     normalizePixSafeConfigInput,
     setPixSafeConfig,
     pixDailyImportUpload,
+    PIX_DAILY_IMPORT_MAX_BYTES,
     storePixDailyImport,
     listPixDailyImports,
     resolvePixDailyImportCsvPath,
@@ -137,6 +138,13 @@ function registerPixAdminRoutes({
         const middleware = pixDailyImportUpload.single('file');
         middleware(req, res, (err) => {
             if (err) {
+                if (String(err?.code || '') === 'LIMIT_FILE_SIZE') {
+                    return res.status(413).json({
+                        ok: false,
+                        error: 'file_too_large',
+                        maxBytes: Number(PIX_DAILY_IMPORT_MAX_BYTES || 0)
+                    });
+                }
                 return res.status(400).json({ ok: false, error: 'upload_failed', detail: String(err?.message || err) });
             }
             const file = req.file;

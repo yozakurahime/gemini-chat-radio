@@ -67,6 +67,51 @@ type ScaInactiveStudent = {
   last_access_at: number;
   days_without_visit: number;
 };
+type ScaImportType = "students" | "access";
+type ScaImportHistoryItem = {
+  id: number;
+  import_type: ScaImportType;
+  original_filename: string;
+  source_ext: string;
+  csv_filename: string;
+  status: string;
+  rows_total: number;
+  accepted_count: number;
+  rejected_count: number;
+  mapping_confidence: number;
+  uploaded_by?: string;
+  created_at?: number;
+  result?: Record<string, any>;
+};
+type ScaImportMapping = {
+  external_id?: string;
+  name?: string;
+  phone?: string;
+  cpf?: string;
+  status?: string;
+  plan?: string;
+  event_type?: string;
+  event_at?: string;
+  gate?: string;
+};
+type ScaImportUploadResult = {
+  ok: boolean;
+  importId?: number;
+  type?: ScaImportType;
+  rowsTotal?: number;
+  acceptedCount?: number;
+  rejectedCount?: number;
+  insertedCount?: number;
+  updatedCount?: number;
+  rejected?: Array<Record<string, any>>;
+  mappingConfidence?: number;
+  mapping?: ScaImportMapping;
+  error?: string;
+  confidence?: number;
+  missingRequired?: string[];
+  detectedMapping?: ScaImportMapping;
+  headers?: string[];
+};
 type AiPlaybooks = {
   enabled: boolean;
   sections: {
@@ -329,6 +374,11 @@ type PanelDataContextValue = {
   pixDailyImports: PixDailyImport[];
   refreshPixDailyImports: () => Promise<void>;
   uploadPixDailyImport: (file: File) => Promise<boolean>;
+  scaImportHistory: ScaImportHistoryItem[];
+  refreshScaImportHistory: (type?: ScaImportType, limit?: number) => Promise<void>;
+  uploadScaImportFile: (type: ScaImportType, file: File) => Promise<ScaImportUploadResult>;
+  getScaImportMapping: (type: ScaImportType) => Promise<ScaImportMapping | null>;
+  saveScaImportMapping: (type: ScaImportType, mapping: ScaImportMapping) => Promise<boolean>;
   scaInactiveStudents: ScaInactiveStudent[];
   refreshScaInactiveStudents: (days?: number, limit?: number, query?: string) => Promise<void>;
   aiPlaybooks: AiPlaybooks | null;
@@ -634,6 +684,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [pixCharges, setPixCharges] = useState<PixCharge[]>([]);
   const [pixSafeConfig, setPixSafeConfig] = useState<PixSafeConfig | null>(null);
   const [pixDailyImports, setPixDailyImports] = useState<PixDailyImport[]>([]);
+  const [scaImportHistory, setScaImportHistory] = useState<ScaImportHistoryItem[]>([]);
   const [scaInactiveStudents, setScaInactiveStudents] = useState<ScaInactiveStudent[]>([]);
   const [aiPlaybooks, setAiPlaybooks] = useState<AiPlaybooks | null>(null);
   const [opsDailySummary, setOpsDailySummary] = useState<OpsDailySummary | null>(null);
@@ -1045,6 +1096,13 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return true;
     } catch (error: any) {
       const code = String(error?.code || "");
+      const status = Number(error?.status || 0);
+      const maxBytes = Number((error?.details as any)?.maxBytes || 0);
+      if (status === 413 || code === "file_too_large") {
+        const maxMb = maxBytes > 0 ? Math.max(1, Math.round(maxBytes / (1024 * 1024))) : null;
+        toast.error(maxMb ? `Arquivo muito grande. Limite atual: ${maxMb} MB.` : "Arquivo muito grande para upload.");
+        return false;
+      }
       if (code === "invalid_file_type") {
         toast.error("Arquivo invalido. Envie CSV, XLS ou XLSX.");
       } else {
@@ -1053,6 +1111,82 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
   }, [refreshPixDailyImports, user?.role]);
+
+  const refreshScaImportHistory = useCallback(async (type?: ScaImportType, limit = 40) => {
+    if (user?.role !== "admin") {
+      setScaImportHistory([]);
+      return;
+    }
+    const params = new URLSearchParams();
+    if (type) params.set("type", type);
+    params.set("limit", String(Math.max(1, Math.min(200, Math.floor(Number(limit) || 40)))));
+    try {
+      const res = await apiFetch(`/admin/sca/imports?${params.toString()}`);
+      const data = await res.json();
+      setScaImportHistory(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setScaImportHistory([]);
+    }
+  }, [user?.role]);
+
+  const getScaImportMapping = useCallback(async (type: ScaImportType) => {
+    if (user?.role !== "admin") return null;
+    try {
+      const res = await apiFetch(`/admin/sca/imports/mapping?type=${encodeURIComponent(type)}`);
+      const data = await res.json();
+      return (data?.mapping || null) as ScaImportMapping | null;
+    } catch {
+      return null;
+    }
+  }, [user?.role]);
+
+  const saveScaImportMapping = useCallback(async (type: ScaImportType, mapping: ScaImportMapping) => {
+    if (user?.role !== "admin") return false;
+    try {
+      await apiFetch(`/admin/sca/imports/mapping?type=${encodeURIComponent(type)}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify({ mapping: mapping || {} }),
+      });
+      toast.success("Mapeamento SCA salvo.");
+      return true;
+    } catch {
+      toast.error("Falha ao salvar mapeamento SCA.");
+      return false;
+    }
+  }, [user?.role]);
+
+  const uploadScaImportFile = useCallback(async (type: ScaImportType, file: File) => {
+    if (user?.role !== "admin") return { ok: false, error: "forbidden" } as ScaImportUploadResult;
+    if (!file) return { ok: false, error: "missing_file" } as ScaImportUploadResult;
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await apiFetch(`/admin/sca/imports/upload?type=${encodeURIComponent(type)}`, {
+        method: "POST",
+        body: form,
+      });
+      const data = await res.json();
+      await Promise.all([refreshScaImportHistory(), refreshScaInactiveStudents(5, 200, ""), refreshSystemHealth()]);
+      toast.success(`${type === "students" ? "Alunos" : "Acessos"} importados com sucesso.`);
+      return { ok: true, ...(data || {}) } as ScaImportUploadResult;
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      const details = (error?.details || {}) as any;
+      if (code === "mapping_required") {
+        toast.warning("Mapeamento manual necessario para este arquivo.");
+      } else if (code === "invalid_file_type") {
+        toast.error("Arquivo invalido. Envie CSV, XLS ou XLSX.");
+      } else {
+        toast.error("Falha ao importar arquivo SCA.");
+      }
+      return {
+        ok: false,
+        error: code || "upload_failed",
+        ...(details || {}),
+      } as ScaImportUploadResult;
+    }
+  }, [refreshScaImportHistory, refreshScaInactiveStudents, refreshSystemHealth, user?.role]);
 
   const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "") => {
     if (!user) {
@@ -1139,11 +1273,12 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       refreshPixCharges(),
       loadPixSafeConfig(),
       refreshPixDailyImports(),
+      refreshScaImportHistory(undefined, 40),
       refreshScaInactiveStudents(5, 200, ""),
       loadAiPlaybooks(),
       refreshOpsDailySummary(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents, loadAiPlaybooks, refreshOpsDailySummary, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaImportHistory, refreshScaInactiveStudents, loadAiPlaybooks, refreshOpsDailySummary, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -1534,6 +1669,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setPixCharges([]);
     setPixSafeConfig(null);
     setPixDailyImports([]);
+    setScaImportHistory([]);
     setScaInactiveStudents([]);
     setAiPlaybooks(null);
     setOpsDailySummary(null);
@@ -2039,6 +2175,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     pixDailyImports,
     refreshPixDailyImports,
     uploadPixDailyImport,
+    scaImportHistory,
+    refreshScaImportHistory,
+    uploadScaImportFile,
+    getScaImportMapping,
+    saveScaImportMapping,
     scaInactiveStudents,
     refreshScaInactiveStudents,
     aiPlaybooks,
@@ -2112,6 +2253,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     pixDailyImports,
     refreshPixDailyImports,
     uploadPixDailyImport,
+    scaImportHistory,
+    refreshScaImportHistory,
+    uploadScaImportFile,
+    getScaImportMapping,
+    saveScaImportMapping,
     scaInactiveStudents,
     refreshScaInactiveStudents,
     aiPlaybooks,

@@ -112,6 +112,7 @@ const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
 const { registerPixAdminRoutes } = require('./routes/pix_admin_routes');
+const { registerScaImportRoutes } = require('./routes/sca_import_routes');
 const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
 const { startRuntimeServices } = require('./bootstrap/runtime_startup');
 const {
@@ -335,6 +336,10 @@ const envNum = (raw, fallback) => {
     const n = Number(raw);
     return Number.isFinite(n) ? n : fallback;
 };
+const PIX_DAILY_IMPORT_MAX_BYTES = Math.max(
+    1 * 1024 * 1024,
+    Math.floor(envNum(process.env.PIX_DAILY_IMPORT_MAX_MB, 20) * 1024 * 1024)
+);
 const RADIO_SILENCE_SAMPLE_SEC = Math.max(5, envNum(process.env.RADIO_SILENCE_SAMPLE_SEC, 22));
 const RADIO_SILENCE_MEAN_DB = envNum(process.env.RADIO_SILENCE_MEAN_DB, -55);
 const RADIO_SILENCE_MAX_DB = envNum(process.env.RADIO_SILENCE_MAX_DB, -45);
@@ -1431,12 +1436,16 @@ db.prepare(`CREATE TABLE IF NOT EXISTS sca_people (
     external_id TEXT DEFAULT '',
     name TEXT DEFAULT '',
     phone TEXT DEFAULT '',
+    cpf TEXT DEFAULT '',
     status TEXT DEFAULT '',
     plan TEXT DEFAULT '',
     last_access_at INTEGER DEFAULT 0,
     created_at INTEGER,
     updated_at INTEGER
 )`).run();
+try {
+    db.prepare("ALTER TABLE sca_people ADD COLUMN cpf TEXT DEFAULT ''").run();
+} catch (_) {}
 db.prepare(`CREATE TABLE IF NOT EXISTS sca_access_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_event_id TEXT NOT NULL,
@@ -1548,6 +1557,7 @@ db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_access_phone_at ON sca_access_eve
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_access_external_at ON sca_access_events(external_id, event_at)').run();
 db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_people_external ON sca_people(external_id) WHERE external_id <> ''").run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_phone ON sca_people(phone)').run();
+db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_people_cpf ON sca_people(cpf)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_runs_finished ON sca_sync_runs(finished_at)').run();
 db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uniq_sca_connector_source ON sca_sync_connector_status(source)').run();
 db.prepare('CREATE INDEX IF NOT EXISTS idx_sca_connector_updated ON sca_sync_connector_status(updated_at)').run();
@@ -2333,16 +2343,18 @@ function collectOperationalComponents() {
 
     components.backup = collectBackupMetrics(thresholds);
 
-    if (!SCA_SYNC_ENABLED) {
+    const scaStatus = getScaSyncStatus();
+    const hasManualScaRuns = Number(scaStatus?.runs?.total || 0) > 0;
+    if (!SCA_SYNC_ENABLED && !hasManualScaRuns) {
         components.sca_sync = {
             status: 'ok',
-            message: 'sca sync desativado',
+            message: 'sca sync externo desativado',
             metrics: {
-                enabled: false
+                enabled: false,
+                source: 'disabled'
             }
         };
     } else {
-        const scaStatus = getScaSyncStatus();
         const lagSec = Number(scaStatus?.connector?.lag_sec ?? scaStatus?.events?.lag_sec ?? 0);
         const warnLag = Math.max(60, Number(thresholds?.scaLagWarnSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagWarnSec));
         const criticalLag = Math.max(warnLag + 60, Number(thresholds?.scaLagCriticalSec || OPS_ALERTS_DEFAULT_CONFIG.thresholds.scaLagCriticalSec));
@@ -2367,6 +2379,7 @@ function collectOperationalComponents() {
             message: scaMessage,
             metrics: {
                 enabled: true,
+                source: String(scaStatus?.connector?.source || (SCA_SYNC_ENABLED ? 'sca_db' : 'sca_manual_upload')),
                 lagSec,
                 warnLag,
                 criticalLag,
@@ -7104,6 +7117,7 @@ const PIX_SAFE_SWEEP_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.PIX_SA
 const PIX_PAYMENT_ALERT_WHATSAPP = String(process.env.PIX_PAYMENT_ALERT_WHATSAPP || process.env.OWNER_WHATSAPP || '').trim();
 const PIX_WEBHOOK_STALE_HOURS = Math.max(6, Math.min(336, Number(process.env.PIX_WEBHOOK_STALE_HOURS || 72)));
 const PIX_DAILY_IMPORTS_DIR = path.join(STORAGE_DIR, 'pix_daily_imports');
+const SCA_IMPORTS_DIR = path.join(STORAGE_DIR, 'sca_imports');
 const pixConversationState = Object.create(null);
 const pixWebhookMonitor = {
     lastEventAt: 0,
@@ -8231,6 +8245,10 @@ const wss = new WebSocketServer({ server });
 const upload = multer({ storage: multer.diskStorage({ destination: (req, f, cb) => cb(null, ADS_DIR), filename: (req, f, cb) => cb(null, f.originalname.replace(/[^a-zA-Z0-9.]/g, '_')) }) });
 const pixDailyImportUpload = multer({
     storage: multer.memoryStorage(),
+    limits: { fileSize: PIX_DAILY_IMPORT_MAX_BYTES, files: 1 }
+});
+const scaImportUpload = multer({
+    storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 1 }
 });
 const chatImageUpload = multer({
@@ -8434,10 +8452,29 @@ registerPixAdminRoutes({
     normalizePixSafeConfigInput,
     setPixSafeConfig,
     pixDailyImportUpload,
+    PIX_DAILY_IMPORT_MAX_BYTES,
     storePixDailyImport,
     listPixDailyImports,
     resolvePixDailyImportCsvPath,
     getPixWebhookMonitorSnapshot
+});
+
+registerScaImportRoutes({
+    app,
+    db,
+    fs,
+    path,
+    crypto,
+    XLSX,
+    requireAdmin,
+    sanitizePublicText,
+    normalizePhoneDigits,
+    logAdminAction,
+    ensureDir,
+    isPathInside,
+    scaImportUpload,
+    scaImportsDir: SCA_IMPORTS_DIR,
+    upsertScaAccessBatch
 });
 
 // --- ATTENDANCE (PONTO) ---
