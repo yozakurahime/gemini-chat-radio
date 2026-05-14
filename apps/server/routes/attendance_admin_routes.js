@@ -462,11 +462,7 @@ app.get('/admin/sca/students/inactive', (req, res) => {
                         SELECT MAX(e.event_at)
                         FROM sca_access_events e
                         WHERE
-                            (
-                                (p.external_id <> '' AND e.external_id = p.external_id)
-                                OR
-                                (p.phone <> '' AND e.phone = p.phone)
-                            )
+                            (p.external_id <> '' AND e.external_id = p.external_id)
                             AND e.event_at > 0
                             AND e.event_at <= ?
                     ),
@@ -485,7 +481,8 @@ app.get('/admin/sca/students/inactive', (req, res) => {
             resolved_last_access_at AS last_access_at,
             updated_at
         FROM resolved
-        WHERE resolved_last_access_at > 0
+        WHERE external_id <> ''
+          AND resolved_last_access_at > 0
           AND resolved_last_access_at <= ?
         ORDER BY resolved_last_access_at ASC, id ASC
         LIMIT ?
@@ -569,11 +566,7 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
                     SELECT MAX(e.event_at)
                     FROM sca_access_events e
                     WHERE
-                        (
-                            (p.external_id <> '' AND e.external_id = p.external_id)
-                            OR
-                            (p.phone <> '' AND e.phone = p.phone)
-                        )
+                        (p.external_id <> '' AND e.external_id = p.external_id)
                         AND e.event_at > 0
                 ),
                 0

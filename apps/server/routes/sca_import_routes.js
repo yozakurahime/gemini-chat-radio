@@ -77,23 +77,17 @@ function registerScaImportRoutes({
         return '';
     }
 
-    function normalizeExternalId(raw) {
+    function normalizeMatriculaCanonical(raw) {
         if (raw == null) return '';
-        if (typeof raw === 'number' && Number.isFinite(raw)) {
-            const normalized = String(Math.trunc(raw));
-            return /^0+$/.test(normalized) ? '' : normalized;
-        }
-        const text = sanitizePublicText(String(raw || ''), 120).trim();
+        const text = String(raw || '').trim();
         if (!text) return '';
-        const numericWithZeroDecimals = text.match(/^(\d+)[.,]0+$/);
-        if (numericWithZeroDecimals) {
-            const normalized = numericWithZeroDecimals[1];
-            return /^0+$/.test(normalized) ? '' : normalized;
-        }
-        if (/^\d+$/.test(text)) {
-            return /^0+$/.test(text) ? '' : text;
-        }
-        return text;
+        const digits = text.replace(/\D/g, '');
+        if (!digits || /^0+$/.test(digits)) return '';
+        return digits.replace(/^0+/, '');
+    }
+
+    function normalizeExternalId(raw) {
+        return normalizeMatriculaCanonical(raw);
     }
 
     function normalizeExt(filename = '') {
@@ -274,14 +268,13 @@ function registerScaImportRoutes({
 
         const missing = [];
         if (type === 'students') {
-            if (!resolved.name) missing.push('name');
-            if (!resolved.external_id && !resolved.cpf && !resolved.phone) missing.push('external_id|cpf|phone');
+            if (!resolved.external_id) missing.push('external_id');
         } else if (type === 'access') {
             if (!resolved.event_type) missing.push('event_type');
             if (!resolved.event_at) missing.push('event_at');
-            if (!resolved.external_id && !resolved.phone && !resolved.name) missing.push('external_id|phone|name');
+            if (!resolved.external_id) missing.push('external_id');
         } else if (type === 'enrollments') {
-            if (!resolved.external_id && !resolved.cpf && !resolved.phone && !resolved.name) missing.push('external_id|cpf|phone|name');
+            if (!resolved.external_id) missing.push('external_id');
             if (!resolved.enrollment_status && !resolved.start_at && !resolved.due_at && !resolved.end_at) missing.push('enrollment_status|start_at|due_at|end_at');
         }
         return {
@@ -421,17 +414,12 @@ function registerScaImportRoutes({
         }, {});
     }
 
-    function upsertStudentRow({ externalId, name, phone, cpf, status, plan, membershipDueAt = 0, membershipEndAt = 0, now }) {
+    function upsertStudentRow({ externalId, name, phone, cpf, status, plan, membershipDueAt = 0, membershipEndAt = 0, now, requireExisting = false }) {
         let row = null;
         if (externalId) {
             row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
         }
-        if (!row && cpf) {
-            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE cpf=? LIMIT 1').get(cpf);
-        }
-        if (!row && phone) {
-            row = db.prepare('SELECT id, external_id, name, phone, cpf, status, plan, last_access_at, membership_due_at, membership_end_at FROM sca_people WHERE phone=? LIMIT 1').get(phone);
-        }
+        if (!row && requireExisting) return { inserted: 0, updated: 0, missing: true };
         if (!row) {
             db.prepare(`
                 INSERT INTO sca_people (external_id, name, phone, cpf, status, plan, membership_due_at, membership_end_at, membership_updated_at, last_access_at, created_at, updated_at)
@@ -600,8 +588,8 @@ function registerScaImportRoutes({
                     const cpf = normalizeCpf(rowObj[mapping.cpf] || '');
                     const status = sanitizePublicText(rowObj[mapping.status] || '', 40);
                     const plan = sanitizePublicText(rowObj[mapping.plan] || '', 120);
-                    if (!name && !externalId && !phone && !cpf) {
-                        rejected.push({ row: index + 2, error: 'identity_required' });
+                    if (!externalId) {
+                        rejected.push({ row: index + 2, error: 'missing_or_invalid_matricula' });
                         return;
                     }
                     const result = upsertStudentRow({ externalId, name, phone, cpf, status, plan, now });
@@ -621,8 +609,17 @@ function registerScaImportRoutes({
                 const eventType = inferAccessEventType(rowObj[mapping.event_type] || '', rowObj);
                 const eventAt = parseEventAt(rowObj[mapping.event_at] || '');
                 const gate = sanitizePublicText(rowObj[mapping.gate] || '', 120);
-                if (!eventType || !eventAt || (!externalId && !phone && !name)) {
+                if (!externalId) {
+                    rejected.push({ row: index + 2, error: 'missing_or_invalid_matricula' });
+                    return;
+                }
+                if (!eventType || !eventAt) {
                     rejected.push({ row: index + 2, error: 'invalid_access_row' });
+                    return;
+                }
+                const hasStudent = db.prepare('SELECT 1 FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
+                if (!hasStudent) {
+                    rejected.push({ row: index + 2, error: 'matricula_not_found_in_students' });
                     return;
                 }
                 const sourceEventId = buildSourceEventId({
@@ -692,8 +689,8 @@ function registerScaImportRoutes({
                         endAt,
                         now
                     );
-                    if (!externalId && !name && !phone && !cpf) {
-                        rejected.push({ row: index + 2, error: 'identity_required' });
+                    if (!externalId) {
+                        rejected.push({ row: index + 2, error: 'missing_or_invalid_matricula' });
                         return;
                     }
                     if (!enrollmentStatus && startAt > 0) {
@@ -712,8 +709,13 @@ function registerScaImportRoutes({
                         plan,
                         membershipDueAt: dueAt,
                         membershipEndAt: endAt,
-                        now
+                        now,
+                        requireExisting: true
                     });
+                    if (result.missing) {
+                        rejected.push({ row: index + 2, error: 'matricula_not_found_in_students' });
+                        return;
+                    }
                     acceptedCount += 1;
                     insertedCount += Number(result.inserted || 0);
                     updatedCount += Number(result.updated || 0);

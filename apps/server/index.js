@@ -8239,11 +8239,7 @@ function getDailyOperationsSnapshot() {
                             SELECT MAX(e.event_at)
                             FROM sca_access_events e
                             WHERE
-                                (
-                                    (p.external_id <> '' AND e.external_id = p.external_id)
-                                    OR
-                                    (p.phone <> '' AND e.phone = p.phone)
-                                )
+                                (p.external_id <> '' AND e.external_id = p.external_id)
                                 AND e.event_at > 0
                         ),
                         0
@@ -8252,7 +8248,7 @@ function getDailyOperationsSnapshot() {
             )
             SELECT COUNT(1) AS total
             FROM resolved
-            WHERE resolved_last_access_at = 0 OR resolved_last_access_at <= ?
+            WHERE resolved_last_access_at > 0 AND resolved_last_access_at <= ?
         `, cutoffAt);
     };
     const pixGeneratedToday = countSafe(`
