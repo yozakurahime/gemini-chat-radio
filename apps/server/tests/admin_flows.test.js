@@ -763,7 +763,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   const staleAccessAt = now - (12 * dayMs);
   const accessCsv = [
     'Matricula;Nome;Telefone;Evento;DataHora;Catraca',
-    `A100;Bruno QA;62999998888;Bloqueado;${formatBrDateTime(recentAccessAt, '-')};Catraca 1`,
+    `A100;Bruno QA;62999998888;Entrada;${formatBrDateTime(recentAccessAt, '/')};Catraca 1`,
     `A200;Lorena QA;62999997777;Entrada;${formatBrDateTime(staleAccessAt, '/')};Catraca 2`,
   ].join('\n');
   const accessForm = new FormData();
