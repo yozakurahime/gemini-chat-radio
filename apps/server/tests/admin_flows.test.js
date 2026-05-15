@@ -733,6 +733,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   const studentsCsv = [
     'Matricula;Nome;Telefone;CPF;Status;Plano',
     'A100;Bruno QA;62999998888;12345678901;Ativo;Mensal',
+    'A200;Lorena QA;62999997777;10987654321;Ativo;Premium',
   ].join('\n');
   const studentsForm = new FormData();
   studentsForm.append('file', new Blob([studentsCsv], { type: 'text/csv' }), 'students.csv');
@@ -747,9 +748,23 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(uploadStudents.ok, true);
   assert.equal(Number(uploadStudents.acceptedCount || 0), 1);
 
+  const dayMs = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const formatBrDateTime = (ts, separator = '/') => {
+    const d = new Date(ts);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = String(d.getFullYear());
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${dd}${separator}${mm}${separator}${yyyy} ${hh}:${mi}:00`;
+  };
+  const recentAccessAt = now - (3 * dayMs);
+  const staleAccessAt = now - (12 * dayMs);
   const accessCsv = [
     'Matricula;Nome;Telefone;Evento;DataHora;Catraca',
-    'A100;Bruno QA;62999998888;Entrada;10/05/2026 18:00:00;Catraca 1',
+    `A100;Bruno QA;62999998888;Bloqueado;${formatBrDateTime(recentAccessAt, '-')};Catraca 1`,
+    `A200;Lorena QA;62999997777;Entrada;${formatBrDateTime(staleAccessAt, '/')};Catraca 2`,
   ].join('\n');
   const accessForm = new FormData();
   accessForm.append('file', new Blob([accessCsv], { type: 'text/csv' }), 'access.csv');
@@ -762,7 +777,10 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(uploadAccessRes.status, 200);
   const uploadAccess = await uploadAccessRes.json();
   assert.equal(uploadAccess.ok, true);
-  assert.equal(Number(uploadAccess.acceptedCount || 0), 1);
+  assert.equal(Number(uploadAccess.acceptedCount || 0), 2);
+  assert.ok(Number(uploadAccess?.syncResult?.minEventAt || 0) > 0);
+  assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) > 0);
+  assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) >= Number(uploadAccess?.syncResult?.minEventAt || 0));
 
   const history = await reqJson(server.baseUrl, '/admin/sca/imports?limit=10', {
     cookie: auth.cookie,
@@ -773,10 +791,22 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.ok(items.some((item) => item.import_type === 'students'));
   assert.ok(items.some((item) => item.import_type === 'access'));
 
-  const inactive = await reqJson(server.baseUrl, '/admin/sca/students/inactive?days=1&limit=10', {
+  const inactiveDays5 = await reqJson(server.baseUrl, '/admin/sca/students/inactive?days=5&limit=10', {
     cookie: auth.cookie,
   });
-  assert.equal(inactive.res.status, 200);
-  assert.equal(inactive.data.ok, true);
+  assert.equal(inactiveDays5.res.status, 200);
+  assert.equal(inactiveDays5.data.ok, true);
+  const itemsDays5 = Array.isArray(inactiveDays5.data.items) ? inactiveDays5.data.items : [];
+  assert.ok(itemsDays5.some((item) => String(item.external_id || '') === '200'));
+  assert.ok(!itemsDays5.some((item) => String(item.external_id || '') === '100'));
+
+  const inactiveDays2 = await reqJson(server.baseUrl, '/admin/sca/students/inactive?days=2&limit=10', {
+    cookie: auth.cookie,
+  });
+  assert.equal(inactiveDays2.res.status, 200);
+  assert.equal(inactiveDays2.data.ok, true);
+  const itemsDays2 = Array.isArray(inactiveDays2.data.items) ? inactiveDays2.data.items : [];
+  assert.ok(itemsDays2.some((item) => String(item.external_id || '') === '100'));
+  assert.ok(itemsDays2.some((item) => String(item.external_id || '') === '200'));
 });
 

@@ -1419,7 +1419,7 @@ export default function ConfiguracoesPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="rounded-md border bg-muted/40 p-3 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm text-muted-foreground">Use o novo menu SCA para importacao completa com mapeamento manual.</p>
+                  <p className="text-sm text-muted-foreground">Use o novo menu SCA para importacao completa (Alunos + Matriculas + Acessos) e resumo persistente.</p>
                   <Button asChild variant="outline" size="sm" className="gap-1">
                     <Link to="/sca">
                       <Upload className="h-4 w-4" /> Abrir modulo SCA

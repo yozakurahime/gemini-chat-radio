@@ -71,6 +71,14 @@ type ScaInactiveStudent = {
   days_without_visit: number;
   inactive_reason?: "no_recent_access" | "no_access_record" | string;
 };
+type ScaInactiveSnapshot = {
+  days: number;
+  window_days: number;
+  window_start_at: number;
+  cutoff_at: number;
+  generated_at: number;
+  total: number;
+};
 type ScaImportType = "students" | "access" | "enrollments";
 type ScaImportHistoryItem = {
   id: number;
@@ -435,7 +443,7 @@ type PanelDataContextValue = {
     plan: string;
   }>) => Promise<boolean>;
   scaInactiveStudents: ScaInactiveStudent[];
-  refreshScaInactiveStudents: (days?: number, limit?: number, query?: string) => Promise<void>;
+  refreshScaInactiveStudents: (days?: number, limit?: number, query?: string, windowDays?: number) => Promise<ScaInactiveSnapshot | null>;
   sendScaReactivationBatch: (payload: { studentIds: number[]; template: string; templateName?: string; maxPerHour?: number; delayMs?: number }) => Promise<{ ok: boolean; sentCount?: number; failedCount?: number; error?: string }>;
   loadScaReactivationStats: () => Promise<{ sentLastHour?: number; sentLast24h?: number; failedLast24h?: number } | null>;
   aiPlaybooks: AiPlaybooks | null;
@@ -1265,16 +1273,17 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user?.role]);
 
-  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "") => {
+  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "", windowDays = 30) => {
     if (!user) {
       setScaInactiveStudents([]);
-      return;
+      return null;
     }
     const safeDays = Math.max(1, Math.min(180, Math.floor(Number(days) || 5)));
     const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
     const params = new URLSearchParams({
       days: String(safeDays),
       limit: String(safeLimit),
+      window_days: String(Math.max(1, Math.min(90, Math.floor(Number(windowDays) || 30)))),
     });
     const q = String(query || "").trim();
     if (q) params.set("q", q);
@@ -1282,8 +1291,17 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       const res = await apiFetch(`/admin/sca/students/inactive?${params.toString()}`);
       const data = await res.json();
       setScaInactiveStudents(Array.isArray(data?.items) ? data.items : []);
+      return {
+        days: Number(data?.days || safeDays),
+        window_days: Number(data?.window_days || windowDays),
+        window_start_at: Number(data?.window_start_at || 0),
+        cutoff_at: Number(data?.cutoff_at || 0),
+        generated_at: Number(data?.generated_at || 0),
+        total: Number(data?.total || 0),
+      } as ScaInactiveSnapshot;
     } catch {
       setScaInactiveStudents([]);
+      return null;
     }
   }, [user]);
 

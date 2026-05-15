@@ -18,6 +18,11 @@ function statusBadgeVariant(status?: string): "default" | "secondary" | "destruc
 const REJECTION_REASON_LABELS: Record<string, string> = {
   identity_required: "Identificacao obrigatoria (nome, matricula, telefone ou CPF)",
   invalid_access_row: "Linha de acesso invalida (tipo/data/identificacao)",
+  invalid_access_event_type: "Tipo de evento de acesso invalido",
+  invalid_access_event_at: "Data/hora do acesso invalida",
+  future_event_at: "Data/hora de acesso no futuro fora da tolerancia",
+  missing_or_invalid_matricula: "Matricula ausente ou invalida",
+  matricula_not_found_in_students: "Matricula nao encontrada na base de alunos importada",
   enrollment_status_or_due_required: "Matricula sem status e sem data de vencimento/validade",
   unknown_error: "Erro nao especificado",
 };
@@ -68,6 +73,18 @@ function renderRejectedReasons(payload: any, fallbackRejectedCount = 0) {
   );
 }
 
+function renderAccessDetectedRange(payload: any) {
+  const syncResult = payload?.syncResult && typeof payload.syncResult === "object" ? payload.syncResult : {};
+  const minEventAt = Number(syncResult?.minEventAt || 0);
+  const maxEventAt = Number(syncResult?.maxEventAt || 0);
+  if (minEventAt <= 0 && maxEventAt <= 0) return null;
+  return (
+    <p className="text-xs text-muted-foreground">
+      Faixa detectada: {minEventAt > 0 ? formatDateTimeBr(minEventAt, "-") : "-"} ate {maxEventAt > 0 ? formatDateTimeBr(maxEventAt, "-") : "-"}
+    </p>
+  );
+}
+
 export default function ScaPage() {
   const {
     user,
@@ -92,6 +109,13 @@ export default function ScaPage() {
   const [bundleReport, setBundleReport] = useState<any>(null);
   const [editingIssueId, setEditingIssueId] = useState<number>(0);
   const [editingIssueDraft, setEditingIssueDraft] = useState<Record<string, string>>({});
+  const bundleMissing = useMemo(() => {
+    const pending: string[] = [];
+    if (!studentsFile) pending.push("Alunos");
+    if (!enrollmentsFile) pending.push("Matriculas");
+    if (!accessFile) pending.push("Acessos");
+    return pending;
+  }, [studentsFile, enrollmentsFile, accessFile]);
 
   const historyItems = useMemo(() => scaImportHistory || [], [scaImportHistory]);
   const latestStudents = useMemo(
@@ -211,13 +235,35 @@ export default function ScaPage() {
           <CardDescription>Envie alunos + matriculas + acessos e processe tudo em sequencia com relatorio unico.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <Button className="gap-1" onClick={handleImportBundle} disabled={bundleSending || (!studentsFile && !enrollmentsFile && !accessFile)}>
+          <Button className="gap-1" onClick={handleImportBundle} disabled={bundleSending || bundleMissing.length > 0}>
             <Upload className="h-4 w-4" /> {bundleSending ? "Importando pacote..." : "Importar pacote do dia"}
           </Button>
+          {bundleMissing.length > 0 ? (
+            <p className="text-xs text-muted-foreground">Faltando arquivo(s): {bundleMissing.join(", ")}.</p>
+          ) : null}
           {bundleReport ? (
-            <p className="text-muted-foreground">
-              Relatorio final: Linhas {Number(bundleReport.rowsTotal || 0)} | Aceitos {Number(bundleReport.acceptedTotal || 0)} | Rejeitados {Number(bundleReport.rejectedTotal || 0)}
-            </p>
+            <div className="rounded-md border p-3 space-y-2">
+              <p className="text-muted-foreground">
+                Relatorio final: Linhas {Number(bundleReport.rowsTotal || 0)} | Aceitos {Number(bundleReport.acceptedTotal || 0)} | Rejeitados {Number(bundleReport.rejectedTotal || 0)}
+              </p>
+              <div className="grid gap-2 md:grid-cols-3">
+                {[
+                  { key: "students", label: "Alunos" },
+                  { key: "enrollments", label: "Matriculas" },
+                  { key: "access", label: "Acessos" },
+                ].map((entry) => {
+                  const item = bundleReport?.byType?.[entry.key] || {};
+                  return (
+                    <div key={entry.key} className="rounded border px-2 py-1 text-xs">
+                      <p className="font-medium">{entry.label}</p>
+                      <p>Linhas: {Number(item.rowsTotal || 0)}</p>
+                      <p>Aceitos: {Number(item.acceptedTotal || 0)} | Rejeitados: {Number(item.rejectedTotal || 0)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+              {renderRejectedReasons({ rejectedSummary: bundleReport?.rejectedSummaryMerged || {} }, Number(bundleReport?.rejectedTotal || 0))}
+            </div>
           ) : null}
         </CardContent>
       </Card>
@@ -271,6 +317,7 @@ export default function ScaPage() {
                 <p><strong>Status:</strong> {accessLastResult.ok ? "ok" : accessLastResult.error || "erro"}</p>
                 <p><strong>Aceitos:</strong> {Number(accessLastResult.acceptedCount || 0)} | <strong>Rejeitados:</strong> {Number(accessLastResult.rejectedCount || 0)}</p>
                 <p><strong>Confianca mapeamento:</strong> {Math.round(Number((accessLastResult.mappingConfidence ?? accessLastResult.confidence ?? 0)) * 100)}%</p>
+                {renderAccessDetectedRange(accessLastResult)}
                 {renderRejectedReasons(accessLastResult, Number(accessLastResult.rejectedCount || 0))}
               </div>
             ) : null}
@@ -342,6 +389,7 @@ export default function ScaPage() {
                 <p><strong>Linhas:</strong> {Number(latestAccess.rows_total || 0)}</p>
                 <p><strong>Aceitos:</strong> {Number(latestAccess.accepted_count || 0)} | <strong>Rejeitados:</strong> {Number(latestAccess.rejected_count || 0)}</p>
                 <p><strong>Confianca mapeamento:</strong> {Math.round(Number(latestAccess.mapping_confidence || 0) * 100)}%</p>
+                {renderAccessDetectedRange(latestAccess?.result || {})}
                 {renderRejectedReasons(latestAccess?.result || {}, Number(latestAccess.rejected_count || 0))}
               </>
             ) : (
@@ -401,6 +449,7 @@ export default function ScaPage() {
                 <p className="text-xs text-muted-foreground">
                   Linhas: {Number(item.rows_total || 0)} | Aceitos: {Number(item.accepted_count || 0)} | Rejeitados: {Number(item.rejected_count || 0)}
                 </p>
+                {item.import_type === "access" ? renderAccessDetectedRange(item?.result || {}) : null}
                 {renderRejectedReasons(item?.result || {}, Number(item.rejected_count || 0))}
                 <a href={`/admin/sca/imports/${encodeURIComponent(String(item.id))}/csv`} target="_blank" rel="noreferrer">
                   <Button size="sm" variant="outline" className="gap-1">

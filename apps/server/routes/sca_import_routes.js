@@ -318,37 +318,92 @@ function registerScaImportRoutes({
         return Math.floor(excelEpochUtc + (serial * 86400000));
     }
 
+    function isLikelyExcelSerial(value) {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= 20000 && n <= 70000;
+    }
+
+    function toIntInRange(raw, min, max, fallback = 0) {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return fallback;
+        const i = Math.floor(n);
+        if (i < min || i > max) return fallback;
+        return i;
+    }
+
+    function buildTimestampFromDateParts(year, month, day, hh = 0, mm = 0, ss = 0) {
+        const y = toIntInRange(year, 1900, 9999, 0);
+        const m = toIntInRange(month, 1, 12, 0);
+        const d = toIntInRange(day, 1, 31, 0);
+        const h = toIntInRange(hh, 0, 23, 0);
+        const mi = toIntInRange(mm, 0, 59, 0);
+        const s = toIntInRange(ss, 0, 59, 0);
+        if (!y || !m || !d) return 0;
+        const dt = new Date(y, m - 1, d, h, mi, s, 0);
+        if (!Number.isFinite(dt.getTime())) return 0;
+        if (dt.getFullYear() !== y || dt.getMonth() !== (m - 1) || dt.getDate() !== d) return 0;
+        return dt.getTime();
+    }
+
+    function parseDateTimeStringBrFirst(input) {
+        const text = String(input || '').trim();
+        if (!text) return 0;
+
+        const br = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[ T](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/.exec(text);
+        if (br) {
+            return buildTimestampFromDateParts(
+                Number(br[3]),
+                Number(br[2]),
+                Number(br[1]),
+                Number(br[4] || 0),
+                Number(br[5] || 0),
+                Number(br[6] || 0)
+            );
+        }
+
+        const iso = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})(?:[ T](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/.exec(text);
+        if (iso) {
+            return buildTimestampFromDateParts(
+                Number(iso[1]),
+                Number(iso[2]),
+                Number(iso[3]),
+                Number(iso[4] || 0),
+                Number(iso[5] || 0),
+                Number(iso[6] || 0)
+            );
+        }
+
+        return 0;
+    }
+
     function parseEventAt(raw) {
         if (raw instanceof Date && Number.isFinite(raw.getTime())) {
             return raw.getTime();
         }
         if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
             // Excel serial date range safeguard
-            if (raw > 20000 && raw < 70000) {
+            if (isLikelyExcelSerial(raw)) {
                 return excelSerialToTimestamp(raw);
             }
-            return raw > 1e12 ? Math.floor(raw) : Math.floor(raw * 1000);
+            if (raw >= 1e12) return Math.floor(raw);
+            if (raw >= 1e9) return Math.floor(raw * 1000);
+            return 0;
         }
         const text = String(raw || '').trim();
         if (!text) return 0;
-        if (/^\d+$/.test(text)) {
-            const num = Number(text);
+        const numericText = text.replace(',', '.');
+        if (/^\d+(?:\.\d+)?$/.test(numericText)) {
+            const num = Number(numericText);
             if (!Number.isFinite(num) || num <= 0) return 0;
-            return num > 1e12 ? Math.floor(num) : Math.floor(num * 1000);
+            if (isLikelyExcelSerial(num)) return excelSerialToTimestamp(num);
+            if (num >= 1e12) return Math.floor(num);
+            if (num >= 1e9) return Math.floor(num * 1000);
+            return 0;
         }
-        const br = /^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
-        if (br) {
-            const day = Number(br[1]);
-            const month = Number(br[2]);
-            const year = Number(br[3]);
-            const hh = Number(br[4] || 0);
-            const mm = Number(br[5] || 0);
-            const ss = Number(br[6] || 0);
-            const dt = new Date(year, month - 1, day, hh, mm, ss, 0).getTime();
-            return Number.isFinite(dt) ? dt : 0;
-        }
+        const fromBrFirst = parseDateTimeStringBrFirst(text);
+        if (fromBrFirst > 0) return fromBrFirst;
         const parsed = Date.parse(text);
-        return Number.isFinite(parsed) ? parsed : 0;
+        return Number.isFinite(parsed) ? Math.floor(parsed) : 0;
     }
 
     function parseEnrollmentStatus(raw) {
@@ -601,6 +656,9 @@ function registerScaImportRoutes({
             tx();
         } else if (type === 'access') {
             const events = [];
+            const maxAllowedEventAt = now + (12 * 60 * 60 * 1000);
+            let minEventAt = 0;
+            let maxEventAt = 0;
             parsed.dataRows.forEach((raw, index) => {
                 const rowObj = toRowObject(parsed.headers, raw);
                 const externalId = normalizeExternalId(rowObj[mapping.external_id] || '');
@@ -613,8 +671,16 @@ function registerScaImportRoutes({
                     rejected.push({ row: index + 2, error: 'missing_or_invalid_matricula' });
                     return;
                 }
-                if (!eventType || !eventAt) {
-                    rejected.push({ row: index + 2, error: 'invalid_access_row' });
+                if (!eventType) {
+                    rejected.push({ row: index + 2, error: 'invalid_access_event_type' });
+                    return;
+                }
+                if (!eventAt || !Number.isFinite(eventAt) || eventAt <= 0) {
+                    rejected.push({ row: index + 2, error: 'invalid_access_event_at' });
+                    return;
+                }
+                if (eventAt > maxAllowedEventAt) {
+                    rejected.push({ row: index + 2, error: 'future_event_at' });
                     return;
                 }
                 const hasStudent = db.prepare('SELECT 1 FROM sca_people WHERE external_id=? LIMIT 1').get(externalId);
@@ -644,6 +710,8 @@ function registerScaImportRoutes({
                     gate,
                     raw: rowObj
                 });
+                if (!minEventAt || eventAt < minEventAt) minEventAt = eventAt;
+                if (!maxEventAt || eventAt > maxEventAt) maxEventAt = eventAt;
             });
             acceptedCount = events.length;
             syncResult = upsertScaAccessBatch({
@@ -658,12 +726,19 @@ function registerScaImportRoutes({
                     lag_sec: 0,
                     meta: {
                         importType: 'access',
-                        rowsTotal: parsed.rowCount
+                        rowsTotal: parsed.rowCount,
+                        minEventAt,
+                        maxEventAt
                     }
                 }
             });
             insertedCount = Number(syncResult?.inserted_count || 0);
             updatedCount = Number(syncResult?.duplicate_count || 0);
+            syncResult = {
+                ...(syncResult || {}),
+                minEventAt,
+                maxEventAt
+            };
         } else if (type === 'enrollments') {
             const statusCounts = {
                 ativo: 0,
@@ -926,11 +1001,40 @@ function registerScaImportRoutes({
                 return res.status(400).json({ ok: false, error: 'missing_files' });
             }
             const report = results.reduce((acc, item) => {
-                acc.rowsTotal += Number(item.rowsTotal || 0);
-                acc.acceptedTotal += Number(item.acceptedCount || 0);
-                acc.rejectedTotal += Number(item.rejectedCount || 0);
+                const type = String(item.type || '');
+                const rows = Number(item.rowsTotal || 0);
+                const accepted = Number(item.acceptedCount || 0);
+                const rejected = Number(item.rejectedCount || 0);
+                const rejectedSummary = item?.rejectedSummary && typeof item.rejectedSummary === 'object'
+                    ? item.rejectedSummary
+                    : {};
+
+                acc.rowsTotal += rows;
+                acc.acceptedTotal += accepted;
+                acc.rejectedTotal += rejected;
+
+                if (type) {
+                    acc.byType[type] = {
+                        rowsTotal: rows,
+                        acceptedTotal: accepted,
+                        rejectedTotal: rejected,
+                        rejectedSummary
+                    };
+                }
+
+                Object.entries(rejectedSummary).forEach(([reason, count]) => {
+                    const current = Number(acc.rejectedSummaryMerged[reason] || 0);
+                    acc.rejectedSummaryMerged[reason] = current + Number(count || 0);
+                });
+
                 return acc;
-            }, { rowsTotal: 0, acceptedTotal: 0, rejectedTotal: 0 });
+            }, {
+                rowsTotal: 0,
+                acceptedTotal: 0,
+                rejectedTotal: 0,
+                byType: {},
+                rejectedSummaryMerged: {}
+            });
             logAdminAction('sca.import.upload_bundle', user.username, 'bundle', {
                 files: results.map((item) => item.type),
                 rowsTotal: report.rowsTotal,
