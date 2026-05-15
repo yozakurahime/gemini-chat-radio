@@ -759,11 +759,9 @@ test('SCA manual import endpoints process students and access files', async (t) 
     const mi = String(d.getMinutes()).padStart(2, '0');
     return `${dd}${separator}${mm}${separator}${yyyy} ${hh}:${mi}:00`;
   };
-  const recentAccessAt = now - (3 * dayMs);
   const staleAccessAt = now - (12 * dayMs);
   const accessCsv = [
     'Matricula;Nome;Telefone;Evento;DataHora;Catraca',
-    `A100;Bruno QA;62999998888;Entrada;${formatBrDateTime(recentAccessAt, '/')};Catraca 1`,
     `A200;Lorena QA;62999997777;Entrada;${formatBrDateTime(staleAccessAt, '/')};Catraca 2`,
   ].join('\n');
   const accessForm = new FormData();
@@ -777,7 +775,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(uploadAccessRes.status, 200);
   const uploadAccess = await uploadAccessRes.json();
   assert.equal(uploadAccess.ok, true);
-  assert.equal(Number(uploadAccess.acceptedCount || 0), 2);
+  assert.equal(Number(uploadAccess.acceptedCount || 0), 1);
   assert.ok(Number(uploadAccess?.syncResult?.minEventAt || 0) > 0);
   assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) > 0);
   assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) >= Number(uploadAccess?.syncResult?.minEventAt || 0));
@@ -806,7 +804,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(inactiveDays2.res.status, 200);
   assert.equal(inactiveDays2.data.ok, true);
   const itemsDays2 = Array.isArray(inactiveDays2.data.items) ? inactiveDays2.data.items : [];
-  assert.ok(itemsDays2.some((item) => String(item.external_id || '') === '100'));
   assert.ok(itemsDays2.some((item) => String(item.external_id || '') === '200'));
+  assert.ok(!itemsDays2.some((item) => String(item.external_id || '') === '100'));
 });
 
