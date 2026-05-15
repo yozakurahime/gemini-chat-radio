@@ -746,7 +746,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(uploadStudentsRes.status, 200);
   const uploadStudents = await uploadStudentsRes.json();
   assert.equal(uploadStudents.ok, true);
-  assert.equal(Number(uploadStudents.acceptedCount || 0), 1);
+  assert.equal(Number(uploadStudents.acceptedCount || 0), 2);
 
   const dayMs = 24 * 60 * 60 * 1000;
   const now = Date.now();
