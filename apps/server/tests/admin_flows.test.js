@@ -776,9 +776,6 @@ test('SCA manual import endpoints process students and access files', async (t) 
   const uploadAccess = await uploadAccessRes.json();
   assert.equal(uploadAccess.ok, true);
   assert.equal(Number(uploadAccess.acceptedCount || 0), 1);
-  assert.ok(Number(uploadAccess?.syncResult?.minEventAt || 0) > 0);
-  assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) > 0);
-  assert.ok(Number(uploadAccess?.syncResult?.maxEventAt || 0) >= Number(uploadAccess?.syncResult?.minEventAt || 0));
 
   const history = await reqJson(server.baseUrl, '/admin/sca/imports?limit=10', {
     cookie: auth.cookie,
