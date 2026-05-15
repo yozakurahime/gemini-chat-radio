@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -48,17 +48,27 @@ export default function DashboardPage() {
   const [busyRetryChargeId, setBusyRetryChargeId] = useState(0);
   const [sendingReactivation, setSendingReactivation] = useState(false);
   const [loadingQueues, setLoadingQueues] = useState(false);
+  const [inactiveSnapshot, setInactiveSnapshot] = useState<{ generatedAt?: number; cutoffAt?: number; days?: number; total?: number; windowDays?: number; windowStartAt?: number } | null>(null);
+  const firstDaysFilterEffect = useRef(true);
 
-  const runRefresh = async () => {
+  const runRefresh = async (daysOverride?: number) => {
     setLoadingQueues(true);
-    const days = Math.max(1, Math.min(180, Number(daysFilter) || 5));
+    const days = Math.max(1, Math.min(180, Number(daysOverride ?? daysFilter) || 5));
     try {
-      const [, , , stats] = await Promise.all([
+      const [, , inactiveMeta, stats] = await Promise.all([
         refreshOpsDailySummary(),
-        refreshPixCharges({ status: "paid", sca_manual_status: "pending" }),
-        refreshScaInactiveStudents(days, 200, ""),
+        refreshPixCharges(),
+        refreshScaInactiveStudents(days, 200, "", 30),
         loadScaReactivationStats(),
       ]);
+      setInactiveSnapshot(inactiveMeta ? {
+        generatedAt: Number(inactiveMeta.generated_at || 0),
+        cutoffAt: Number(inactiveMeta.cutoff_at || 0),
+        days: Number(inactiveMeta.days || days),
+        total: Number(inactiveMeta.total || 0),
+        windowDays: Number(inactiveMeta.window_days || 30),
+        windowStartAt: Number(inactiveMeta.window_start_at || 0),
+      } : null);
       setReactivationStats(stats);
     } finally {
       setLoadingQueues(false);
@@ -70,10 +80,33 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (firstDaysFilterEffect.current) {
+      firstDaysFilterEffect.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      void runRefresh();
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [daysFilter]);
+
   const pixQueue = useMemo(
     () => (pixCharges || [])
-      .filter((charge) => String(charge.sca_manual_status || "").toLowerCase() === "pending")
+      .filter((charge) => String(charge.status || "").toLowerCase() === "paid" && String(charge.sca_manual_status || "").toLowerCase() === "pending")
       .sort((left, right) => Number(right.paid_at || right.updated_at || right.created_at || 0) - Number(left.paid_at || left.updated_at || left.created_at || 0)),
+    [pixCharges],
+  );
+  const pixFailedQueue = useMemo(
+    () => (pixCharges || [])
+      .filter((charge) => {
+        const status = String(charge.status || "").toLowerCase();
+        const hasError = String(charge.last_error || "").trim().length > 0;
+        return hasError || status === "error" || status === "failed";
+      })
+      .sort((left, right) => Number(right.updated_at || right.created_at || 0) - Number(left.updated_at || left.created_at || 0))
+      .slice(0, 20),
     [pixCharges],
   );
 
@@ -126,7 +159,7 @@ export default function DashboardPage() {
     setBusyChargeId(chargeId);
     try {
       const ok = await confirmPixScaDone(chargeId);
-      if (ok) await refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
+      if (ok) await refreshPixCharges();
     } finally {
       setBusyChargeId(0);
     }
@@ -137,7 +170,7 @@ export default function DashboardPage() {
     setBusyRetryChargeId(chargeId);
     try {
       await retryPixCharge(chargeId);
-      await refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
+      await refreshPixCharges();
     } finally {
       setBusyRetryChargeId(0);
     }
@@ -231,7 +264,10 @@ export default function DashboardPage() {
             <CardTitle className="text-3xl">{inactiveQueue.length}</CardTitle>
           </CardHeader>
           <CardContent>
-            <Badge variant={inactiveQueue.length > 0 ? "secondary" : "outline"}>{`Acima de ${Math.max(1, Number(daysFilter) || 5)} dias`}</Badge>
+            <Badge variant={inactiveQueue.length > 0 ? "secondary" : "outline"}>{`${Math.max(1, Number(daysFilter) || 5)} dias ou mais`}</Badge>
+            {inactiveSnapshot?.generatedAt ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">Atualizado em {formatDateTimeBr(inactiveSnapshot.generatedAt, "-")}</p>
+            ) : null}
           </CardContent>
         </Card>
         <Card>
@@ -318,12 +354,50 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
+      {isAdmin ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><CreditCard className="h-4 w-4" /> Falhas Pix recentes</CardTitle>
+            <CardDescription>Motivo do Asaas e reprocessamento com 1 clique.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {pixFailedQueue.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhuma falha recente de cobranca.</p>
+            ) : pixFailedQueue.map((charge) => (
+              <div key={`failed-${charge.id}`} className="rounded-md border p-3 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="destructive">Falha</Badge>
+                  <Badge variant="outline">{String(charge.status || "-")}</Badge>
+                  <Badge variant="outline">{formatMoney(charge.amount_cents)}</Badge>
+                  <span className="text-xs text-muted-foreground">{formatDateTimeBr(charge.updated_at || charge.created_at, "-")}</span>
+                </div>
+                <p className="text-sm font-medium">{charge.student_full_name || charge.contact_name || charge.contact_id}</p>
+                <p className="text-xs text-red-500">{charge.last_error || "Sem detalhe de erro."}</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" className="gap-1" onClick={() => openConversation(charge.contact_id)}>
+                    <MessageSquare className="h-4 w-4" /> Abrir conversa
+                  </Button>
+                  <Button size="sm" onClick={() => retryCharge(Number(charge.id))} disabled={busyRetryChargeId === Number(charge.id)}>
+                    {busyRetryChargeId === Number(charge.id) ? "Reprocessando..." : "Reprocessar cobranca"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2"><UserRoundX className="h-4 w-4" /> Fila de reativacao (alunos sem vir)</CardTitle>
-          <CardDescription>Use para abordagem humanizada e reducao de cancelamentos.</CardDescription>
+          <CardDescription>Conta ausencia consecutiva ate hoje. Qualquer acesso no dia conta como visita.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {inactiveSnapshot?.cutoffAt ? (
+            <p className="text-xs text-muted-foreground">
+              Corte atual: {inactiveSnapshot.windowStartAt ? formatDateTimeBr(inactiveSnapshot.windowStartAt, "-") : "-"} (inclui hoje). Filtro: {Math.max(1, Number(inactiveSnapshot.days || daysFilter) || 5)} dias consecutivos ou mais sem acesso.
+            </p>
+          ) : null}
           {inactiveQueue.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum aluno acima do limite informado.</p>
           ) : inactiveQueue.map((student) => {

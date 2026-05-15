@@ -60,6 +60,14 @@ function registerAttendanceAdminRoutes({
     sendWhatsappText
 }) {
 const SCA_ALLOWED_EVENT_TYPES = new Set(['entry', 'exit', 'access', 'denied']);
+const SCA_OPERATION_TIMEZONE = 'America/Sao_Paulo';
+const SCA_DAY_MS = 24 * 60 * 60 * 1000;
+const scaDayFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: SCA_OPERATION_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+});
 
 db.prepare(`
     CREATE TABLE IF NOT EXISTS sca_students_sync (
@@ -141,6 +149,56 @@ function normalizeOptionalNumberInput(value) {
 
 function normalizeScaToken(value) {
     return String(value || '').trim();
+}
+
+function getDayIndexInTimeZone(ts) {
+    const safeTs = Number(ts || 0);
+    if (!Number.isFinite(safeTs) || safeTs <= 0) return 0;
+    try {
+        const parts = scaDayFormatter.formatToParts(new Date(safeTs));
+        const map = {};
+        parts.forEach((part) => {
+            if (part && part.type && part.value) map[part.type] = part.value;
+        });
+        const year = Number(map.year || 0);
+        const month = Number(map.month || 0);
+        const day = Number(map.day || 0);
+        if (!year || !month || !day) return 0;
+        return Math.floor(Date.UTC(year, month - 1, day) / SCA_DAY_MS);
+    } catch (_) {
+        return Math.floor(safeTs / SCA_DAY_MS);
+    }
+}
+
+function computeDaysWithoutVisit(nowTs, lastAccessAt) {
+    const nowDayIndex = getDayIndexInTimeZone(nowTs);
+    const lastDayIndex = getDayIndexInTimeZone(lastAccessAt);
+    if (!nowDayIndex || !lastDayIndex) return 0;
+    return Math.max(0, nowDayIndex - lastDayIndex);
+}
+
+function normalizeStatusToken(raw) {
+    return String(raw || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+}
+
+function isLikelyEnrolledStatus(rawStatus) {
+    const token = normalizeStatusToken(rawStatus);
+    if (!token) return false;
+    if (token.includes('cancel')) return false;
+    if (token.includes('inativ')) return false;
+    if (token.includes('tranc')) return false;
+    if (token.includes('exclu')) return false;
+    if (token.includes('ativo')) return true;
+    if (token.includes('vencid')) return true;
+    if (token.includes('atras')) return true;
+    if (token.includes('matric')) return true;
+    if (token.includes('bloque')) return true;
+    if (token.includes('inadimpl')) return true;
+    return false;
 }
 
 function buildReactivationMessage(template, student) {
@@ -433,9 +491,8 @@ app.get('/admin/sca/students/inactive', (req, res) => {
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 200;
     const q = sanitizePublicText(req.query?.q || '', 120);
     const now = Date.now();
-    const dayMs = 24 * 60 * 60 * 1000;
     const maxAllowedEventAt = now + (12 * 60 * 60 * 1000);
-    const cutoffAt = now - (days * dayMs);
+    const nowDayIndex = getDayIndexInTimeZone(now);
     const where = [];
     const params = [];
     if (q) {
@@ -444,8 +501,7 @@ app.get('/admin/sca/students/inactive', (req, res) => {
         params.push(term, term, term, term);
     }
     params.push(maxAllowedEventAt);
-    params.push(cutoffAt);
-    params.push(limit);
+    params.push(Math.max(4000, limit * 8));
     const rows = db.prepare(`
         WITH resolved AS (
             SELECT
@@ -457,6 +513,8 @@ app.get('/admin/sca/students/inactive', (req, res) => {
                 p.plan,
                 p.last_access_at,
                 p.updated_at,
+                p.membership_due_at,
+                p.membership_end_at,
                 COALESCE(
                     (
                         SELECT MAX(e.event_at)
@@ -478,18 +536,23 @@ app.get('/admin/sca/students/inactive', (req, res) => {
             phone,
             status,
             plan,
+            membership_due_at,
+            membership_end_at,
             resolved_last_access_at AS last_access_at,
             updated_at
         FROM resolved
         WHERE external_id <> ''
-          AND resolved_last_access_at > 0
-          AND resolved_last_access_at <= ?
         ORDER BY resolved_last_access_at ASC, id ASC
         LIMIT ?
     `).all(...params);
     const items = rows.map((row) => {
+        const hasEnrollmentEvidence = isLikelyEnrolledStatus(row.status)
+            || Number(row.membership_due_at || 0) > 0
+            || Number(row.membership_end_at || 0) > 0;
+        if (!hasEnrollmentEvidence) return null;
         const lastAccessAt = Number(row.last_access_at || 0);
-        const daysWithoutVisit = Math.max(0, Math.floor((now - lastAccessAt) / dayMs));
+        if (!Number.isFinite(lastAccessAt) || lastAccessAt <= 0) return null;
+        const daysWithoutVisit = computeDaysWithoutVisit(now, lastAccessAt);
         return {
             id: Number(row.id || 0),
             external_id: String(row.external_id || ''),
@@ -501,10 +564,16 @@ app.get('/admin/sca/students/inactive', (req, res) => {
             days_without_visit: daysWithoutVisit,
             inactive_reason: 'no_recent_access'
         };
-    });
+    })
+    .filter((row) => row && Number(row.days_without_visit || 0) >= days)
+    .slice(0, limit);
+    const cutoffDayIndex = Math.max(0, nowDayIndex - days);
+    const cutoffAt = cutoffDayIndex > 0 ? (cutoffDayIndex * SCA_DAY_MS) : 0;
     return res.json({
         ok: true,
         days,
+        window_days: days,
+        window_start_at: cutoffAt,
         cutoff_at: cutoffAt,
         generated_at: now,
         total: items.length,
@@ -589,7 +658,7 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
         const message = buildReactivationMessage(template, {
             name: row.name,
             plan: row.plan,
-            days_without_visit: Math.max(0, Math.floor((now - Number(row.resolved_last_access_at || row.updated_at || now)) / (24 * 60 * 60 * 1000)))
+            days_without_visit: computeDaysWithoutVisit(now, Number(row.resolved_last_access_at || row.updated_at || now))
         });
         if (!phone || !message) {
             db.prepare(`
