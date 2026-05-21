@@ -751,8 +751,8 @@ test('SCA manual import endpoints process students and access files', async (t) 
 
   const studentsCsv = [
     'Matricula;Nome;Telefone;CPF;Status;Plano',
-    'A100;Bruno QA;62999998888;12345678901;Ativo;Mensal',
-    'A200;Lorena QA;62999997777;10987654321;Ativo;Premium',
+    '100;Bruno QA;62999998888;12345678901;Ativo;Mensal',
+    '200;Lorena QA;62999997777;10987654321;Ativo;Premium',
   ].join('\n');
   const studentsForm = new FormData();
   studentsForm.append('file', new Blob([studentsCsv], { type: 'text/csv' }), 'students.csv');
@@ -781,7 +781,7 @@ test('SCA manual import endpoints process students and access files', async (t) 
   const staleAccessAt = now - (12 * dayMs);
   const accessCsv = [
     'Matricula;Nome;Telefone;Evento;DataHora;Catraca',
-    `A200;Lorena QA;62999997777;Entrada;${formatBrDateTime(staleAccessAt, '/')};Catraca 2`,
+    `200;Lorena QA;62999997777;Entrada;${staleAccessAt};Catraca 2`,
   ].join('\n');
   const accessForm = new FormData();
   accessForm.append('file', new Blob([accessCsv], { type: 'text/csv' }), 'access.csv');
