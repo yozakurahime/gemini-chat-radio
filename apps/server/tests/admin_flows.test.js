@@ -732,6 +732,23 @@ test('SCA manual import endpoints process students and access files', async (t) 
   assert.equal(putStudentsMapping.res.status, 200);
   assert.equal(putStudentsMapping.data.ok, true);
 
+  const putAccessMapping = await reqJson(server.baseUrl, '/admin/sca/imports/mapping?type=access', {
+    method: 'PUT',
+    cookie: auth.cookie,
+    body: {
+      mapping: {
+        external_id: 'Matricula',
+        name: 'Nome',
+        phone: 'Telefone',
+        event_type: 'Evento',
+        event_at: 'DataHora',
+        gate: 'Catraca',
+      },
+    },
+  });
+  assert.equal(putAccessMapping.res.status, 200);
+  assert.equal(putAccessMapping.data.ok, true);
+
   const studentsCsv = [
     'Matricula;Nome;Telefone;CPF;Status;Plano',
     'A100;Bruno QA;62999998888;12345678901;Ativo;Mensal',
