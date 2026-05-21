@@ -12,7 +12,6 @@ function detectPixMonthlyIntent(text) {
     const normalized = normalizePlainText(text);
     if (!normalized) return false;
     const hasPlanTopic = /\b(mensalidade|mensal|plano|matricula)\b/.test(normalized);
-    if (!hasPlanTopic) return false;
 
     const asksOnlyPrice = /\b(quanto|valor|preco|custa|mensalidade quanto)\b/.test(normalized);
     const hasInfoIntent = /\b(como funciona|quero saber|queria saber|duvida|explica|me explica|informacao|informacoes|sobre|primeiro mes|1o mes)\b/.test(normalized);
@@ -21,10 +20,15 @@ function detectPixMonthlyIntent(text) {
         && /\b(pix|cobranca|pagamento)\b/.test(normalized);
     const hasPix = /\bpix\b/.test(normalized);
     const hasPixIntent = hasPix && /\b(pagar|gerar|emitir|manda|enviar|copia|cola|codigo)\b/.test(normalized);
+    const hasDirectPixPaymentIntent = hasPix && /\b(pagamento|pagar|quitar|cobranca)\b/.test(normalized);
+
+    if (!hasPlanTopic && !hasDirectPixPaymentIntent && !hasPixIntent && !hasChargeCreationIntent && !hasImmediatePayIntent) {
+        return false;
+    }
 
     if (asksOnlyPrice && !hasImmediatePayIntent && !hasPixIntent && !hasChargeCreationIntent) return false;
     if (hasInfoIntent && !hasImmediatePayIntent && !hasPixIntent && !hasChargeCreationIntent) return false;
-    return hasImmediatePayIntent || hasPixIntent || hasChargeCreationIntent;
+    return hasImmediatePayIntent || hasPixIntent || hasChargeCreationIntent || hasDirectPixPaymentIntent;
 }
 
 function parseYesNo(text) {
