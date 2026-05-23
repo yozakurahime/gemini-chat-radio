@@ -189,7 +189,7 @@ async function fetchPayment(config, paymentId) {
 
 function verifyAsaasWebhookToken(headers, expectedToken) {
     const expected = String(expectedToken || '').trim();
-    if (!expected) return true;
+    if (!expected) return false; // reject when not configured — never allow unauthenticated webhooks
     const h = headers || {};
     const received = String(
         h['asaas-access-token']
