@@ -53,6 +53,219 @@ export type Database = {
         }
         Relationships: []
       }
+      access_blocklist: {
+        Row: {
+          active: boolean
+          blocked_until: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          member_id: string
+          reason: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          blocked_until?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          member_id: string
+          reason: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          blocked_until?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          member_id?: string
+          reason?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_blocklist_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "access_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      access_logs: {
+        Row: {
+          created_at: string
+          device_id: string | null
+          device_ip: string | null
+          direction: string
+          external_id_snapshot: string | null
+          id: string
+          member_id: string | null
+          member_name_snapshot: string | null
+          occurred_at: string
+          raw_payload: Json | null
+          reason: string | null
+          result: string
+        }
+        Insert: {
+          created_at?: string
+          device_id?: string | null
+          device_ip?: string | null
+          direction?: string
+          external_id_snapshot?: string | null
+          id?: string
+          member_id?: string | null
+          member_name_snapshot?: string | null
+          occurred_at?: string
+          raw_payload?: Json | null
+          reason?: string | null
+          result: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string | null
+          device_ip?: string | null
+          direction?: string
+          external_id_snapshot?: string | null
+          id?: string
+          member_id?: string | null
+          member_name_snapshot?: string | null
+          occurred_at?: string
+          raw_payload?: Json | null
+          reason?: string | null
+          result?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_logs_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "access_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      access_members: {
+        Row: {
+          birth_date: string | null
+          created_at: string
+          document: string | null
+          email: string | null
+          external_id: string
+          face_external_id: string | null
+          full_name: string
+          id: string
+          last_payment_at: string | null
+          last_synced_at: string | null
+          notes: string | null
+          payment_status: string
+          phone: string | null
+          photo_url: string | null
+          plan_id: string | null
+          plan_name_raw: string | null
+          source: string
+          status: string
+          updated_at: string
+          valid_until: string | null
+        }
+        Insert: {
+          birth_date?: string | null
+          created_at?: string
+          document?: string | null
+          email?: string | null
+          external_id: string
+          face_external_id?: string | null
+          full_name: string
+          id?: string
+          last_payment_at?: string | null
+          last_synced_at?: string | null
+          notes?: string | null
+          payment_status?: string
+          phone?: string | null
+          photo_url?: string | null
+          plan_id?: string | null
+          plan_name_raw?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+          valid_until?: string | null
+        }
+        Update: {
+          birth_date?: string | null
+          created_at?: string
+          document?: string | null
+          email?: string | null
+          external_id?: string
+          face_external_id?: string | null
+          full_name?: string
+          id?: string
+          last_payment_at?: string | null
+          last_synced_at?: string | null
+          notes?: string | null
+          payment_status?: string
+          phone?: string | null
+          photo_url?: string | null
+          plan_id?: string | null
+          plan_name_raw?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+          valid_until?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_members_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "access_plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      access_plans: {
+        Row: {
+          active: boolean
+          allowed_end: string
+          allowed_start: string
+          allowed_weekdays: number[]
+          created_at: string
+          external_id: string | null
+          id: string
+          monthly_value_cents: number
+          name: string
+          notes: string | null
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          allowed_end?: string
+          allowed_start?: string
+          allowed_weekdays?: number[]
+          created_at?: string
+          external_id?: string | null
+          id?: string
+          monthly_value_cents?: number
+          name: string
+          notes?: string | null
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          allowed_end?: string
+          allowed_start?: string
+          allowed_weekdays?: number[]
+          created_at?: string
+          external_id?: string | null
+          id?: string
+          monthly_value_cents?: number
+          name?: string
+          notes?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       ad_contracts: {
         Row: {
           ad_duration_seconds: number
@@ -358,6 +571,51 @@ export type Database = {
         }
         Relationships: []
       }
+      class_enrollments: {
+        Row: {
+          cancelled_at: string | null
+          class_id: string
+          enrolled_at: string
+          id: string
+          member_id: string
+          notes: string | null
+          status: string
+        }
+        Insert: {
+          cancelled_at?: string | null
+          class_id: string
+          enrolled_at?: string
+          id?: string
+          member_id: string
+          notes?: string | null
+          status?: string
+        }
+        Update: {
+          cancelled_at?: string | null
+          class_id?: string
+          enrolled_at?: string
+          id?: string
+          member_id?: string
+          notes?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "class_enrollments_class_id_fkey"
+            columns: ["class_id"]
+            isOneToOne: false
+            referencedRelation: "gym_classes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "class_enrollments_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "access_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       class_notifications_log: {
         Row: {
           class_id: string
@@ -486,6 +744,118 @@ export type Database = {
         }
         Relationships: []
       }
+      gym_classes: {
+        Row: {
+          active: boolean
+          created_at: string
+          day_of_week: number
+          end_time: string
+          id: string
+          instructor_id: string | null
+          instructor_name: string | null
+          max_capacity: number
+          modality: string
+          name: string
+          notes: string | null
+          room: string | null
+          start_time: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          day_of_week: number
+          end_time: string
+          id?: string
+          instructor_id?: string | null
+          instructor_name?: string | null
+          max_capacity?: number
+          modality?: string
+          name: string
+          notes?: string | null
+          room?: string | null
+          start_time: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          day_of_week?: number
+          end_time?: string
+          id?: string
+          instructor_id?: string | null
+          instructor_name?: string | null
+          max_capacity?: number
+          modality?: string
+          name?: string
+          notes?: string | null
+          room?: string | null
+          start_time?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gym_classes_instructor_id_fkey"
+            columns: ["instructor_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      member_payments: {
+        Row: {
+          amount_cents: number
+          created_at: string
+          created_by: string | null
+          id: string
+          member_id: string
+          method: string
+          notes: string | null
+          paid_at: string
+          receipt_url: string | null
+          reference_month: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          amount_cents?: number
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          member_id: string
+          method?: string
+          notes?: string | null
+          paid_at?: string
+          receipt_url?: string | null
+          reference_month?: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          amount_cents?: number
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          member_id?: string
+          method?: string
+          notes?: string | null
+          paid_at?: string
+          receipt_url?: string | null
+          reference_month?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "member_payments_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "access_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ponto_records: {
         Row: {
           auto_closed: boolean
@@ -602,6 +972,27 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
       whatsapp_conversations: {
         Row: {
           assigned_to: string | null
@@ -679,6 +1070,69 @@ export type Database = {
           },
         ]
       }
+      whatsapp_outbox: {
+        Row: {
+          attempts: number
+          category: string
+          created_at: string
+          employee_id: string | null
+          id: string
+          last_error: string | null
+          member_id: string | null
+          message: string
+          phone: string
+          scheduled_for: string
+          sent_at: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          category?: string
+          created_at?: string
+          employee_id?: string | null
+          id?: string
+          last_error?: string | null
+          member_id?: string | null
+          message: string
+          phone: string
+          scheduled_for?: string
+          sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          category?: string
+          created_at?: string
+          employee_id?: string | null
+          id?: string
+          last_error?: string | null
+          member_id?: string | null
+          message?: string
+          phone?: string
+          scheduled_for?: string
+          sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "whatsapp_outbox_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "whatsapp_outbox_member_id_fkey"
+            columns: ["member_id"]
+            isOneToOne: false
+            referencedRelation: "access_members"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       whatsapp_sessions: {
         Row: {
           connected_at: string | null
@@ -717,10 +1171,21 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      mark_overdue_members: { Args: never; Returns: number }
+      queue_whatsapp_message: {
+        Args: { _category?: string; _member_id: string; _message: string }
+        Returns: string
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "staff"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -847,6 +1312,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "staff"],
+    },
   },
 } as const

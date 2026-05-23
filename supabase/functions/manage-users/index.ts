@@ -35,6 +35,21 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Require admin role for any user management action
+    const adminCheckClient = createClient(supabaseUrl, serviceRoleKey);
+    const { data: roleRow } = await adminCheckClient
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", caller.id)
+      .eq("role", "admin")
+      .maybeSingle();
+    if (!roleRow) {
+      return new Response(JSON.stringify({ error: "Acesso negado" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
     const { action, ...body } = await req.json();
 

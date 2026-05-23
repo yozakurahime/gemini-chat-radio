@@ -8,13 +8,25 @@ serve(async (req) => {
   }
 
   try {
-    const { priceId, customerEmail, returnUrl, environment } = await req.json();
+    const { priceId, customerEmail, environment } = await req.json();
     if (!priceId || typeof priceId !== "string" || !/^[a-zA-Z0-9_-]+$/.test(priceId)) {
       return new Response(JSON.stringify({ error: "Invalid priceId" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
+    // Always derive return URL server-side from a validated origin to prevent open-redirect / phishing.
+    const allowedOrigins = (Deno.env.get("APP_ALLOWED_ORIGINS") || "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    const origin = req.headers.get("origin") || "";
+    if (allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
+      return new Response(JSON.stringify({ error: "Invalid origin" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const safeReturnUrl = `${origin}/matricula/sucesso?session_id={CHECKOUT_SESSION_ID}`;
 
     const env = (environment || "sandbox") as StripeEnv;
     const stripe = createStripeClient(env);
@@ -33,9 +45,7 @@ serve(async (req) => {
       line_items: [{ price: stripePrice.id, quantity: 1 }],
       mode: isRecurring ? "subscription" : "payment",
       ui_mode: "embedded",
-      return_url:
-        returnUrl ||
-        `${req.headers.get("origin")}/matricula/sucesso?session_id={CHECKOUT_SESSION_ID}`,
+      return_url: safeReturnUrl,
       ...(customerEmail && { customer_email: customerEmail }),
       metadata: { priceId },
       ...(isRecurring && { subscription_data: { metadata: { priceId } } }),
