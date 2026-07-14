@@ -90,6 +90,7 @@ function applyOwnerWhatsappReplyToConversation({
     }
 
     convo.pausedByHuman = true;
+    convo.humanRequested = false;
     convo.status = 'active';
     convo.routeJid = routeJid || convo.routeJid || contactId;
     convo.lastActivityTimestamp = Number(timestamp || Date.now());

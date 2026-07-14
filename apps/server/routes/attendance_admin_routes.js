@@ -587,22 +587,25 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
         return res.status(503).json({ ok: false, error: 'whatsapp_unavailable' });
     }
     const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const unofficialSafeMode = process.env.UNOFFICIAL_WHATSAPP_SAFE_MODE !== '0';
     const studentIdsRaw = Array.isArray(body.studentIds) ? body.studentIds : [];
     const studentIds = studentIdsRaw
         .map((value) => Number(value))
         .filter((value) => Number.isFinite(value) && value > 0)
-        .slice(0, 60);
+        .slice(0, unofficialSafeMode ? 10 : 60);
     if (!studentIds.length) return res.status(400).json({ ok: false, error: 'missing_students' });
 
     const template = sanitizePublicText(body.template || '', 1200);
     if (!template) return res.status(400).json({ ok: false, error: 'missing_template' });
     const templateName = sanitizePublicText(body.templateName || 'reativacao', 120) || 'reativacao';
-    const maxPerHourRaw = Number(body.maxPerHour || 40);
+    const maxPerHourRaw = Number(body.maxPerHour || (unofficialSafeMode ? 10 : 40));
     const maxPerHour = Number.isFinite(maxPerHourRaw)
-        ? Math.max(1, Math.min(200, Math.floor(maxPerHourRaw)))
-        : 40;
-    const delayMsRaw = Number(body.delayMs || 700);
-    const delayMs = Number.isFinite(delayMsRaw) ? Math.max(0, Math.min(5000, Math.floor(delayMsRaw))) : 700;
+        ? Math.max(1, Math.min(unofficialSafeMode ? 20 : 200, Math.floor(maxPerHourRaw)))
+        : (unofficialSafeMode ? 10 : 40);
+    const delayMsRaw = Number(body.delayMs || (unofficialSafeMode ? 3000 : 700));
+    const delayMs = Number.isFinite(delayMsRaw)
+        ? Math.max(unofficialSafeMode ? 3000 : 0, Math.min(10000, Math.floor(delayMsRaw)))
+        : (unofficialSafeMode ? 3000 : 700);
     const now = Date.now();
     const hourAgo = now - (60 * 60 * 1000);
     const sentLastHour = Number(db.prepare(`
@@ -669,6 +672,18 @@ app.post('/admin/sca/reactivation/send-batch', async (req, res) => {
             continue;
         }
         const jid = toWhatsappJid(phone);
+        if (unofficialSafeMode) {
+            const consent = db.prepare('SELECT global_opt_out, marketing_opt_in FROM conversations WHERE id=? OR route_jid=? LIMIT 1').get(jid, jid);
+            if (!consent || Number(consent.global_opt_out || 0) === 1 || Number(consent.marketing_opt_in || 0) !== 1) {
+                const errorText = Number(consent?.global_opt_out || 0) === 1 ? 'contact_opted_out' : 'marketing_opt_in_required';
+                db.prepare(`
+                    INSERT INTO sca_reactivation_sends (student_id, external_id, phone, template_name, message_text, actor, status, error_text, sent_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'blocked', ?, ?)
+                `).run(studentId, externalId, phone, templateName, message, String(user.username || ''), errorText, Date.now());
+                results.push({ id: studentId, phone, ok: false, error: errorText });
+                continue;
+            }
+        }
         try {
             await sendWhatsappText(jid, message);
             db.prepare(`

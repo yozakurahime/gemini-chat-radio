@@ -52,6 +52,15 @@ const {
     extractOwnerWhatsappReplyText,
     isIgnoredOwnerWhatsappReplyJid
 } = require('./owner_whatsapp_reply_runtime');
+const { applyIncomingContactName } = require('./contact_name_runtime');
+const {
+    buildAutomationContext,
+    buildTrialRequest,
+    isGlobalOptIn,
+    isGlobalOptOut,
+    shouldEscalateAutomation,
+    updateCustomerAutomationState
+} = require('./customer_automation_runtime');
 
 // IMPORTACOES BAILEYS (CJS + ESM compat)
 let makeWASocket = null;
@@ -1193,7 +1202,7 @@ function sanitizePlaylistTable() {
 }
 
 // --- DATABASE SETUP ---
-db.prepare(`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, name TEXT, history TEXT, tags TEXT, notes TEXT, last_activity INTEGER, paused_by_human INTEGER DEFAULT 0, status TEXT DEFAULT 'active', route_jid TEXT DEFAULT '', sla_pending_since INTEGER DEFAULT 0, sla_status TEXT DEFAULT 'ok', sla_updated_at INTEGER DEFAULT 0)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, name TEXT, history TEXT, tags TEXT, notes TEXT, last_activity INTEGER, paused_by_human INTEGER DEFAULT 0, status TEXT DEFAULT 'active', route_jid TEXT DEFAULT '', sla_pending_since INTEGER DEFAULT 0, sla_status TEXT DEFAULT 'ok', sla_updated_at INTEGER DEFAULT 0, unread_count INTEGER DEFAULT 0, attention_active INTEGER DEFAULT 0, attention_since INTEGER DEFAULT 0, human_requested INTEGER DEFAULT 0, whatsapp_name TEXT DEFAULT '', name_source TEXT DEFAULT 'whatsapp', customer_memory TEXT DEFAULT '{}', last_intent TEXT DEFAULT 'unknown', intent_confidence TEXT DEFAULT 'low', sales_stage TEXT DEFAULT 'new', automation_unknown_count INTEGER DEFAULT 0, global_opt_out INTEGER DEFAULT 0, marketing_opt_in INTEGER DEFAULT 0, last_inbound_message_id TEXT DEFAULT '')`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS panel_users (username TEXT PRIMARY KEY, password TEXT, role TEXT DEFAULT 'user', fullname TEXT DEFAULT 'Atendente', avatar TEXT DEFAULT '')`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS panel_sessions (token_hash TEXT PRIMARY KEY, username TEXT, role TEXT, created_at INTEGER, expires_at INTEGER)`).run();
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_panel_sessions_username ON panel_sessions (username)`).run();
@@ -1326,6 +1335,30 @@ db.prepare(`CREATE TABLE IF NOT EXISTS ai_feedback_events (
     context_json TEXT DEFAULT '{}',
     created_at INTEGER
 )`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS trial_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    contact_name TEXT DEFAULT '',
+    modality TEXT DEFAULT '',
+    requested_day TEXT DEFAULT '',
+    requested_time TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending_confirmation',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    confirmed_by TEXT DEFAULT '',
+    confirmed_at INTEGER DEFAULT 0
+)`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_trial_requests_conversation ON trial_requests(conversation_id, created_at DESC)`).run();
+db.prepare(`CREATE TABLE IF NOT EXISTS automation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT DEFAULT '',
+    event_type TEXT NOT NULL,
+    intent TEXT DEFAULT '',
+    confidence TEXT DEFAULT '',
+    data_json TEXT DEFAULT '{}',
+    created_at INTEGER NOT NULL
+)`).run();
+db.prepare(`CREATE INDEX IF NOT EXISTS idx_automation_events_created ON automation_events(created_at DESC)`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, actor TEXT, target TEXT, meta_json TEXT, ip TEXT, created_at INTEGER)`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS contact_alias (jid TEXT PRIMARY KEY, canonical_jid TEXT NOT NULL, updated_at INTEGER, source TEXT DEFAULT 'runtime')`).run();
 db.prepare(`CREATE TABLE IF NOT EXISTS attendance_employees (
@@ -1651,6 +1684,20 @@ try { db.prepare("ALTER TABLE conversations ADD COLUMN route_jid TEXT DEFAULT ''
 try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_pending_since INTEGER DEFAULT 0").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_status TEXT DEFAULT 'ok'").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE conversations ADD COLUMN sla_updated_at INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN unread_count INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN attention_active INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN attention_since INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN human_requested INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN whatsapp_name TEXT DEFAULT ''").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN name_source TEXT DEFAULT 'whatsapp'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN customer_memory TEXT DEFAULT '{}'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN last_intent TEXT DEFAULT 'unknown'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN intent_confidence TEXT DEFAULT 'low'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN sales_stage TEXT DEFAULT 'new'").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN automation_unknown_count INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN global_opt_out INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN marketing_opt_in INTEGER DEFAULT 0").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE conversations ADD COLUMN last_inbound_message_id TEXT DEFAULT ''").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE knowledge_versions ADD COLUMN published INTEGER DEFAULT 0").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE ad_campaigns ADD COLUMN advertiser TEXT DEFAULT ''").run(); } catch(e) {}
 try { db.prepare("ALTER TABLE ad_campaigns ADD COLUMN notes TEXT DEFAULT ''").run(); } catch(e) {}
@@ -4053,6 +4100,7 @@ function shouldReuseHumanOriginalText(text) {
 async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit', matchedRule = '', eventTimestamp = Date.now() }) {
     if (!user || user.pausedByHuman) return false;
     user.pausedByHuman = true;
+    user.humanRequested = true;
     if (!user.tags.includes('Ajuda')) user.tags.push('Ajuda');
     clearPendingHumanHandoff(user);
     const reply = "Entendido! Estou pausando meu sistema e chamando um atendente humano para falar com voce. Aguarde um momento!";
@@ -4062,6 +4110,11 @@ async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit
     appendHistoryEntry(user.history, 'Usuario', text, userTs);
     appendHistoryEntry(user.history, 'Hime', reply, replyTs);
     saveChat(sender);
+    recordAutomationEvent(sender, 'human_handoff', {
+        intent: user.lastIntent || '',
+        confidence: user.intentConfidence || '',
+        data: { triggerMode, matchedRule }
+    });
     broadcast({
         type: 'help_alert',
         from: sender,
@@ -6014,8 +6067,10 @@ const rows = db.prepare('SELECT * FROM conversations').all();
 rows.forEach(row => {
     let history = [];
     let tags = [];
+    let customerMemory = {};
     try { history = JSON.parse(row.history || '[]'); } catch (e) { history = []; }
     try { tags = JSON.parse(row.tags || '[]'); } catch (e) { tags = []; }
+    try { customerMemory = JSON.parse(row.customer_memory || '{}'); } catch (e) { customerMemory = {}; }
     conversationState[row.id] = {
         history: history.map((h) => typeof h === 'string' ? fixMojibakeText(h) : h),
         tags: tags.map((t) => typeof t === 'string' ? fixMojibakeText(t) : t),
@@ -6029,12 +6084,26 @@ rows.forEach(row => {
         slaPendingSince: Number(row.sla_pending_since || 0),
         slaStatus: String(row.sla_status || 'ok'),
         slaUpdatedAt: Number(row.sla_updated_at || 0),
+        unreadCount: Math.max(0, Number(row.unread_count || 0)),
+        attentionActive: !!row.attention_active,
+        attentionSince: Number(row.attention_since || 0),
+        humanRequested: !!row.human_requested,
+        whatsappName: fixMojibakeText(row.whatsapp_name || row.name || ''),
+        nameSource: String(row.name_source || 'whatsapp'),
+        customerMemory,
+        lastIntent: String(row.last_intent || 'unknown'),
+        intentConfidence: String(row.intent_confidence || 'low'),
+        salesStage: String(row.sales_stage || 'new'),
+        automationUnknownCount: Math.max(0, Number(row.automation_unknown_count || 0)),
+        globalOptOut: !!row.global_opt_out,
+        marketingOptIn: !!row.marketing_opt_in,
+        lastInboundMessageId: String(row.last_inbound_message_id || ''),
         messageBuffer: [],
         typingTimer: null
     };
 });
 
-const saveStmt = db.prepare('INSERT OR REPLACE INTO conversations (id, name, history, tags, notes, last_activity, paused_by_human, status, route_jid, sla_pending_since, sla_status, sla_updated_at) VALUES (@id, @name, @history, @tags, @notes, @last_activity, @paused_by_human, @status, @route_jid, @sla_pending_since, @sla_status, @sla_updated_at)');
+const saveStmt = db.prepare('INSERT OR REPLACE INTO conversations (id, name, history, tags, notes, last_activity, paused_by_human, status, route_jid, sla_pending_since, sla_status, sla_updated_at, unread_count, attention_active, attention_since, human_requested, whatsapp_name, name_source, customer_memory, last_intent, intent_confidence, sales_stage, automation_unknown_count, global_opt_out, marketing_opt_in, last_inbound_message_id) VALUES (@id, @name, @history, @tags, @notes, @last_activity, @paused_by_human, @status, @route_jid, @sla_pending_since, @sla_status, @sla_updated_at, @unread_count, @attention_active, @attention_since, @human_requested, @whatsapp_name, @name_source, @customer_memory, @last_intent, @intent_confidence, @sales_stage, @automation_unknown_count, @global_opt_out, @marketing_opt_in, @last_inbound_message_id)');
 function saveChat(id) {
     const u = conversationState[id]; if (!u) return;
     try {
@@ -6050,7 +6119,21 @@ function saveChat(id) {
             route_jid: u.routeJid || id,
             sla_pending_since: Number(u.slaPendingSince || 0),
             sla_status: String(u.slaStatus || 'ok'),
-            sla_updated_at: Number(u.slaUpdatedAt || Date.now())
+            sla_updated_at: Number(u.slaUpdatedAt || Date.now()),
+            unread_count: Math.max(0, Number(u.unreadCount || 0)),
+            attention_active: u.attentionActive ? 1 : 0,
+            attention_since: Number(u.attentionSince || 0),
+            human_requested: u.humanRequested ? 1 : 0,
+            whatsapp_name: String(u.whatsappName || ''),
+            name_source: String(u.nameSource || 'whatsapp'),
+            customer_memory: JSON.stringify(u.customerMemory || {}),
+            last_intent: String(u.lastIntent || 'unknown'),
+            intent_confidence: String(u.intentConfidence || 'low'),
+            sales_stage: String(u.salesStage || 'new'),
+            automation_unknown_count: Math.max(0, Number(u.automationUnknownCount || 0)),
+            global_opt_out: u.globalOptOut ? 1 : 0,
+            marketing_opt_in: u.marketingOptIn ? 1 : 0,
+            last_inbound_message_id: String(u.lastInboundMessageId || '')
         });
     } catch (e) {}
 }
@@ -6190,13 +6273,71 @@ function markConversationInboundForSla(contactId, timestamp = Date.now()) {
     if (!Number.isFinite(Number(user.slaPendingSince || 0)) || Number(user.slaPendingSince || 0) <= 0) {
         user.slaPendingSince = safeTs;
     }
+    user.unreadCount = Math.max(0, Number(user.unreadCount || 0)) + 1;
+    user.attentionActive = true;
+    user.attentionSince = safeTs;
+    saveChat(contactId);
     return evaluateConversationSlaStatus(contactId, { emit: true, reason: 'inbound' });
+}
+
+function recordAutomationEvent(conversationId, eventType, payload = {}) {
+    try {
+        db.prepare(`INSERT INTO automation_events (conversation_id, event_type, intent, confidence, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+            .run(
+                String(conversationId || ''),
+                String(eventType || 'event'),
+                String(payload.intent || ''),
+                String(payload.confidence || ''),
+                JSON.stringify(payload.data || {}),
+                Date.now()
+            );
+    } catch (_) {}
+}
+
+function ensureTrialRequest(contactId, user) {
+    if (!contactId || !user) return null;
+    const request = buildTrialRequest({ ...user, id: contactId });
+    if (!request) return null;
+    const existing = db.prepare(`
+        SELECT * FROM trial_requests
+        WHERE conversation_id=? AND requested_day=? AND requested_time=? AND status='pending_confirmation'
+        ORDER BY created_at DESC LIMIT 1
+    `).get(contactId, request.requestedDay, request.requestedTime);
+    if (existing) return existing;
+    const now = Date.now();
+    const result = db.prepare(`
+        INSERT INTO trial_requests (conversation_id, contact_name, modality, requested_day, requested_time, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?)
+    `).run(contactId, request.contactName, request.modality, request.requestedDay, request.requestedTime, now, now);
+    user.salesStage = 'trial_requested';
+    user.customerMemory = { ...(user.customerMemory || {}), trialStatus: 'pending_confirmation', trialRequestedAt: now };
+    if (!user.tags.includes('Aula Exp.')) user.tags.push('Aula Exp.');
+    user.humanRequested = true;
+    user.pausedByHuman = true;
+    saveChat(contactId);
+    recordAutomationEvent(contactId, 'trial_requested', {
+        intent: 'trial',
+        confidence: user.intentConfidence,
+        data: { requestId: Number(result.lastInsertRowid || 0), day: request.requestedDay, time: request.requestedTime, modality: request.modality }
+    });
+    return db.prepare('SELECT * FROM trial_requests WHERE id=?').get(result.lastInsertRowid);
+}
+
+function getLatestTrialRequest(contactId) {
+    try {
+        return db.prepare('SELECT * FROM trial_requests WHERE conversation_id=? ORDER BY created_at DESC LIMIT 1').get(contactId) || null;
+    } catch (_) {
+        return null;
+    }
 }
 
 function acknowledgeConversationAttention(contactId, { actor = 'system', reason = 'ack' } = {}) {
     const user = conversationState[contactId];
     if (!user) return null;
     const hadPending = Number(user.slaPendingSince || 0) > 0 || normalizeChatSlaStatus(user.slaStatus) !== CHAT_SLA_STATUS.OK;
+    user.unreadCount = 0;
+    user.attentionActive = false;
+    user.attentionSince = 0;
     user.slaPendingSince = 0;
     user.slaStatus = CHAT_SLA_STATUS.OK;
     user.slaUpdatedAt = Date.now();
@@ -6224,6 +6365,7 @@ function buildAiContextPreviewForConversation(contactId) {
     if (!convo) return null;
     const snapshot = getAIContextSnapshot();
     const scaContext = buildScaContextSnippetForSender(contactId, convo.routeJid || contactId);
+    const trialRequest = getLatestTrialRequest(contactId);
     const warnings = [];
     const baseLen = Number(snapshot?.contexto_length || 0);
     const noticesLen = Number(snapshot?.avisos_length || 0);
@@ -6244,6 +6386,16 @@ function buildAiContextPreviewForConversation(contactId) {
             noticesUpdatedAt: Number(snapshot?.avisos_mtime_ms || 0),
             scaMatch: !!scaContext,
             scaSnippet: scaContext || ''
+        },
+        automation: {
+            intent: convo.lastIntent || 'unknown',
+            intentConfidence: convo.intentConfidence || 'low',
+            salesStage: convo.salesStage || 'new',
+            unknownCount: Number(convo.automationUnknownCount || 0),
+            globalOptOut: !!convo.globalOptOut,
+            marketingOptIn: !!convo.marketingOptIn,
+            memory: convo.customerMemory || {},
+            trialRequest
         },
         confidence,
         warnings
@@ -8266,6 +8418,11 @@ function getDailyOperationsSnapshot() {
         FROM ai_feedback_events
         WHERE created_at >= ? AND created_at < ?
     `, startTs, endTs);
+    const automationIntentsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='intent_detected' AND created_at>=? AND created_at<?`, startTs, endTs);
+    const automationRepliesToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='ai_reply' AND created_at>=? AND created_at<?`, startTs, endTs);
+    const automationHandoffsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='human_handoff' AND created_at>=? AND created_at<?`, startTs, endTs);
+    const trialRequestsToday = countSafe(`SELECT COUNT(1) AS total FROM trial_requests WHERE created_at>=? AND created_at<?`, startTs, endTs);
+    const optOutsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='global_opt_out' AND created_at>=? AND created_at<?`, startTs, endTs);
 
     const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
@@ -8339,6 +8496,13 @@ function getDailyOperationsSnapshot() {
         ai: {
             feedbackToday: aiFeedbackToday
         },
+        automation: {
+            intentsToday: automationIntentsToday,
+            repliesToday: automationRepliesToday,
+            handoffsToday: automationHandoffsToday,
+            trialRequestsToday,
+            optOutsToday
+        },
         kpis: {
             studentsNew7d,
             studentsActive,
@@ -8383,6 +8547,7 @@ async function runPixSafeCollectionSweep() {
         if (!copyPaste) continue;
         const convo = ensureConversationExistsForContact(contactId, charge.student_full_name || '');
         if (!convo) continue;
+        if (convo.globalOptOut) continue;
         if (convo.pausedByHuman) continue;
         const text = [
             `Lembrete de pagamento (${due.reminderNumber}/${safeConfig.maxRemindersPerCharge}): ainda temos um Pix pendente para ${charge.student_full_name || 'o aluno'}.`,
@@ -8620,6 +8785,7 @@ registerCoreSecurityRoutes({
 
 registerChatAdminRoutes({
     app,
+    db,
     fs,
     chatMediaDir: CHAT_MEDIA_DIR,
     requirePanelAuth,
@@ -9207,6 +9373,17 @@ wss.on('connection', (ws, req) => {
                         status: s.status,
                         pausedByHuman: s.pausedByHuman,
                         pendingHuman: !!s.pendingHumanHandoff,
+                        unreadCount: Math.max(0, Number(s.unreadCount || 0)),
+                        attentionActive: !!s.attentionActive,
+                        attentionSince: Number(s.attentionSince || 0),
+                        needsHuman: !!s.humanRequested,
+                        lastIntent: s.lastIntent || 'unknown',
+                        intentConfidence: s.intentConfidence || 'low',
+                        salesStage: s.salesStage || 'new',
+                        globalOptOut: !!s.globalOptOut,
+                        marketingOptIn: !!s.marketingOptIn,
+                        customerMemory: s.customerMemory || {},
+                        trialRequest: getLatestTrialRequest(id),
                         slaStatus: normalizeChatSlaStatus(s.slaStatus),
                         slaPendingSince: Number(s.slaPendingSince || 0),
                         pixPendingSca: pendingPix ? {
@@ -9233,6 +9410,7 @@ wss.on('connection', (ws, req) => {
                         broadcastHumanHandoffStatus({ sender: data.to, user: u, pending: false, reason: 'cancelled' });
                     }
                     u.pausedByHuman = true;
+                    u.humanRequested = false;
                     u.status = 'active';
                     const sn = ws.fullname || ws.username;
                     const txt = `*${sn}:* ${data.text}`;
@@ -9606,10 +9784,33 @@ async function startBot() {
         if (!text && !isAudio && !incomingLocation && !incomingImage && !incomingSticker) return;
         console.log(`[msg] ${sender.split('@')[0]}`);
 
-        if (!conversationState[sender]) conversationState[sender] = { history: [], messageBuffer: [], typingTimer: null, pausedByHuman: false, pendingHumanHandoff: null, name: msg.pushName || sender.split('@')[0], lastActivityTimestamp: Date.now(), tags: [], notes: "", status: 'active', routeJid: senderRaw, slaPendingSince: 0, slaStatus: 'ok', slaUpdatedAt: Date.now() };
+        if (!conversationState[sender]) conversationState[sender] = { history: [], messageBuffer: [], typingTimer: null, pausedByHuman: false, pendingHumanHandoff: null, name: msg.pushName || sender.split('@')[0], whatsappName: msg.pushName || '', nameSource: msg.pushName ? 'whatsapp' : 'fallback', lastActivityTimestamp: Date.now(), tags: [], notes: "", status: 'active', routeJid: senderRaw, slaPendingSince: 0, slaStatus: 'ok', slaUpdatedAt: Date.now() };
         const user = conversationState[sender]; user.lastActivityTimestamp = Date.now(); user.status = 'active'; user.routeJid = senderRaw;
+        const inboundMessageId = String(msg.key?.id || '').trim();
+        if (inboundMessageId && user.lastInboundMessageId === inboundMessageId) {
+            console.log('[chat] mensagem duplicada ignorada', { sender, messageId: inboundMessageId });
+            return;
+        }
+        if (inboundMessageId) user.lastInboundMessageId = inboundMessageId;
+
+        const contactNameResult = applyIncomingContactName({
+            conversation: user,
+            text: text || '',
+            whatsappName: msg.pushName || ''
+        });
+        if (contactNameResult.changed) saveChat(sender);
+        if (contactNameResult.displayNameChanged) {
+            broadcast({
+                type: 'contact_name_updated',
+                contactId: sender,
+                name: user.name,
+                source: contactNameResult.source
+            });
+        }
 
         let isAttendanceContact = false;
+        let automationAnalysis = null;
+        let automationEscalation = null;
         let skipStandardUserEcho = false;
         if (ATTENDANCE_ENABLED) {
             const commandPreview = detectAttendanceCommand(text || '');
@@ -9651,7 +9852,69 @@ async function startBot() {
             }
         }
         if (!isAttendanceContact) {
+            if (text) {
+                automationAnalysis = updateCustomerAutomationState(user, text, msgTimestampMs);
+                automationEscalation = shouldEscalateAutomation(automationAnalysis);
+                recordAutomationEvent(sender, 'intent_detected', {
+                    intent: automationAnalysis.intent,
+                    confidence: automationAnalysis.confidence,
+                    data: { salesStage: automationAnalysis.salesStage, facts: automationAnalysis.facts }
+                });
+                broadcast({
+                    type: 'automation_profile_updated',
+                    contactId: sender,
+                    profile: {
+                        marketingOptIn: !!user.marketingOptIn,
+                        globalOptOut: !!user.globalOptOut,
+                        salesStage: user.salesStage || 'new',
+                        intent: user.lastIntent || 'unknown',
+                        intentConfidence: user.intentConfidence || 'low',
+                        memory: user.customerMemory || {}
+                    }
+                });
+            }
             markConversationInboundForSla(sender, msgTimestampMs);
+        }
+
+        if (!isAttendanceContact && text && isGlobalOptOut(text)) {
+            user.globalOptOut = true;
+            user.marketingOptIn = false;
+            const reply = 'Tudo bem. Você não receberá novas mensagens automáticas. Se quiser reativar depois, diga: quero receber mensagens.';
+            const replyTs = Date.now();
+            appendHistoryEntry(user.history, 'Usuario', text, msgTimestampMs);
+            appendHistoryEntry(user.history, 'Hime', reply, replyTs);
+            saveChat(sender);
+            recordAutomationEvent(sender, 'global_opt_out', { intent: automationAnalysis?.intent, confidence: automationAnalysis?.confidence });
+            broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: user.pausedByHuman, timestamp: msgTimestampMs });
+            broadcast({ type: 'bot_reply', from: sender, text: reply, timestamp: replyTs });
+            if (sock) await sock.sendMessage(getSendTarget(sender), { text: reply });
+            return;
+        }
+
+        if (!isAttendanceContact && text && isGlobalOptIn(text)) {
+            user.globalOptOut = false;
+            user.marketingOptIn = true;
+            user.automationUnknownCount = 0;
+            automationEscalation = null;
+            saveChat(sender);
+            recordAutomationEvent(sender, 'global_opt_in', { intent: automationAnalysis?.intent, confidence: automationAnalysis?.confidence });
+        }
+
+        if (!isAttendanceContact && text && !user.pausedByHuman) {
+            const trialRequest = ensureTrialRequest(sender, user);
+            if (trialRequest) {
+                const reply = `Anotei sua solicitação de aula experimental para ${trialRequest.requested_day} às ${trialRequest.requested_time}${trialRequest.modality ? ` (${trialRequest.modality})` : ''}. Um atendente vai confirmar a disponibilidade com você.`;
+                const replyTs = Date.now();
+                appendHistoryEntry(user.history, 'Usuario', text, msgTimestampMs);
+                appendHistoryEntry(user.history, 'Hime', reply, replyTs);
+                saveChat(sender);
+                broadcast({ type: 'user_reply', from: sender, text, name: user.name, status: 'active', pausedByHuman: true, timestamp: msgTimestampMs });
+                broadcast({ type: 'bot_reply', from: sender, text: reply, timestamp: replyTs });
+                broadcast({ type: 'trial_request_created', contactId: sender, trialRequest });
+                broadcast({ type: 'help_alert', from: sender, name: user.name, text: 'Confirmar aula experimental', timestamp: msgTimestampMs, triggerMode: 'trial_request', matchedRule: 'trial_complete' });
+                if (sock) await sock.sendMessage(getSendTarget(sender), { text: reply });
+                return;
+            }
         }
 
         if (incomingImage) {
@@ -9831,6 +10094,23 @@ async function startBot() {
                 }
             }
 
+            if (!skipHumanIntentDetection && automationEscalation) {
+                recordAutomationEvent(sender, 'automatic_handoff', {
+                    intent: automationAnalysis?.intent,
+                    confidence: automationAnalysis?.confidence,
+                    data: { reason: automationEscalation.reason }
+                });
+                await executeHumanHandoff({
+                    sender,
+                    user,
+                    text,
+                    triggerMode: 'automation',
+                    matchedRule: automationEscalation.reason,
+                    eventTimestamp: msgTimestampMs
+                });
+                return;
+            }
+
             if (!skipHumanIntentDetection) {
                 const humanIntent = detectHumanHandoffIntent(text);
                 if (humanIntent.type === 'explicit') {
@@ -9929,10 +10209,11 @@ async function startBot() {
                 }
                 if (user.pausedByHuman) return;
                 const scaContextSnippet = buildScaContextSnippetForSender(sender, user.routeJid || senderRaw || '');
+                const automationContext = buildAutomationContext(user);
                 const respRaw = await gerarRespostaIA(
                     input || "...",
                     user.history,
-                    scaContextSnippet ? { sca: scaContextSnippet } : null
+                    { sca: scaContextSnippet || '', text: automationContext }
                 );
                 const resp = sanitizeAssistantReply(respRaw);
                 if (resp) {
@@ -9940,6 +10221,7 @@ async function startBot() {
                     await sock.sendMessage(getSendTarget(sender), { text: resp });
                     appendHistoryEntry(user.history, 'Hime', resp, replyTs);
                     saveChat(sender);
+                    recordAutomationEvent(sender, 'ai_reply', { intent: user.lastIntent, confidence: user.intentConfidence });
                     broadcast({ type: 'bot_reply', from: sender, text: resp, timestamp: replyTs });
                 } else if (respRaw) {
                     const fallback = "Perfeito. Posso te ajudar com planos, horarios, aula experimental ou matricula.";

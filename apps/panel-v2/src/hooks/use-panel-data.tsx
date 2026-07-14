@@ -69,6 +69,7 @@ type OpsDailySummary = {
   pix?: { generatedToday?: number; paidToday?: number; pendingSca?: number };
   retention?: { inactiveStudents5d?: number };
   ai?: { feedbackToday?: number };
+  automation?: { intentsToday?: number; repliesToday?: number; handoffsToday?: number; trialRequestsToday?: number; optOutsToday?: number };
   kpis?: {
     studentsNew7d?: number;
     studentsActive?: number;
@@ -106,6 +107,13 @@ type Chat = {
   pausedByHuman?: boolean;
   pendingHuman?: boolean;
   needsHuman?: boolean;
+  lastIntent?: string;
+  intentConfidence?: string;
+  salesStage?: string;
+  globalOptOut?: boolean;
+  marketingOptIn?: boolean;
+  customerMemory?: Record<string, any>;
+  trialRequest?: Record<string, any> | null;
   tags?: string[];
   notes?: string;
   
@@ -127,6 +135,16 @@ type AiContextPreview = {
   };
   confidence?: "high" | "medium" | "low";
   warnings?: string[];
+  automation?: {
+    intent?: string;
+    intentConfidence?: string;
+    salesStage?: string;
+    unknownCount?: number;
+    globalOptOut?: boolean;
+    marketingOptIn?: boolean;
+    memory?: Record<string, any>;
+    trialRequest?: Record<string, any> | null;
+  };
 };
 type SystemHealthSnapshot = {
   generatedAt?: number;
@@ -248,6 +266,8 @@ type PanelDataContextValue = {
   ackChatAttention: (id: string) => Promise<void>;
   sendText: (text: string) => Promise<boolean>;
   setChatIAEnabled: (enabled: boolean) => Promise<boolean>;
+  updateAutomationProfile: (payload: { marketingOptIn?: boolean; globalOptOut?: boolean; salesStage?: string }) => Promise<boolean>;
+  updateTrialRequest: (status: "confirmed" | "cancelled") => Promise<boolean>;
   fetchAiContextPreview: (contactId: string) => Promise<AiContextPreview | null>;
   submitAiFeedback: (contactId: string, payload?: { feedbackType?: string; reason?: string }) => Promise<boolean>;
   loadMoreMessages: () => Promise<boolean>;
@@ -1160,6 +1180,17 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           status: chat.status || "active",
           pausedByHuman: !!chat.pausedByHuman,
           pendingHuman: !!chat.pendingHuman,
+          unreadCount: Math.max(0, Number(chat.unreadCount || 0)),
+          attentionActive: !!chat.attentionActive,
+          attentionSince: Number(chat.attentionSince || 0) || undefined,
+          needsHuman: !!chat.needsHuman,
+          lastIntent: chat.lastIntent || "unknown",
+          intentConfidence: chat.intentConfidence || "low",
+          salesStage: chat.salesStage || "new",
+          globalOptOut: !!chat.globalOptOut,
+          marketingOptIn: !!chat.marketingOptIn,
+          customerMemory: chat.customerMemory || {},
+          trialRequest: chat.trialRequest || null,
           slaStatus: (chat.slaStatus || "ok") as "ok" | "atrasando" | "critico",
           slaPendingSince: Number(chat.slaPendingSince || 0),
           
@@ -1168,10 +1199,10 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           const prevMap = new Map(prev.map((chat) => [chat.id, chat]));
           return next.map((chat: Chat) => ({
             ...chat,
-            unreadCount: prevMap.get(chat.id)?.unreadCount || 0,
-            needsHuman: !!prevMap.get(chat.id)?.needsHuman,
-            attentionActive: !!prevMap.get(chat.id)?.attentionActive,
-            attentionSince: prevMap.get(chat.id)?.attentionSince,
+            unreadCount: chat.unreadCount,
+            needsHuman: chat.needsHuman,
+            attentionActive: chat.attentionActive,
+            attentionSince: chat.attentionSince,
             slaStatus: (chat.slaStatus || prevMap.get(chat.id)?.slaStatus || "ok") as "ok" | "atrasando" | "critico",
             slaPendingSince: Number(chat.slaPendingSince || prevMap.get(chat.id)?.slaPendingSince || 0),
             
@@ -1240,6 +1271,48 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           false,
           payload.timestamp,
         );
+        setChats((prev) => prev.map((chat) => chat.id === payload.from ? { ...chat, needsHuman: false } : chat));
+        break;
+      case "contact_name_updated":
+        if (payload.contactId && payload.name) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.contactId ? {
+            ...chat,
+            name: String(payload.name),
+          } : chat));
+        }
+        break;
+      case "automation_profile_updated":
+        if (payload.contactId && payload.profile) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.contactId ? {
+            ...chat,
+            marketingOptIn: !!payload.profile.marketingOptIn,
+            globalOptOut: !!payload.profile.globalOptOut,
+            salesStage: payload.profile.salesStage || chat.salesStage,
+            lastIntent: payload.profile.intent || chat.lastIntent,
+            intentConfidence: payload.profile.intentConfidence || chat.intentConfidence,
+            customerMemory: payload.profile.memory || chat.customerMemory,
+          } : chat));
+        }
+        break;
+      case "trial_request_updated":
+        if (payload.contactId) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.contactId ? {
+            ...chat,
+            needsHuman: false,
+            salesStage: payload.trialRequest?.status === "confirmed" ? "trial_scheduled" : "interested",
+            trialRequest: payload.trialRequest || chat.trialRequest,
+          } : chat));
+        }
+        break;
+      case "trial_request_created":
+        if (payload.contactId && payload.trialRequest) {
+          setChats((prev) => prev.map((chat) => chat.id === payload.contactId ? {
+            ...chat,
+            needsHuman: true,
+            salesStage: "trial_requested",
+            trialRequest: payload.trialRequest,
+          } : chat));
+        }
         break;
       case "chat_ia_state_updated":
         if (payload.from) {
@@ -1463,7 +1536,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setChats((prev) => prev.map((chat) => chat.id === id ? {
       ...chat,
       unreadCount: 0,
-      needsHuman: false,
       attentionActive: false,
       attentionSince: undefined,
       slaStatus: "ok",
@@ -1555,6 +1627,54 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return true;
     } catch {
       toast.error("Falha ao alterar resposta IA");
+      return false;
+    }
+  }, [selectedChatId]);
+
+  const updateAutomationProfile = useCallback(async (payload: { marketingOptIn?: boolean; globalOptOut?: boolean; salesStage?: string }) => {
+    if (!selectedChatId) return false;
+    try {
+      const res = await apiFetch(`/admin/conversations/${encodeURIComponent(selectedChatId)}/automation-profile`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await res.json();
+      const profile = data?.profile || {};
+      setChats((prev) => prev.map((chat) => chat.id === selectedChatId ? {
+        ...chat,
+        marketingOptIn: !!profile.marketingOptIn,
+        globalOptOut: !!profile.globalOptOut,
+        salesStage: profile.salesStage || chat.salesStage,
+        lastIntent: profile.intent || chat.lastIntent,
+        intentConfidence: profile.intentConfidence || chat.intentConfidence,
+        customerMemory: profile.memory || chat.customerMemory,
+      } : chat));
+      return true;
+    } catch {
+      toast.error("Falha ao atualizar consentimento do contato.");
+      return false;
+    }
+  }, [selectedChatId]);
+
+  const updateTrialRequest = useCallback(async (status: "confirmed" | "cancelled") => {
+    if (!selectedChatId) return false;
+    try {
+      await apiFetch(`/admin/conversations/${encodeURIComponent(selectedChatId)}/trial-request`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ status }),
+      });
+      setChats((prev) => prev.map((chat) => chat.id === selectedChatId ? {
+        ...chat,
+        needsHuman: false,
+        salesStage: status === "confirmed" ? "trial_scheduled" : "interested",
+        trialRequest: chat.trialRequest ? { ...chat.trialRequest, status } : chat.trialRequest,
+      } : chat));
+      toast.success(status === "confirmed" ? "Aula experimental confirmada." : "Solicitacao de aula cancelada.");
+      return true;
+    } catch {
+      toast.error("Nao foi possivel atualizar a aula experimental.");
       return false;
     }
   }, [selectedChatId]);
@@ -1898,6 +2018,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     ackChatAttention,
     sendText,
     setChatIAEnabled,
+    updateAutomationProfile,
+    updateTrialRequest,
     fetchAiContextPreview,
     submitAiFeedback,
     loadMoreMessages,
@@ -2093,6 +2215,8 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     toggleAdCampaign,
     updateRadioSettings,
     setChatIAEnabled,
+    updateAutomationProfile,
+    updateTrialRequest,
     updateAttendanceCatalogItem,
     updateAttendanceTemplate,
     updateAttendanceSchedule,

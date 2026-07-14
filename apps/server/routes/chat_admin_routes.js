@@ -2,6 +2,7 @@ const path = require('path');
 
 function registerChatAdminRoutes({
     app,
+    db,
     fs,
     chatMediaDir,
     requirePanelAuth,
@@ -128,6 +129,7 @@ function registerChatAdminRoutes({
                 broadcastHumanHandoffStatus({ sender: contactId, user: convo, pending: false, reason: 'cancelled' });
             }
             convo.pausedByHuman = true;
+            convo.humanRequested = false;
             convo.status = 'active';
             const now = Date.now();
             convo.lastActivityTimestamp = now;
@@ -243,6 +245,7 @@ function registerChatAdminRoutes({
                     broadcastHumanHandoffStatus({ sender: contactId, user: convo, pending: false, reason: 'cancelled' });
                 }
                 convo.pausedByHuman = true;
+                convo.humanRequested = false;
                 convo.status = 'active';
                 convo.lastActivityTimestamp = now;
                 appendHistoryEntry(convo.history, senderName, marker, now);
@@ -320,6 +323,7 @@ function registerChatAdminRoutes({
                     broadcastHumanHandoffStatus({ sender: contactId, user: convo, pending: false, reason: 'cancelled' });
                 }
                 convo.pausedByHuman = true;
+                convo.humanRequested = false;
                 convo.status = 'active';
                 convo.lastActivityTimestamp = now;
                 appendHistoryEntry(convo.history, senderName, marker, now);
@@ -362,6 +366,59 @@ function registerChatAdminRoutes({
             acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: 'panel_open_chat' });
         }
         return res.json({ ok: true, contactId });
+    });
+
+    app.post('/admin/conversations/:id/automation-profile', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        const convo = conversationState[contactId];
+        if (!contactId || !convo) return res.status(404).json({ error: 'conversation_not_found' });
+        if (typeof req.body?.marketingOptIn === 'boolean') {
+            convo.marketingOptIn = req.body.marketingOptIn;
+            if (convo.marketingOptIn) convo.globalOptOut = false;
+        }
+        if (typeof req.body?.globalOptOut === 'boolean') {
+            convo.globalOptOut = req.body.globalOptOut;
+            if (convo.globalOptOut) convo.marketingOptIn = false;
+        }
+        const allowedStages = new Set(['new', 'interested', 'trial_interest', 'trial_requested', 'trial_scheduled', 'enrollment', 'enrolled', 'support', 'human_support']);
+        const requestedStage = sanitizePublicText(req.body?.salesStage || '', 40);
+        if (requestedStage && allowedStages.has(requestedStage)) convo.salesStage = requestedStage;
+        saveChat(contactId);
+        const profile = {
+            marketingOptIn: !!convo.marketingOptIn,
+            globalOptOut: !!convo.globalOptOut,
+            salesStage: convo.salesStage || 'new',
+            intent: convo.lastIntent || 'unknown',
+            intentConfidence: convo.intentConfidence || 'low',
+            memory: convo.customerMemory || {}
+        };
+        broadcast({ type: 'automation_profile_updated', contactId, profile, actor: authUser.username });
+        return res.json({ ok: true, contactId, profile });
+    });
+
+    app.post('/admin/conversations/:id/trial-request', (req, res) => {
+        const authUser = requirePanelAuth(req, res); if (!authUser) return;
+        const contactId = String(req.params.id || '').trim();
+        const convo = conversationState[contactId];
+        if (!contactId || !convo) return res.status(404).json({ error: 'conversation_not_found' });
+        const status = sanitizePublicText(req.body?.status || '', 40);
+        if (!['confirmed', 'cancelled'].includes(status)) return res.status(400).json({ error: 'invalid_status' });
+        const trial = db.prepare(`SELECT * FROM trial_requests WHERE conversation_id=? AND status='pending_confirmation' ORDER BY created_at DESC LIMIT 1`).get(contactId);
+        if (!trial) return res.status(404).json({ error: 'trial_request_not_found' });
+        const now = Date.now();
+        db.prepare(`UPDATE trial_requests SET status=?, updated_at=?, confirmed_by=?, confirmed_at=? WHERE id=?`)
+            .run(status, now, String(authUser.username || ''), status === 'confirmed' ? now : 0, trial.id);
+        convo.customerMemory = { ...(convo.customerMemory || {}), trialStatus: status };
+        convo.salesStage = status === 'confirmed' ? 'trial_scheduled' : 'interested';
+        convo.humanRequested = false;
+        saveChat(contactId);
+        if (typeof acknowledgeConversationAttention === 'function') {
+            acknowledgeConversationAttention(contactId, { actor: authUser.username, reason: `trial_${status}` });
+        }
+        const updated = db.prepare('SELECT * FROM trial_requests WHERE id=?').get(trial.id);
+        broadcast({ type: 'trial_request_updated', contactId, trialRequest: updated });
+        return res.json({ ok: true, trialRequest: updated });
     });
 
     app.get('/admin/conversations/:id/ai-context-preview', (req, res) => {

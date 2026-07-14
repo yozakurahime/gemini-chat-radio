@@ -114,12 +114,6 @@ function ChatMessageBubble({ message }: { message: RenderMessage }) {
   );
 }
 
-function chatSlaRank(status?: string) {
-  if (status === "critico") return 2;
-  if (status === "atrasando") return 1;
-  return 0;
-}
-
 export default function AtendimentoPage() {
   const panelData = usePanelData();
   const {
@@ -130,6 +124,8 @@ export default function AtendimentoPage() {
     selectChat,
     sendText,
     setChatIAEnabled,
+    updateAutomationProfile,
+    updateTrialRequest,
     fetchAiContextPreview,
     submitAiFeedback,
     opsDailySummary,
@@ -151,7 +147,7 @@ export default function AtendimentoPage() {
     const query = searchQuery.trim().toLowerCase();
     const filtered = chats.filter((chat) => {
       if (chat.status === "archived") return false;
-      const isUrgent = !!chat.attentionActive || chat.slaStatus === "atrasando" || chat.slaStatus === "critico";
+      const isUrgent = !!chat.needsHuman || chat.slaStatus === "atrasando" || chat.slaStatus === "critico";
       const hasUnread = Number(chat.unreadCount || 0) > 0;
       if (chatFilter === "urgent" && !isUrgent) return false;
       if (chatFilter === "unread" && !hasUnread) return false;
@@ -159,34 +155,15 @@ export default function AtendimentoPage() {
       return `${chat.name || ""} ${chat.id || ""} ${chat.lastMessage || ""}`.toLowerCase().includes(query);
     });
 
-    return filtered.sort((left, right) => {
-      const leftSlaRank = chatSlaRank(left.slaStatus);
-      const rightSlaRank = chatSlaRank(right.slaStatus);
-      if (leftSlaRank !== rightSlaRank) return rightSlaRank - leftSlaRank;
-      if (leftSlaRank > 0 && rightSlaRank > 0) {
-        const leftSince = Number(left.slaPendingSince || left.timestamp || 0);
-        const rightSince = Number(right.slaPendingSince || right.timestamp || 0);
-        if (leftSince !== rightSince) return leftSince - rightSince;
-      }
-      const leftAttention = !!left.attentionActive;
-      const rightAttention = !!right.attentionActive;
-      if (leftAttention !== rightAttention) return leftAttention ? -1 : 1;
-      if (leftAttention && rightAttention) {
-        const leftSince = Number(left.attentionSince || left.timestamp || 0);
-        const rightSince = Number(right.attentionSince || right.timestamp || 0);
-        if (leftSince !== rightSince) return rightSince - leftSince;
-      }
-      const leftUnread = Number(left.unreadCount || 0);
-      const rightUnread = Number(right.unreadCount || 0);
-      if (leftUnread !== rightUnread) return rightUnread - leftUnread;
-      return Number(right.timestamp || 0) - Number(left.timestamp || 0);
-    });
+    return filtered.sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
   }, [chatFilter, chats, searchQuery]);
 
   const currentMessages = useMemo(
     () => messages.map((message, index) => ({ ...parsePanelMessage(message), id: `${index}-${message}` })),
     [messages],
   );
+  const selectedMemory = selectedChat?.customerMemory || aiPreview?.automation?.memory || {};
+  const selectedTrialRequest = selectedChat?.trialRequest || aiPreview?.automation?.trialRequest || null;
 
   const submit = async () => {
     const text = messageInput.trim();
@@ -221,13 +198,13 @@ export default function AtendimentoPage() {
     return () => { active = false; };
   }, [fetchAiContextPreview, selectedChatId]);
 
-  const sendInadequateFeedback = async () => {
+  const sendAiFeedback = async (feedbackType: string, reason: string) => {
     if (!selectedChatId || feedbackLoading) return;
     setFeedbackLoading(true);
     try {
       const ok = await submitAiFeedback(selectedChatId, {
-        feedbackType: "inadequada",
-        reason: "Marcado pelo atendente no painel de atendimento.",
+        feedbackType,
+        reason,
       });
       if (ok) {
         setAiPreview(await fetchAiContextPreview(selectedChatId));
@@ -250,6 +227,9 @@ export default function AtendimentoPage() {
               </Badge>
               
               <Badge variant="outline">Pagos hoje: {Number(opsDailySummary.pix?.paidToday || 0)}</Badge>
+              <Badge variant="outline">IA hoje: {Number(opsDailySummary.automation?.repliesToday || 0)}</Badge>
+              <Badge variant="outline">Transferencias: {Number(opsDailySummary.automation?.handoffsToday || 0)}</Badge>
+              <Badge variant="outline">Aulas solicitadas: {Number(opsDailySummary.automation?.trialRequestsToday || 0)}</Badge>
               <Badge variant="outline">Inativos (+5d): {Number(opsDailySummary.retention?.inactiveStudents5d || 0)}</Badge>
               <Badge
                 variant={Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? "destructive" : "default"}
@@ -383,9 +363,14 @@ export default function AtendimentoPage() {
                         <AlertTriangle className="h-4 w-4 text-primary" />
                         <p className="text-sm font-medium">Transparencia da IA</p>
                       </div>
-                      <Button size="sm" variant="outline" className="h-7" onClick={sendInadequateFeedback} disabled={feedbackLoading || aiPreviewLoading}>
-                        {feedbackLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Resposta inadequada"}
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => void sendAiFeedback("correta", "Resposta validada pelo atendente.")} disabled={feedbackLoading || aiPreviewLoading}>Correta</Button>
+                        <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => void sendAiFeedback("inadequada", "Resposta inadequada marcada pelo atendente.")} disabled={feedbackLoading || aiPreviewLoading}>Inadequada</Button>
+                        <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => void sendAiFeedback("desatualizada", "Informacao desatualizada marcada pelo atendente.")} disabled={feedbackLoading || aiPreviewLoading}>Desatualizada</Button>
+                        <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => void sendAiFeedback("deveria_transferir", "A IA deveria ter chamado um atendente.")} disabled={feedbackLoading || aiPreviewLoading}>
+                          {feedbackLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Chamar humano"}
+                        </Button>
+                      </div>
                     </div>
                     {aiPreviewLoading ? (
                       <p className="text-xs text-muted-foreground">Carregando contexto...</p>
@@ -395,8 +380,44 @@ export default function AtendimentoPage() {
                           <Badge variant="secondary">Confianca: {String(aiPreview?.confidence || "-")}</Badge>
                           <Badge variant="outline">Base: {Number(aiPreview?.context?.baseContextLength || 0)} chars</Badge>
                           <Badge variant="outline">Avisos: {Number(aiPreview?.context?.noticesLength || 0)} chars</Badge>
-                          
+                          <Badge variant="outline">Intencao: {String(aiPreview?.automation?.intent || selectedChat.lastIntent || "unknown")}</Badge>
+                          <Badge variant="outline">Etapa: {String(aiPreview?.automation?.salesStage || selectedChat.salesStage || "new")}</Badge>
                         </div>
+                        {Object.keys(selectedMemory).length > 0 ? (
+                          <div className="rounded-md bg-muted/50 p-2 text-[11px] space-y-1">
+                            <p className="font-medium">Memoria do cliente</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedMemory.objective ? <Badge variant="outline">Objetivo: {selectedMemory.objective}</Badge> : null}
+                              {selectedMemory.modality ? <Badge variant="outline">Modalidade: {selectedMemory.modality}</Badge> : null}
+                              {selectedMemory.planInterest ? <Badge variant="outline">Plano: {selectedMemory.planInterest}</Badge> : null}
+                              {selectedMemory.preferredDay ? <Badge variant="outline">Dia: {selectedMemory.preferredDay}</Badge> : null}
+                              {selectedMemory.preferredTime ? <Badge variant="outline">Horario: {selectedMemory.preferredTime}</Badge> : null}
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="flex items-center justify-between rounded-md border p-2">
+                          <div>
+                            <p className="text-[11px] font-medium">Mensagens proativas autorizadas</p>
+                            <p className="text-[10px] text-muted-foreground">Necessario para campanhas e reativacoes.</p>
+                          </div>
+                          <Switch
+                            checked={!!selectedChat.marketingOptIn && !selectedChat.globalOptOut}
+                            onCheckedChange={(checked) => void updateAutomationProfile({ marketingOptIn: checked })}
+                          />
+                        </div>
+                        {selectedTrialRequest?.status === "pending_confirmation" ? (
+                          <div className="rounded-md border border-amber-300 bg-amber-50/60 p-2 dark:bg-amber-500/10">
+                            <p className="text-[11px] font-medium">Confirmar aula experimental</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {selectedTrialRequest.requested_day} as {selectedTrialRequest.requested_time}
+                              {selectedTrialRequest.modality ? ` - ${selectedTrialRequest.modality}` : ""}
+                            </p>
+                            <div className="mt-2 flex gap-2">
+                              <Button size="sm" className="h-7 text-[11px]" onClick={() => void updateTrialRequest("confirmed")}>Confirmar</Button>
+                              <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void updateTrialRequest("cancelled")}>Cancelar</Button>
+                            </div>
+                          </div>
+                        ) : null}
                         <p className="text-[11px] text-muted-foreground">Atualizado em {formatDateTime(aiPreview?.generatedAt)}</p>
                         {Array.isArray(aiPreview?.warnings) && aiPreview.warnings.length > 0 ? (
                           <div className="space-y-1">

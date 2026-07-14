@@ -26,6 +26,7 @@ vi.mock("@/hooks/use-panel-data", async () => {
           timestamp: Date.now() - 10000,
           unreadCount: 2,
           attentionActive: true,
+          needsHuman: true,
           attentionSince: Date.now(),
           pausedByHuman: false,
           status: "active",
@@ -37,6 +38,17 @@ vi.mock("@/hooks/use-panel-data", async () => {
           timestamp: Date.now(),
           unreadCount: 0,
           attentionActive: false,
+          pausedByHuman: false,
+          status: "active",
+        },
+        {
+          id: "chat-3",
+          name: "Cliente Nao Lido",
+          lastMessage: "Mensagem nova",
+          timestamp: Date.now() - 5000,
+          unreadCount: 1,
+          attentionActive: true,
+          needsHuman: false,
           pausedByHuman: false,
           status: "active",
         },
@@ -75,6 +87,25 @@ describe("Atendimento page interactions", () => {
 
     fireEvent.click(screen.getByText(/cliente prioritario/i));
     expect(mockSelectChat).toHaveBeenCalledWith("chat-2");
+  });
+
+  it("keeps ordinary unread messages in the unread tab", () => {
+    render(<AtendimentoPage />);
+
+    expect(screen.queryByText(/Cliente Nao Lido/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Nao lidas" }));
+    expect(screen.getByText(/Cliente Nao Lido/)).toBeInTheDocument();
+  });
+
+  it("sorts conversations by newest activity first", () => {
+    render(<AtendimentoPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Todos" }));
+    const newest = screen.getAllByText("Cliente Normal").find((element) => element.tagName === "SPAN")!;
+    const unread = screen.getByText(/Cliente Nao Lido/);
+    const urgent = screen.getByText(/Cliente Prioritario/);
+    expect(newest.compareDocumentPosition(unread) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(unread.compareDocumentPosition(urgent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("sends message when pressing Enter in input", async () => {
