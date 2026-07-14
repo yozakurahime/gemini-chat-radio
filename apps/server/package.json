@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test tests/security.test.js tests/admin_flows.test.js tests/contact_name_runtime.test.js tests/customer_automation_runtime.test.js",
+    "test": "node --test tests/security.test.js tests/admin_flows.test.js tests/contact_name_runtime.test.js tests/customer_automation_runtime.test.js tests/modality_availability_runtime.test.js",
     "health-check": "bash ../../tools/deploy/health-check.sh",
     "health-check:install-cron": "bash ../../tools/deploy/install-health-check-cron.sh",
     "desktop:publish-manifest": "node scripts/publish-desktop-release.js"

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { resolveAppPaths } = require('./app_paths');
+const { buildAvailabilityContext } = require('./modality_availability_runtime');
 
 const API_KEY = process.env.HIMEFIT_PROVIDER_AI_KEY || process.env.GEMINI_API_KEY;
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || '').trim();
@@ -19,6 +20,7 @@ const APP_PATHS = resolveAppPaths(__dirname, process.env, process.platform);
 const CONTEXTO_FILE_PATH = APP_PATHS.BASE_CONTEXT_FILE;
 const KNOWLEDGE_PUBLISHED_PATH = APP_PATHS.KNOWLEDGE_PUBLISHED_FILE;
 const AI_PLAYBOOKS_FILE_PATH = path.join(APP_PATHS.KNOWLEDGE_DIR, 'ai_playbooks.json');
+const MODALITY_AVAILABILITY_FILE_PATH = APP_PATHS.MODALITY_AVAILABILITY_FILE;
 const AI_TIMEZONE = String(process.env.HIMEFIT_TZ || process.env.TZ || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
 const HIMEFIT_LOCAL_HOLIDAYS = String(process.env.HIMEFIT_LOCAL_HOLIDAYS || '').trim();
 const MAX_HISTORY_TOKENS = 12;
@@ -688,6 +690,7 @@ function shouldForceNatacaoAdultoReply(questionText) {
     const question = normalizeForLookup(questionText || '');
     if (!question.includes('natac') || !question.includes('adult')) return false;
     if (question.includes('plano completo') || question.includes('inclui')) return false;
+    if (/\b(vaga|vagas|disponib|lotad|lista de espera)\b/.test(question)) return false;
     return true;
 }
 
@@ -808,6 +811,7 @@ function refreshDynamicContextSnapshot(force = false) {
 
 function getCurrentContextSnapshot() {
     refreshDynamicContextSnapshot();
+    const availabilityContext = getModalityAvailabilityContext();
     return {
         contexto_length: contextoAcademia.length,
         avisos_length: avisosDoDia.length,
@@ -815,8 +819,25 @@ function getCurrentContextSnapshot() {
         playbooks_updated_at: Number(aiPlaybooks?.updated_at || 0),
         contexto_mtime_ms: contextoAcademiaStamp.mtimeMs || 0,
         avisos_mtime_ms: avisosDoDiaStamp.mtimeMs || 0,
-        playbooks_mtime_ms: aiPlaybooksStamp.mtimeMs || 0
+        playbooks_mtime_ms: aiPlaybooksStamp.mtimeMs || 0,
+        availability_length: availabilityContext.length
     };
+}
+
+function readModalityAvailability() {
+    try {
+        if (!fs.existsSync(MODALITY_AVAILABILITY_FILE_PATH)) return { version: 1, entries: [] };
+        return JSON.parse(fs.readFileSync(MODALITY_AVAILABILITY_FILE_PATH, 'utf-8'));
+    } catch (_) {
+        return { version: 1, entries: [] };
+    }
+}
+
+function getModalityAvailabilityContext(now = Date.now()) {
+    return buildAvailabilityContext(readModalityAvailability(), {
+        now,
+        timezone: AI_TIMEZONE
+    });
 }
 
 function buildPlaybooksContextBlock() {
@@ -868,6 +889,7 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
             ? `Hoje (${nowInfo.dateBR}) e feriado ${nowInfo.holiday.scope}: ${nowInfo.holiday.name}.`
             : `Hoje (${nowInfo.dateBR}) nao e feriado nacional conhecido.`;
         const playbooksBlock = buildPlaybooksContextBlock();
+        const availabilityBlock = getModalityAvailabilityContext();
         const contextParts = [
             `# RELOGIO OFICIAL\nFuso horario oficial: ${nowInfo.timezone}\nData de hoje: ${nowInfo.dateBR}\nDia da semana oficial: ${nowInfo.weekday}.`,
             `# FERIADO OFICIAL\n${holidayLine}`,
@@ -877,6 +899,7 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
             playbooksBlock,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,
+            availabilityBlock,
         ];
         if (extraContextBlock) {
             contextParts.push(extraContextBlock);

@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
-import { Activity, Bot, CreditCard, Download, KeyRound, MapPin, RotateCcw, Save, Send, Settings, Shield, TriangleAlert, Upload, UserPlus, Users } from "lucide-react";
+import { Activity, Bot, CalendarClock, CreditCard, Download, KeyRound, MapPin, Pencil, Plus, RotateCcw, Save, Send, Settings, Shield, Trash2, TriangleAlert, Upload, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import { usePanelData } from "@/hooks/use-panel-data";
 import { apiFetch, jsonHeaders } from "@/lib/panel-api";
@@ -112,6 +112,34 @@ type AiPlaybooks = {
   };
   updated_at?: number;
   updated_by?: string;
+};
+
+type ModalityAvailabilityEntry = {
+  id: string;
+  modality: string;
+  className: string;
+  schedule: string;
+  status: "available" | "full" | "waitlist" | "unavailable";
+  availableSpots: number | null;
+  capacity: number | null;
+  note: string;
+  active: boolean;
+  validUntil: number;
+  updatedAt?: number;
+  updatedBy?: string;
+};
+
+const EMPTY_AVAILABILITY_FORM = {
+  id: "",
+  modality: "",
+  className: "",
+  schedule: "",
+  status: "available" as ModalityAvailabilityEntry["status"],
+  availableSpots: "",
+  capacity: "",
+  note: "",
+  active: true,
+  validUntil: "",
 };
 
 const PIX_SAFE_DEFAULT: PixSafeConfig = {
@@ -222,6 +250,27 @@ function digitsOnly(value: string) {
   return String(value || "").replace(/\D+/g, "");
 }
 
+function availabilityDateInput(timestamp?: number) {
+  if (!timestamp) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(timestamp));
+    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${value.year}-${value.month}-${value.day}`;
+  } catch {
+    return "";
+  }
+}
+
+function availabilityEndOfDay(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return 0;
+  return new Date(`${date}T23:59:59.999-03:00`).getTime();
+}
+
 function buildWhatsappLink(phone: string, studentName: string) {
   const digits = digitsOnly(phone);
   if (!digits) return "";
@@ -273,6 +322,12 @@ export default function ConfiguracoesPage() {
   const [testMessage, setTestMessage] = useState("");
   const [testResponse, setTestResponse] = useState("");
   const [isTestLoading, setIsTestLoading] = useState(false);
+  const [availabilityEntries, setAvailabilityEntries] = useState<ModalityAvailabilityEntry[]>([]);
+  const [availabilityForm, setAvailabilityForm] = useState(EMPTY_AVAILABILITY_FORM);
+  const [availabilityUpdatedAt, setAvailabilityUpdatedAt] = useState(0);
+  const [availabilityUpdatedBy, setAvailabilityUpdatedBy] = useState("");
+  const [loadingAvailability, setLoadingAvailability] = useState(false);
+  const [savingAvailability, setSavingAvailability] = useState(false);
 
   const [gymLat, setGymLat] = useState("-23.5505");
   const [gymLng, setGymLng] = useState("-46.6333");
@@ -372,6 +427,97 @@ export default function ConfiguracoesPage() {
     }
   }, [isAdmin, knowledgeBase]);
 
+  const loadAvailability = useCallback(async () => {
+    setLoadingAvailability(true);
+    try {
+      const res = await apiFetch("/admin/knowledge/availability");
+      const data = await res.json();
+      if (!res.ok) throw new Error(String(data?.error || "load_failed"));
+      const availability = data?.availability || {};
+      setAvailabilityEntries(Array.isArray(availability.entries) ? availability.entries : []);
+      setAvailabilityUpdatedAt(Number(availability.updatedAt || 0));
+      setAvailabilityUpdatedBy(String(availability.updatedBy || ""));
+    } catch {
+      setAvailabilityEntries([]);
+      toast.error("Falha ao carregar as vagas por modalidade.");
+    } finally {
+      setLoadingAvailability(false);
+    }
+  }, []);
+
+  const saveAvailability = async () => {
+    if (!isAdmin || savingAvailability) return;
+    setSavingAvailability(true);
+    try {
+      const res = await apiFetch("/admin/knowledge/availability/save", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ availability: { entries: availabilityEntries } }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(String(data?.error || "save_failed"));
+      const availability = data.availability || {};
+      setAvailabilityEntries(Array.isArray(availability.entries) ? availability.entries : []);
+      setAvailabilityUpdatedAt(Number(availability.updatedAt || 0));
+      setAvailabilityUpdatedBy(String(availability.updatedBy || ""));
+      toast.success("Vagas atualizadas no contexto da Hime.");
+    } catch {
+      toast.error("Falha ao salvar as vagas.");
+    } finally {
+      setSavingAvailability(false);
+    }
+  };
+
+  const upsertAvailabilityEntry = () => {
+    const modality = availabilityForm.modality.trim();
+    if (!modality) {
+      toast.error("Informe a modalidade.");
+      return;
+    }
+    if (availabilityForm.active && !availabilityForm.validUntil) {
+      toast.error("Informe a data de validade para evitar que a IA use uma vaga antiga.");
+      return;
+    }
+    const availableSpots = availabilityForm.availableSpots.trim() === ""
+      ? null
+      : Math.max(0, Number.parseInt(availabilityForm.availableSpots, 10) || 0);
+    const capacity = availabilityForm.capacity.trim() === ""
+      ? null
+      : Math.max(1, Number.parseInt(availabilityForm.capacity, 10) || 1);
+    const next: ModalityAvailabilityEntry = {
+      id: availabilityForm.id || `vaga-${Date.now()}`,
+      modality,
+      className: availabilityForm.className.trim(),
+      schedule: availabilityForm.schedule.trim(),
+      status: availableSpots === 0 && availabilityForm.status === "available" ? "full" : availabilityForm.status,
+      availableSpots,
+      capacity,
+      note: availabilityForm.note.trim(),
+      active: availabilityForm.active,
+      validUntil: availabilityEndOfDay(availabilityForm.validUntil),
+    };
+    setAvailabilityEntries((current) => {
+      const found = current.some((entry) => entry.id === next.id);
+      return found ? current.map((entry) => entry.id === next.id ? next : entry) : [...current, next];
+    });
+    setAvailabilityForm(EMPTY_AVAILABILITY_FORM);
+  };
+
+  const editAvailabilityEntry = (entry: ModalityAvailabilityEntry) => {
+    setAvailabilityForm({
+      id: entry.id,
+      modality: entry.modality,
+      className: entry.className || "",
+      schedule: entry.schedule || "",
+      status: entry.status,
+      availableSpots: entry.availableSpots === null ? "" : String(entry.availableSpots),
+      capacity: entry.capacity === null ? "" : String(entry.capacity),
+      note: entry.note || "",
+      active: entry.active !== false,
+      validUntil: availabilityDateInput(entry.validUntil),
+    });
+  };
+
   const updateOpsThreshold = (key: keyof OpsAlertsConfig["thresholds"], value: string) => {
     const parsed = Number(value);
     setOpsConfig((prev) => ({
@@ -447,6 +593,10 @@ export default function ConfiguracoesPage() {
     if (!isAdmin) return;
     loadContextProfile();
   }, [isAdmin, loadContextProfile]);
+
+  useEffect(() => {
+    void loadAvailability();
+  }, [loadAvailability]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -795,9 +945,12 @@ export default function ConfiguracoesPage() {
       </div>
 
       <Tabs defaultValue="ai" className="space-y-4">
-        <TabsList>
+        <TabsList className="h-auto flex-wrap justify-start">
           <TabsTrigger value="ai" className="gap-1">
             <Bot className="h-4 w-4" /> Contexto da IA
+          </TabsTrigger>
+          <TabsTrigger value="availability" className="gap-1">
+            <CalendarClock className="h-4 w-4" /> Vagas
           </TabsTrigger>
           <TabsTrigger value="location" className="gap-1">
             <MapPin className="h-4 w-4" /> Localizacao
@@ -1082,6 +1235,210 @@ export default function ConfiguracoesPage() {
                   <p className="text-sm">{testResponse}</p>
                 </div>
               ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="availability" className="space-y-4">
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-primary/5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <CalendarClock className="h-4 w-4 text-primary" /> Vagas por modalidade e turma
+                  </CardTitle>
+                  <CardDescription className="mt-1 max-w-2xl">
+                    Cadastre somente modalidades com limite de vagas. A Hime usa os registros vigentes quando perguntarem por disponibilidade.
+                  </CardDescription>
+                </div>
+                {availabilityUpdatedAt ? (
+                  <Badge variant="outline" className="w-fit">
+                    Atualizado em {formatDateTimeBr(availabilityUpdatedAt)}{availabilityUpdatedBy ? ` por ${availabilityUpdatedBy}` : ""}
+                  </Badge>
+                ) : null}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6 pt-6">
+              {!isAdmin ? (
+                <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                  Você pode consultar as vagas, mas somente administradores podem alterá-las.
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border bg-muted/20 p-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{availabilityForm.id ? "Editar registro" : "Nova informação de vaga"}</p>
+                    <p className="text-xs text-muted-foreground">Use um registro separado para cada turma ou horário.</p>
+                  </div>
+                  {availabilityForm.id ? (
+                    <Button variant="ghost" size="sm" onClick={() => setAvailabilityForm(EMPTY_AVAILABILITY_FORM)}>Cancelar edição</Button>
+                  ) : null}
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label>Modalidade *</Label>
+                    <Input
+                      value={availabilityForm.modality}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, modality: event.target.value }))}
+                      placeholder="Ex: Natação infantil"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Turma ou faixa etária</Label>
+                    <Input
+                      value={availabilityForm.className}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, className: event.target.value }))}
+                      placeholder="Ex: 7 a 14 anos"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Dias e horário</Label>
+                    <Input
+                      value={availabilityForm.schedule}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, schedule: event.target.value }))}
+                      placeholder="Ex: Ter/Qui às 16:00"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Select
+                      value={availabilityForm.status}
+                      onValueChange={(value: ModalityAvailabilityEntry["status"]) => setAvailabilityForm((current) => ({ ...current, status: value }))}
+                      disabled={!isAdmin}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="available">Com vagas</SelectItem>
+                        <SelectItem value="full">Lotada</SelectItem>
+                        <SelectItem value="waitlist">Lista de espera</SelectItem>
+                        <SelectItem value="unavailable">Indisponível</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Vagas disponíveis</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={availabilityForm.availableSpots}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, availableSpots: event.target.value }))}
+                      placeholder="Ex: 3"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Capacidade total</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={availabilityForm.capacity}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, capacity: event.target.value }))}
+                      placeholder="Opcional"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Válido até *</Label>
+                    <Input
+                      type="date"
+                      value={availabilityForm.validUntil}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, validUntil: event.target.value }))}
+                      disabled={!isAdmin}
+                    />
+                    <p className="text-[11px] text-muted-foreground">Obrigatório para registros ativos. Depois da data, a IA ignora a vaga.</p>
+                  </div>
+                  <div className="flex items-end">
+                    <div className="flex w-full items-center justify-between rounded-xl border bg-background px-3 py-2.5">
+                      <div>
+                        <p className="text-xs font-medium">Registro ativo</p>
+                        <p className="text-[10px] text-muted-foreground">Disponível para a IA</p>
+                      </div>
+                      <Switch
+                        checked={availabilityForm.active}
+                        onCheckedChange={(checked) => setAvailabilityForm((current) => ({ ...current, active: checked }))}
+                        disabled={!isAdmin}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2 md:col-span-2 xl:col-span-3">
+                    <Label>Observação</Label>
+                    <Input
+                      value={availabilityForm.note}
+                      onChange={(event) => setAvailabilityForm((current) => ({ ...current, note: event.target.value }))}
+                      placeholder="Ex: matrícula somente presencial; confirmar antes de prometer"
+                      disabled={!isAdmin}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button className="w-full gap-2" onClick={upsertAvailabilityEntry} disabled={!isAdmin}>
+                      {availabilityForm.id ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {availabilityForm.id ? "Atualizar na lista" : "Adicionar à lista"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold">Registros cadastrados</p>
+                    <p className="text-xs text-muted-foreground">{availabilityEntries.length} {availabilityEntries.length === 1 ? "registro" : "registros"}</p>
+                  </div>
+                  <Button className="gap-2" onClick={saveAvailability} disabled={!isAdmin || savingAvailability || loadingAvailability}>
+                    <Save className="h-4 w-4" /> {savingAvailability ? "Salvando..." : "Salvar vagas para a IA"}
+                  </Button>
+                </div>
+
+                {loadingAvailability ? (
+                  <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">Carregando vagas...</div>
+                ) : availabilityEntries.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed p-8 text-center">
+                    <CalendarClock className="mx-auto mb-2 h-7 w-7 text-muted-foreground/50" />
+                    <p className="text-sm font-medium">Nenhuma modalidade com vagas cadastrada</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Sem um registro vigente, a Hime orientará o cliente a confirmar com a recepção.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {availabilityEntries.map((entry) => {
+                      const expired = !!entry.validUntil && entry.validUntil < Date.now();
+                      const statusLabel = entry.status === "full" ? "Lotada" : entry.status === "waitlist" ? "Lista de espera" : entry.status === "unavailable" ? "Indisponível" : "Com vagas";
+                      return (
+                        <div key={entry.id} className={`rounded-2xl border p-4 ${expired || !entry.active ? "bg-muted/30 opacity-70" : "bg-card"}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-semibold">{entry.modality}</p>
+                                <Badge variant={entry.status === "full" || entry.status === "unavailable" ? "destructive" : entry.status === "waitlist" ? "secondary" : "default"}>{statusLabel}</Badge>
+                                {expired ? <Badge variant="outline">Expirado</Badge> : null}
+                                {!entry.active ? <Badge variant="outline">Inativo</Badge> : null}
+                              </div>
+                              {entry.className || entry.schedule ? <p className="mt-1 text-sm text-muted-foreground">{[entry.className, entry.schedule].filter(Boolean).join(" • ")}</p> : null}
+                            </div>
+                            <div className="flex shrink-0 gap-1">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => editAvailabilityEntry(entry)} disabled={!isAdmin} title="Editar">
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setAvailabilityEntries((current) => current.filter((item) => item.id !== entry.id))} disabled={!isAdmin} title="Excluir">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                            {entry.availableSpots !== null ? <Badge variant="outline">{entry.availableSpots} {entry.availableSpots === 1 ? "vaga" : "vagas"}</Badge> : null}
+                            {entry.capacity !== null ? <Badge variant="outline">Capacidade: {entry.capacity}</Badge> : null}
+                            {entry.validUntil ? <Badge variant="outline">Válido até {availabilityDateInput(entry.validUntil).split("-").reverse().join("/")}</Badge> : <Badge variant="secondary">Sem validade</Badge>}
+                          </div>
+                          {entry.note ? <p className="mt-3 text-xs text-muted-foreground">{entry.note}</p> : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

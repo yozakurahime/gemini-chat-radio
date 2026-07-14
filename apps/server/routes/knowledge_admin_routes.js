@@ -5,6 +5,10 @@ const {
     isProfileTooLarge,
     normalizeContextProfile
 } = require('../knowledge_context_profile');
+const {
+    normalizeAvailabilityEntry,
+    normalizeAvailabilityPayload
+} = require('../modality_availability_runtime');
 
 function registerKnowledgeAdminRoutes({
     app,
@@ -24,6 +28,31 @@ function registerKnowledgeAdminRoutes({
 }) {
     const contextProfileFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'context_profile.json');
     const playbooksFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'ai_playbooks.json');
+    const availabilityFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'modality_availability.json');
+
+    function readAvailability() {
+        if (!fs.existsSync(availabilityFile)) return { version: 1, entries: [], updatedAt: 0, updatedBy: '' };
+        try {
+            const parsed = JSON.parse(fs.readFileSync(availabilityFile, 'utf-8'));
+            const entries = (Array.isArray(parsed?.entries) ? parsed.entries : [])
+                .slice(0, 200)
+                .map((entry, index) => normalizeAvailabilityEntry(entry, index, Number(parsed?.updatedAt || Date.now())))
+                .filter(Boolean);
+            return {
+                version: 1,
+                entries,
+                updatedAt: Number(parsed?.updatedAt || 0),
+                updatedBy: String(parsed?.updatedBy || '').slice(0, 80)
+            };
+        } catch (_) {
+            return { version: 1, entries: [], updatedAt: 0, updatedBy: '' };
+        }
+    }
+
+    function writeAvailability(payload) {
+        fs.mkdirSync(path.dirname(availabilityFile), { recursive: true });
+        fs.writeFileSync(availabilityFile, JSON.stringify(payload, null, 2), 'utf-8');
+    }
 
     function defaultPlaybooks() {
         return {
@@ -132,6 +161,33 @@ function registerKnowledgeAdminRoutes({
             ok: true,
             playbooks: readPlaybooks()
         });
+    });
+
+    app.get('/admin/knowledge/availability', (req, res) => {
+        const user = requirePanelAuth(req, res); if (!user) return;
+        return res.json({ ok: true, availability: readAvailability() });
+    });
+
+    app.post('/admin/knowledge/availability/save', (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        const payload = normalizeAvailabilityPayload(req.body?.availability || req.body || {}, {
+            actor: user.username,
+            now: Date.now()
+        });
+        try {
+            writeAvailability(payload);
+            try {
+                broadcast({
+                    type: 'modality_availability_updated',
+                    availability: payload,
+                    updated_at: payload.updatedAt,
+                    updated_by: payload.updatedBy
+                });
+            } catch (_) {}
+            return res.json({ ok: true, availability: payload });
+        } catch (_) {
+            return res.status(500).json({ error: 'write_failed' });
+        }
     });
 
     app.post('/admin/knowledge/playbooks/save', (req, res) => {

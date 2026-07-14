@@ -28,6 +28,7 @@ function resolveAppPaths(rootDir, env = process.env, platform = process.platform
     const RADIO_CACHE_FILE = path.join(STORAGE_DIR, 'radio_cache.json');
     const KNOWLEDGE_DIR = path.join(DATA_DIR, 'knowledge');
     const KNOWLEDGE_PUBLISHED_FILE = path.join(KNOWLEDGE_DIR, 'published.json');
+    const MODALITY_AVAILABILITY_FILE = path.join(KNOWLEDGE_DIR, 'modality_availability.json');
     const BASE_CONTEXT_FILE = path.join(DATA_DIR, 'contexto_academia.txt');
     const BASE_CONTEXT_TEMPLATE_FILE = path.join(ROOT_DIR, 'contexto_academia.txt');
     const RADIO_TRASH_DIR = path.join(STORAGE_DIR, '_radio_trash');
@@ -55,6 +56,7 @@ function resolveAppPaths(rootDir, env = process.env, platform = process.platform
         RADIO_CACHE_FILE,
         KNOWLEDGE_DIR,
         KNOWLEDGE_PUBLISHED_FILE,
+        MODALITY_AVAILABILITY_FILE,
         BASE_CONTEXT_FILE,
         BASE_CONTEXT_TEMPLATE_FILE,
         RADIO_TRASH_DIR,

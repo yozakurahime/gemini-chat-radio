@@ -70,6 +70,20 @@ describe("ConfiguracoesPage guided IA context profile", () => {
       if (url === "/admin/knowledge/profile") {
         return jsonResponse({ profile: null, base_context: "Contexto antigo QA" });
       }
+      if (url === "/admin/knowledge/availability") {
+        return jsonResponse({ ok: true, availability: { entries: [], updatedAt: 0, updatedBy: "" } });
+      }
+      if (url === "/admin/knowledge/availability/save") {
+        const body = JSON.parse(String(options?.body || "{}"));
+        return jsonResponse({
+          ok: true,
+          availability: {
+            entries: body.availability.entries,
+            updatedAt: Date.now(),
+            updatedBy: "admin",
+          },
+        });
+      }
       if (url === "/admin/knowledge/profile/save") {
         const body = JSON.parse(String(options?.body || "{}"));
         return jsonResponse({
@@ -123,5 +137,35 @@ describe("ConfiguracoesPage guided IA context profile", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /Texto avancado/i }));
     expect(await screen.findByDisplayValue(/Academia Teste/i)).toBeInTheDocument();
+  });
+
+  it("adds and saves current modality availability for the AI", async () => {
+    render(<ConfiguracoesPage />);
+
+    const availabilityTab = await screen.findByRole("tab", { name: /Vagas/i });
+    fireEvent.mouseDown(availabilityTab, { button: 0, ctrlKey: false });
+    fireEvent.change(await screen.findByPlaceholderText("Ex: Natação infantil"), { target: { value: "Natação infantil" } });
+    fireEvent.change(screen.getByPlaceholderText("Ex: Ter/Qui às 16:00"), { target: { value: "Ter/Qui às 16:00" } });
+    fireEvent.change(screen.getByPlaceholderText("Ex: 3"), { target: { value: "1" } });
+    const dateInput = document.querySelector('input[type="date"]') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: "2026-12-31" } });
+    fireEvent.click(screen.getByRole("button", { name: /Adicionar à lista/i }));
+
+    expect(await screen.findByText("Natação infantil")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Salvar vagas para a IA/i }));
+
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        "/admin/knowledge/availability/save",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const saveCall = mocks.apiFetch.mock.calls.find(([url]) => url === "/admin/knowledge/availability/save");
+    const payload = JSON.parse(String(saveCall?.[1]?.body || "{}"));
+    expect(payload.availability.entries[0]).toEqual(expect.objectContaining({
+      modality: "Natação infantil",
+      schedule: "Ter/Qui às 16:00",
+      availableSpots: 1,
+    }));
   });
 });
