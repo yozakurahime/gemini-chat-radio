@@ -130,7 +130,6 @@ export default function AtendimentoPage() {
     selectChat,
     sendText,
     setChatIAEnabled,
-    confirmPixScaDone,
     fetchAiContextPreview,
     submitAiFeedback,
     opsDailySummary,
@@ -249,9 +248,7 @@ export default function AtendimentoPage() {
               <Badge variant={Number(opsDailySummary.chat?.attentionActive || 0) > 0 ? "secondary" : "outline"}>
                 Em atencao: {Number(opsDailySummary.chat?.attentionActive || 0)}
               </Badge>
-              <Badge variant={Number(opsDailySummary.pix?.pendingSca || 0) > 0 ? "secondary" : "outline"}>
-                Pix pendente SCA: {Number(opsDailySummary.pix?.pendingSca || 0)}
-              </Badge>
+              
               <Badge variant="outline">Pagos hoje: {Number(opsDailySummary.pix?.paidToday || 0)}</Badge>
               <Badge variant="outline">Inativos (+5d): {Number(opsDailySummary.retention?.inactiveStudents5d || 0)}</Badge>
               <Badge
@@ -309,8 +306,7 @@ export default function AtendimentoPage() {
                           {conv.attentionActive ? `NOVA • ${conv.name || phoneFromJid(conv.id)}` : (conv.name || phoneFromJid(conv.id))}
                         </span>
                         {slaCritical ? <Badge variant="destructive" className="text-[10px] px-1.5 py-0">SLA Critico</Badge> : null}
-                        {conv.pixPendingSca ? <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-emerald-500/20 text-emerald-700 dark:text-emerald-200">Pago - pendente SCA</Badge> : null}
-                        {!slaCritical && slaDelayed ? (
+                                                {!slaCritical && slaDelayed ? (
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-orange-500/20 text-orange-700 dark:text-orange-200">SLA Atrasando</Badge>
                         ) : null}
                         {!conv.pausedByHuman && (
@@ -361,8 +357,7 @@ export default function AtendimentoPage() {
                   <p className="text-xs text-muted-foreground">{phoneFromJid(selectedChat.id)}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {selectedChat.pixPendingSca ? <Badge variant="secondary" className="bg-emerald-500/20 text-emerald-700 dark:text-emerald-200">Pago - pendente baixa SCA</Badge> : null}
-                  {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA Critico</Badge> : null}
+                                    {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA Critico</Badge> : null}
                   {selectedChat.slaStatus === "atrasando" ? <Badge variant="secondary">SLA Atrasando</Badge> : null}
                   <span className="text-xs text-muted-foreground">Resposta IA</span>
                   <Switch
@@ -382,63 +377,6 @@ export default function AtendimentoPage() {
 
               <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3 max-w-2xl mx-auto">
-                  {selectedChat.pixPendingSca ? (
-                    <div className="rounded-lg border border-emerald-400/40 bg-emerald-500/5 p-3 space-y-2">
-                      <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-200">Pagamento confirmado - baixa manual no SCA pendente</p>
-                      <p className="text-xs text-muted-foreground">
-                        Aluno: {selectedChat.pixPendingSca.studentFullName} | Plano: {selectedChat.pixPendingSca.planName} | Valor: {formatCurrency(selectedChat.pixPendingSca.amountCents)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">Pagador: {selectedChat.pixPendingSca.payerFullName || "Nao informado"} {selectedChat.pixPendingSca.payerCpfCnpj ? `| CPF/CNPJ: ${selectedChat.pixPendingSca.payerCpfCnpj}` : ""}</p>
-                      <p className="text-xs text-muted-foreground">Pagamento em {formatDateTime(selectedChat.pixPendingSca.paidAt)}</p>
-                      <div className="rounded-md border bg-background/60 p-2 text-xs text-muted-foreground space-y-1">
-                        <p className="font-medium text-foreground">Checklist da baixa manual:</p>
-                        <p>1. Localizar aluno no SCA: {selectedChat.pixPendingSca.studentFullName}</p>
-                        <p>2. Conferir plano: {selectedChat.pixPendingSca.planName}</p>
-                        <p>3. Validar pagador/CPF antes de baixar.</p>
-                        <p>4. Depois clique no botao abaixo para avisar o cliente.</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {selectedChat.pixPendingSca.payerCpfCnpj ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={async () => {
-                              try {
-                                await navigator.clipboard.writeText(selectedChat.pixPendingSca?.payerCpfCnpj || "");
-                                toast.success("CPF/CNPJ copiado.");
-                              } catch {
-                                toast.error("Nao foi possivel copiar o CPF/CNPJ.");
-                              }
-                            }}
-                          >
-                            Copiar CPF/CNPJ
-                          </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={async () => {
-                            try {
-                              await navigator.clipboard.writeText(selectedChat.pixPendingSca?.studentFullName || "");
-                              toast.success("Nome do aluno copiado.");
-                            } catch {
-                              toast.error("Nao foi possivel copiar o nome.");
-                            }
-                          }}
-                        >
-                          Copiar nome do aluno
-                        </Button>
-                      </div>
-                      <Button
-                        size="sm"
-                        className="gap-1"
-                        onClick={() => confirmPixScaDone(selectedChat.pixPendingSca?.chargeId || 0)}
-                      >
-                        Confirmar baixa no SCA
-                      </Button>
-                    </div>
-                  ) : null}
-
                   <div className="rounded-lg border bg-card/70 p-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -457,9 +395,7 @@ export default function AtendimentoPage() {
                           <Badge variant="secondary">Confianca: {String(aiPreview?.confidence || "-")}</Badge>
                           <Badge variant="outline">Base: {Number(aiPreview?.context?.baseContextLength || 0)} chars</Badge>
                           <Badge variant="outline">Avisos: {Number(aiPreview?.context?.noticesLength || 0)} chars</Badge>
-                          <Badge variant={aiPreview?.context?.scaMatch ? "default" : "secondary"}>
-                            SCA: {aiPreview?.context?.scaMatch ? "com match" : "sem match"}
-                          </Badge>
+                          
                         </div>
                         <p className="text-[11px] text-muted-foreground">Atualizado em {formatDateTime(aiPreview?.generatedAt)}</p>
                         {Array.isArray(aiPreview?.warnings) && aiPreview.warnings.length > 0 ? (
@@ -469,12 +405,7 @@ export default function AtendimentoPage() {
                             ))}
                           </div>
                         ) : null}
-                        {aiPreview?.context?.scaSnippet ? (
-                          <div className="rounded-md border p-2 bg-muted/30">
-                            <p className="text-[11px] font-medium mb-1">Contexto dinamico (SCA)</p>
-                            <p className="text-[11px] whitespace-pre-wrap text-muted-foreground">{aiPreview.context.scaSnippet}</p>
-                          </div>
-                        ) : null}
+                        
                       </>
                     ) : (
                       <p className="text-xs text-muted-foreground">Nao foi possivel carregar o preview de contexto para esta conversa.</p>

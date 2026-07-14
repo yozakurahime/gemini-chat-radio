@@ -39,6 +39,9 @@ import {
   ChevronRight,
   ShieldCheck,
   Settings2,
+  CalendarClock,
+  Check,
+  X
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
@@ -420,6 +423,7 @@ export default function PontoPage() {
 
   const [editingSchedule, setEditingSchedule] = useState<EditScheduleState | null>(null);
   const [editingEmployee, setEditingEmployee] = useState<EditEmployeeState | null>(null);
+  const [isCreatingSchedule, setIsCreatingSchedule] = useState(false);
 
   useEffect(() => {
     if (!quickEmployeeId && defaultEmployeeId) {
@@ -532,6 +536,7 @@ export default function PontoPage() {
         body: JSON.stringify(payload),
       });
       toast.success("Escala criada");
+      setIsCreatingSchedule(false);
       await refreshAttendance();
     } catch (error: any) {
       const code = String(error?.code || "");
@@ -1259,107 +1264,155 @@ export default function PontoPage() {
   );
 
   const renderNewScheduleSection = (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Nova escala</CardTitle>
+    <Card className="border shadow-sm border-emerald-500/20 shadow-emerald-500/10">
+      <CardHeader className="pb-3 border-b border-border/50 bg-muted/20">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-500">
+            <Plus className="h-4 w-4" />
+          </div>
+          <div>
+            <CardTitle className="text-base font-semibold">Nova Escala de Trabalho</CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">Defina horários e atividades para um funcionário.</p>
+          </div>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <Select value={newSchedule.employeeId || defaultEmployeeId} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, employeeId: value }))}>
-            <SelectTrigger>
-              <SelectValue placeholder="Funcionario" />
-            </SelectTrigger>
-            <SelectContent>
-              {activeAttendanceEmployees.map((employee) => (
-                <SelectItem key={employee.id} value={String(employee.id)}>
-                  {employee.name || `Funcionario ${employee.id}`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <CardContent className="pt-5 space-y-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Funcionário</label>
+            <Select value={newSchedule.employeeId || defaultEmployeeId} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, employeeId: value }))}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Selecione..." />
+              </SelectTrigger>
+              <SelectContent>
+                {activeAttendanceEmployees.map((employee) => (
+                  <SelectItem key={employee.id} value={String(employee.id)}>
+                    {employee.name || `Funcionário ${employee.id}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select
-            value={scheduleType}
-            onValueChange={(value: "function" | "class") => {
-              const pool = value === "class" ? classActivities : functionActivities;
-              const first = pool[0];
-              setScheduleType(value);
-              setNewSchedule((prev) => ({
-                ...prev,
-                activityId: first ? String(first.id) : "",
-                valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
-              }));
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Tipo" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="function">Funcao</SelectItem>
-              <SelectItem value="class">Aula</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Tipo de Atividade</label>
+            <Select
+              value={scheduleType}
+              onValueChange={(value: "function" | "class") => {
+                const pool = value === "class" ? classActivities : functionActivities;
+                const first = pool[0];
+                setScheduleType(value);
+                setNewSchedule((prev) => ({
+                  ...prev,
+                  activityId: first ? String(first.id) : "",
+                  valuePerClass: value === "class" ? String(Number(first?.default_value || 0)) : "0",
+                }));
+              }}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Selecione..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="function">Função Geral</SelectItem>
+                <SelectItem value="class">Aula Específica</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select
-            value={newSchedule.activityId}
-            onValueChange={(value) => {
-              const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
-              setNewSchedule((prev) => ({
-                ...prev,
-                activityId: value,
-                valuePerClass: scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
-              }));
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Atividade" />
-            </SelectTrigger>
-            <SelectContent>
-              {scheduleActivityOptions.map((activity) => (
-                <SelectItem key={activity.id} value={String(activity.id)}>
-                  {activity.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="space-y-1.5 lg:col-span-2">
+            <label className="text-xs font-medium px-1">Atividade Associada</label>
+            <Select
+              value={newSchedule.activityId}
+              onValueChange={(value) => {
+                const activity = attendanceCatalog.find((row) => String(row.id) === String(value));
+                setNewSchedule((prev) => ({
+                  ...prev,
+                  activityId: value,
+                  valuePerClass: scheduleType === "class" ? String(Number(activity?.default_value || 0)) : prev.valuePerClass,
+                }));
+              }}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Qual a atividade que será exercida?" />
+              </SelectTrigger>
+              <SelectContent>
+                {scheduleActivityOptions.map((activity) => (
+                  <SelectItem key={activity.id} value={String(activity.id)}>
+                    {activity.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={newSchedule.weekday} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, weekday: value }))}>
-            <SelectTrigger>
-              <SelectValue placeholder="Dia da semana" />
-            </SelectTrigger>
-            <SelectContent>
-              {WEEKDAY_LABELS.map((label, idx) => (
-                <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Dia da Semana</label>
+            <Select value={newSchedule.weekday} onValueChange={(value) => setNewSchedule((prev) => ({ ...prev, weekday: value }))}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Ex: Segunda-feira" />
+              </SelectTrigger>
+              <SelectContent>
+                {WEEKDAY_LABELS.map((label, idx) => (
+                  <SelectItem key={label} value={String(idx)}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Input type="time" value={newSchedule.startTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, startTime: event.target.value }))} />
-          <Input type="time" value={newSchedule.endTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, endTime: event.target.value }))} />
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Horário de Início</label>
+            <div className="relative">
+              <Clock className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input type="time" className="pl-9 h-9 font-mono" value={newSchedule.startTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, startTime: event.target.value }))} />
+            </div>
+          </div>
+          
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Horário de Término</label>
+            <div className="relative">
+              <Clock className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input type="time" className="pl-9 h-9 font-mono" value={newSchedule.endTime} onChange={(event) => setNewSchedule((prev) => ({ ...prev, endTime: event.target.value }))} />
+            </div>
+          </div>
 
-          <Input
-            type="number"
-            min={0}
-            max={180}
-            value={newSchedule.toleranceMin}
-            onChange={(event) => setNewSchedule((prev) => ({ ...prev, toleranceMin: event.target.value }))}
-            placeholder="Tolerancia (min)"
-          />
-          {scheduleType === "class" ? (
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium px-1">Tolerância (minutos)</label>
             <Input
+              className="h-9 font-mono"
               type="number"
               min={0}
-              step="0.01"
-              value={newSchedule.valuePerClass}
-              onChange={(event) => setNewSchedule((prev) => ({ ...prev, valuePerClass: event.target.value }))}
-              placeholder="Valor por aula"
+              max={180}
+              value={newSchedule.toleranceMin}
+              onChange={(event) => setNewSchedule((prev) => ({ ...prev, toleranceMin: event.target.value }))}
+              placeholder="Ex: 15"
             />
-          ) : null}
+          </div>
+
+          {scheduleType === "class" && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium px-1 text-emerald-600 dark:text-emerald-400">Valor por Aula (R$)</label>
+              <Input
+                className="h-9 font-mono border-emerald-500/30 focus-visible:ring-emerald-500"
+                type="number"
+                min={0}
+                step="0.01"
+                value={newSchedule.valuePerClass}
+                onChange={(event) => setNewSchedule((prev) => ({ ...prev, valuePerClass: event.target.value }))}
+                placeholder="R$ 0,00"
+              />
+            </div>
+          )}
         </div>
-        <Button onClick={createSchedule} className="gap-1" disabled={!newSchedule.employeeId || !newSchedule.activityId}>
-          <Plus className="h-4 w-4" />
-          Criar escala
-        </Button>
+        
+        <div className="pt-2 flex items-center justify-end gap-2 border-t border-border/50 mt-4">
+          <Button variant="ghost" size="sm" onClick={() => setIsCreatingSchedule(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={createSchedule} size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!newSchedule.employeeId || !newSchedule.activityId}>
+            <Check className="h-4 w-4" />
+            Salvar Escala
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -1432,56 +1485,89 @@ export default function PontoPage() {
   ) : null;
 
   const renderSchedulesTable = (
-    <Card>
-      <CardContent className="p-0">
+    <Card className="overflow-hidden shadow-sm">
+      <div className="overflow-x-auto">
         <Table>
-          <TableHeader>
+          <TableHeader className="bg-muted/30">
             <TableRow>
-              <TableHead>Funcionario</TableHead>
-              <TableHead>Dia</TableHead>
-              <TableHead>Inicio</TableHead>
-              <TableHead>Fim</TableHead>
-              <TableHead>Atividade</TableHead>
-              <TableHead>Tipo</TableHead>
-              <TableHead>Valor aula</TableHead>
-              <TableHead>Tolerancia</TableHead>
-              {isAdmin ? <TableHead>Acoes</TableHead> : null}
+              <TableHead className="font-semibold">Funcionário</TableHead>
+              <TableHead className="font-semibold">Dia da Semana</TableHead>
+              <TableHead className="font-semibold">Horário</TableHead>
+              <TableHead className="font-semibold">Atividade</TableHead>
+              <TableHead className="font-semibold">Tipo</TableHead>
+              <TableHead className="font-semibold text-right">Valor Aula</TableHead>
+              <TableHead className="font-semibold text-right">Tolerância</TableHead>
+              {isAdmin && <TableHead className="text-right">Ações</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredSchedules.length ? filteredSchedules.map((schedule) => (
-              <TableRow key={schedule.id}>
-                <TableCell className="font-medium">{schedule.employeeName || `Funcionario ${schedule.employee_id}`}</TableCell>
-                <TableCell>{WEEKDAY_LABELS[Number(schedule.weekday) || 0]}</TableCell>
-                <TableCell className="font-mono">{schedule.start_time || "--:--"}</TableCell>
-                <TableCell className="font-mono">{schedule.end_time || "--:--"}</TableCell>
-                <TableCell>{schedule.activity_label_resolved || schedule.class_name || "-"}</TableCell>
-                <TableCell>{scheduleTypeLabel(schedule.schedule_type)}</TableCell>
-                <TableCell>{Number(schedule.value_per_class || 0).toFixed(2)}</TableCell>
-                <TableCell>{Number(schedule.tolerance_min || 0)} min</TableCell>
-                {isAdmin ? (
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button variant="ghost" size="icon" onClick={() => openScheduleEdit(schedule)}>
+              <TableRow key={schedule.id} className="group hover:bg-muted/20 transition-colors">
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xs font-bold">
+                      {(schedule.employeeName || "F")[0].toUpperCase()}
+                    </div>
+                    {schedule.employeeName || `Funcionário ${schedule.employee_id}`}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" className="bg-background">
+                    {WEEKDAY_LABELS[Number(schedule.weekday) || 0]}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-1.5 font-mono text-sm bg-muted/30 w-fit px-2 py-1 rounded border border-border/50">
+                    <Clock className="h-3 w-3 text-muted-foreground" />
+                    <span>{schedule.start_time || "--:--"}</span>
+                    <span className="text-muted-foreground">→</span>
+                    <span>{schedule.end_time || "--:--"}</span>
+                  </div>
+                </TableCell>
+                <TableCell className="max-w-[150px] truncate" title={schedule.activity_label_resolved || schedule.class_name || "-"}>
+                  {schedule.activity_label_resolved || schedule.class_name || "-"}
+                </TableCell>
+                <TableCell>
+                  <Badge variant="secondary" className={schedule.schedule_type === "class" ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-orange-500/10 text-orange-600 dark:text-orange-400"}>
+                    {scheduleTypeLabel(schedule.schedule_type)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right font-mono text-sm">
+                  {schedule.schedule_type === "class" ? (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">R$ {Number(schedule.value_per_class || 0).toFixed(2)}</span>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right text-muted-foreground text-sm">
+                  {Number(schedule.tolerance_min || 0)} min
+                </TableCell>
+                {isAdmin && (
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-primary/10 hover:text-primary" onClick={() => openScheduleEdit(schedule)}>
                         <Pencil className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => deactivateSchedule(Number(schedule.id))}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
+                      <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={() => deactivateSchedule(Number(schedule.id))}>
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   </TableCell>
-                ) : null}
+                )}
               </TableRow>
             )) : (
               <TableRow>
-                <TableCell colSpan={isAdmin ? 9 : 8} className="text-center text-muted-foreground py-8">
-                  Nenhuma escala ativa para este filtro.
+                <TableCell colSpan={isAdmin ? 8 : 7} className="h-32 text-center">
+                  <div className="flex flex-col items-center justify-center text-muted-foreground">
+                    <CalendarClock className="h-10 w-10 mb-2 opacity-20" />
+                    <p>Nenhuma escala ativa para os filtros selecionados.</p>
+                  </div>
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
-      </CardContent>
+      </div>
     </Card>
   );
 
@@ -1746,6 +1832,26 @@ export default function PontoPage() {
 
         {isAdmin ? (
           <TabsContent value="schedules" className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-muted/10 p-4 rounded-lg border border-border/50">
+              <div>
+                <h3 className="font-semibold text-lg flex items-center gap-2">
+                  <CalendarClock className="h-5 w-5 text-primary" />
+                  Gestão de Escalas
+                </h3>
+                <p className="text-sm text-muted-foreground">Gerencie os horários e atividades da sua equipe.</p>
+              </div>
+              <Button onClick={() => setIsCreatingSchedule(!isCreatingSchedule)} className="gap-2" variant={isCreatingSchedule ? "secondary" : "default"}>
+                {isCreatingSchedule ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                {isCreatingSchedule ? "Cancelar" : "Adicionar Escala"}
+              </Button>
+            </div>
+            
+            {isCreatingSchedule && (
+              <div className="animate-in fade-in slide-in-from-top-4 duration-200">
+                {renderNewScheduleSection}
+              </div>
+            )}
+            
             {renderRecordsFilters}
             {renderScheduleEditCard}
             {renderSchedulesTable}

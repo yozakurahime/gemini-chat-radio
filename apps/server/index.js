@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // BOT HIME - MANAGER 6.5 (HUMAN ALERT PROTOCOL)
 // - Fix: Detecta pedidos de humano/atendente
 // - Fix: Pausa o bot automaticamente e notifica o painel com som
@@ -112,13 +112,7 @@ const { registerSystemAdminRoutes } = require('./routes/system_admin_routes');
 const { registerChatAdminRoutes } = require('./routes/chat_admin_routes');
 const { registerAttendanceAdminRoutes } = require('./routes/attendance_admin_routes');
 const { registerPixAdminRoutes } = require('./routes/pix_admin_routes');
-let registerScaImportRoutes = () => {};
-try {
-    ({ registerScaImportRoutes } = require('./routes/sca_import_routes'));
-} catch (error) {
-    if (String(error?.code || '') !== 'MODULE_NOT_FOUND') throw error;
-    console.warn('[sca] routes/sca_import_routes.js ausente; importacao SCA manual desativada nesta instancia.');
-}
+
 const { registerPanelHostSetup } = require('./bootstrap/panel_host_setup');
 const { startRuntimeServices } = require('./bootstrap/runtime_startup');
 const {
@@ -8410,6 +8404,42 @@ async function runPixSafeCollectionSweep() {
 }
 
 let pixSafeSweepTimer = null;
+
+// --- AUTOMATIC BACKUPS (90 DAYS) ---
+let automaticBackupTimer = null;
+function startAutomaticBackupLoop() {
+    if (automaticBackupTimer) return;
+    const runBackup = () => {
+        try {
+            console.log('[backup] Starting automatic backup...');
+            createDatabaseBackup('auto_backup');
+            
+            // Delete backups older than 90 days
+            const MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+            const now = Date.now();
+            if (fs.existsSync(BACKUP_DIR)) {
+                const files = fs.readdirSync(BACKUP_DIR);
+                for (const name of files) {
+                    if (name.startsWith('auto_backup_')) {
+                        const full = path.join(BACKUP_DIR, name);
+                        const stat = fs.statSync(full);
+                        if (now - stat.mtimeMs > MAX_AGE_MS) {
+                            fs.unlinkSync(full);
+                            console.log('[backup] Deleted old backup:', name);
+                        }
+                    }
+                }
+            }
+            console.log('[backup] Automatic backup finished.');
+        } catch (e) {
+            console.error('[backup] Automatic backup error:', e.message);
+        }
+    };
+    runBackup(); // run once on start
+    // Run every 12 hours
+    automaticBackupTimer = setInterval(runBackup, 12 * 60 * 60 * 1000);
+}
+
 function startPixSafeCollectionLoop() {
     if (pixSafeSweepTimer) return;
     const run = async () => {
@@ -8647,24 +8677,6 @@ registerPixAdminRoutes({
     getPixWebhookMonitorSnapshot
 });
 
-registerScaImportRoutes({
-    app,
-    db,
-    fs,
-    path,
-    crypto,
-    XLSX,
-    requireAdmin,
-    sanitizePublicText,
-    normalizePhoneDigits,
-    logAdminAction,
-    ensureDir,
-    isPathInside,
-    scaImportUpload,
-    SCA_IMPORT_MAX_BYTES,
-    scaImportsDir: SCA_IMPORTS_DIR,
-    upsertScaAccessBatch
-});
 
 // --- ATTENDANCE (PONTO) ---
 function getAttendanceCatalogRows({ type = '', activeOnly = false } = {}) {
@@ -9511,6 +9523,7 @@ async function startBot() {
             console.log('[ok] BOT ONLINE');
             startAttendanceReminderLoop();
             startPixSafeCollectionLoop();
+    startAutomaticBackupLoop();
             return;
         }
         if (connection === 'close') {

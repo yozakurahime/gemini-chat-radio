@@ -4,15 +4,6 @@ import { apiFetch, jsonHeaders } from "@/lib/panel-api";
 import { BR_TIMEZONE } from "@/lib/date-time";
 
 type User = { username: string; fullname?: string; role?: string; avatar?: string };
-type PixPendingSca = {
-  chargeId: number;
-  studentFullName: string;
-  payerFullName?: string;
-  payerCpfCnpj?: string;
-  planName: string;
-  amountCents: number;
-  paidAt: number;
-};
 type PixPlan = {
   id: number;
   name: string;
@@ -59,97 +50,6 @@ type PixDailyImport = {
   columns_count: number;
   uploaded_by?: string;
   created_at?: number;
-};
-type ScaInactiveStudent = {
-  id: number;
-  external_id: string;
-  name: string;
-  phone: string;
-  status: string;
-  plan: string;
-  last_access_at: number | null;
-  days_without_visit: number;
-  inactive_reason?: "no_recent_access" | "no_access_record" | string;
-};
-type ScaInactiveSnapshot = {
-  days: number;
-  window_days: number;
-  window_start_at: number;
-  cutoff_at: number;
-  generated_at: number;
-  total: number;
-};
-type ScaImportType = "students" | "access" | "enrollments";
-type ScaImportHistoryItem = {
-  id: number;
-  import_type: ScaImportType;
-  original_filename: string;
-  source_ext: string;
-  csv_filename: string;
-  status: string;
-  rows_total: number;
-  accepted_count: number;
-  rejected_count: number;
-  mapping_confidence: number;
-  uploaded_by?: string;
-  created_at?: number;
-  result?: Record<string, any>;
-};
-type ScaImportMapping = {
-  external_id?: string;
-  name?: string;
-  phone?: string;
-  cpf?: string;
-  status?: string;
-  plan?: string;
-  event_type?: string;
-  event_at?: string;
-  gate?: string;
-  enrollment_status?: string;
-  due_at?: string;
-  end_at?: string;
-};
-type ScaImportUploadResult = {
-  ok: boolean;
-  importId?: number;
-  type?: ScaImportType;
-  rowsTotal?: number;
-  acceptedCount?: number;
-  rejectedCount?: number;
-  insertedCount?: number;
-  updatedCount?: number;
-  rejected?: Array<Record<string, any>>;
-  rejectedSummary?: Record<string, number>;
-  mappingConfidence?: number;
-  mapping?: ScaImportMapping;
-  error?: string;
-  confidence?: number;
-  missingRequired?: string[];
-  detectedMapping?: ScaImportMapping;
-  headers?: string[];
-};
-type ScaImportBundleResult = {
-  ok: boolean;
-  items?: ScaImportUploadResult[];
-  report?: {
-    rowsTotal?: number;
-    acceptedTotal?: number;
-    rejectedTotal?: number;
-  };
-  error?: string;
-  failedType?: ScaImportType;
-};
-type ScaQualityIssue = {
-  id: number;
-  external_id: string;
-  name: string;
-  phone: string;
-  cpf: string;
-  status: string;
-  plan: string;
-  last_access_at: number | null;
-  updated_at?: number;
-  reasons: string[];
 };
 type AiPlaybooks = {
   enabled: boolean;
@@ -208,7 +108,7 @@ type Chat = {
   needsHuman?: boolean;
   tags?: string[];
   notes?: string;
-  pixPendingSca?: PixPendingSca | null;
+  
 };
 type AiContextPreview = {
   conversation?: {
@@ -222,8 +122,8 @@ type AiContextPreview = {
     noticesLength?: number;
     baseContextUpdatedAt?: number;
     noticesUpdatedAt?: number;
-    scaMatch?: boolean;
-    scaSnippet?: string;
+    
+    
   };
   confidence?: "high" | "medium" | "low";
   warnings?: string[];
@@ -418,35 +318,15 @@ type PanelDataContextValue = {
   updatePixPlan: (id: number, payload: { name?: string; amount_cents?: number; active?: boolean }) => Promise<boolean>;
   deletePixPlan: (id: number) => Promise<boolean>;
   refreshPixCharges: (filters?: { status?: string; sca_manual_status?: string; contact?: string }) => Promise<void>;
-  confirmPixScaDone: (chargeId: number) => Promise<boolean>;
-  retryPixCharge: (chargeId: number) => Promise<boolean>;
+    retryPixCharge: (chargeId: number) => Promise<boolean>;
   pixSafeConfig: PixSafeConfig | null;
   loadPixSafeConfig: () => Promise<PixSafeConfig | null>;
   savePixSafeConfig: (payload: Partial<PixSafeConfig>) => Promise<boolean>;
   pixDailyImports: PixDailyImport[];
   refreshPixDailyImports: () => Promise<void>;
   uploadPixDailyImport: (file: File) => Promise<boolean>;
-  scaImportHistory: ScaImportHistoryItem[];
-  refreshScaImportHistory: (type?: ScaImportType, limit?: number) => Promise<void>;
-  uploadScaImportFile: (type: ScaImportType, file: File) => Promise<ScaImportUploadResult>;
-  uploadScaImportBundle: (files: Partial<Record<ScaImportType, File | null>>) => Promise<ScaImportBundleResult>;
-  getScaImportMapping: (type: ScaImportType) => Promise<ScaImportMapping | null>;
-  saveScaImportMapping: (type: ScaImportType, mapping: ScaImportMapping) => Promise<boolean>;
-  scaQualityIssues: ScaQualityIssue[];
-  refreshScaQualityIssues: (limit?: number) => Promise<void>;
-  updateScaPerson: (id: number, payload: Partial<{
-    external_id: string;
-    name: string;
-    phone: string;
-    cpf: string;
-    status: string;
-    plan: string;
-  }>) => Promise<boolean>;
-  scaInactiveStudents: ScaInactiveStudent[];
-  refreshScaInactiveStudents: (days?: number, limit?: number, query?: string, windowDays?: number) => Promise<ScaInactiveSnapshot | null>;
-  sendScaReactivationBatch: (payload: { studentIds: number[]; template: string; templateName?: string; maxPerHour?: number; delayMs?: number }) => Promise<{ ok: boolean; sentCount?: number; failedCount?: number; error?: string }>;
-  loadScaReactivationStats: () => Promise<{ sentLastHour?: number; sentLast24h?: number; failedLast24h?: number } | null>;
-  aiPlaybooks: AiPlaybooks | null;
+
+          aiPlaybooks: AiPlaybooks | null;
   loadAiPlaybooks: () => Promise<AiPlaybooks | null>;
   saveAiPlaybooks: (payload: Partial<AiPlaybooks>) => Promise<boolean>;
   opsDailySummary: OpsDailySummary | null;
@@ -749,10 +629,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
   const [pixCharges, setPixCharges] = useState<PixCharge[]>([]);
   const [pixSafeConfig, setPixSafeConfig] = useState<PixSafeConfig | null>(null);
   const [pixDailyImports, setPixDailyImports] = useState<PixDailyImport[]>([]);
-  const [scaImportHistory, setScaImportHistory] = useState<ScaImportHistoryItem[]>([]);
-  const [scaQualityIssues, setScaQualityIssues] = useState<ScaQualityIssue[]>([]);
-  const [scaInactiveStudents, setScaInactiveStudents] = useState<ScaInactiveStudent[]>([]);
-  const [aiPlaybooks, setAiPlaybooks] = useState<AiPlaybooks | null>(null);
+        const [aiPlaybooks, setAiPlaybooks] = useState<AiPlaybooks | null>(null);
   const [opsDailySummary, setOpsDailySummary] = useState<OpsDailySummary | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -810,49 +687,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setRadio((prev) => ({ ...prev, isPlaying: false, currentTrack: null }));
   }, []);
 
-  const notifyPixPendingScaBrowser = useCallback((payload: {
-    from?: string;
-    studentFullName?: string;
-    planName?: string;
-  }) => {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    const title = "Pix confirmado - baixa no SCA pendente";
-    const description = `${payload.studentFullName || payload.from || "Cliente"} • ${payload.planName || "Plano"}`;
-    const openConversation = () => {
-      if (!payload.from) return;
-      selectedChatRef.current = payload.from;
-      setSelectedChatId(payload.from);
-      sendWs({ type: "request_chat_history", contactId: payload.from });
-      sendWs({ type: "request_chat_meta", contactId: payload.from });
-    };
-    const createNotification = () => {
-      try {
-        const notif = new Notification(title, { body: description });
-        notif.onclick = () => {
-          try {
-            window.focus();
-          } catch {
-            /* ignore */
-          }
-          openConversation();
-          notif.close();
-        };
-      } catch {
-        /* ignore */
-      }
-    };
-    if (Notification.permission === "granted") {
-      createNotification();
-      return;
-    }
-    if (Notification.permission === "default") {
-      void Notification.requestPermission()
-        .then((permission) => {
-          if (permission === "granted") createNotification();
-        })
-        .catch(() => undefined);
-    }
-  }, [sendWs]);
+
 
   const refreshAds = useCallback(async () => {
     setAdFiles([]);
@@ -1099,21 +934,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
-  const confirmPixScaDone = useCallback(async (chargeId: number) => {
-    if (!chargeId) return false;
-    try {
-      await apiFetch(`/admin/pix/charges/${encodeURIComponent(String(chargeId))}/sca-done`, {
-        method: "POST",
-      });
-      await Promise.all([refreshPixCharges(), refreshSystemHealth()]);
-      requestInitialLists();
-      toast.success("Baixa SCA confirmada e cliente notificado.");
-      return true;
-    } catch {
-      toast.error("Falha ao confirmar baixa manual no SCA.");
-      return false;
-    }
-  }, [refreshPixCharges, refreshSystemHealth, requestInitialLists]);
+
 
   const retryPixCharge = useCallback(async (chargeId: number) => {
     if (user?.role !== "admin") return false;
@@ -1213,201 +1034,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshPixDailyImports, user?.role]);
 
-  const refreshScaImportHistory = useCallback(async (type?: ScaImportType, limit = 40) => {
-    if (user?.role !== "admin") {
-      setScaImportHistory([]);
-      return;
-    }
-    const params = new URLSearchParams();
-    if (type) params.set("type", type);
-    params.set("limit", String(Math.max(1, Math.min(200, Math.floor(Number(limit) || 40)))));
-    try {
-      const res = await apiFetch(`/admin/sca/imports?${params.toString()}`);
-      const data = await res.json();
-      setScaImportHistory(Array.isArray(data?.items) ? data.items : []);
-    } catch {
-      setScaImportHistory([]);
-    }
-  }, [user?.role]);
-
-  const refreshScaQualityIssues = useCallback(async (limit = 200) => {
-    if (user?.role !== "admin") {
-      setScaQualityIssues([]);
-      return;
-    }
-    const params = new URLSearchParams();
-    params.set("limit", String(Math.max(1, Math.min(400, Math.floor(Number(limit) || 200)))));
-    try {
-      const res = await apiFetch(`/admin/sca/quality/issues?${params.toString()}`);
-      const data = await res.json();
-      setScaQualityIssues(Array.isArray(data?.items) ? data.items : []);
-    } catch {
-      setScaQualityIssues([]);
-    }
-  }, [user?.role]);
-
-  const getScaImportMapping = useCallback(async (type: ScaImportType) => {
-    if (user?.role !== "admin") return null;
-    try {
-      const res = await apiFetch(`/admin/sca/imports/mapping?type=${encodeURIComponent(type)}`);
-      const data = await res.json();
-      return (data?.mapping || null) as ScaImportMapping | null;
-    } catch {
-      return null;
-    }
-  }, [user?.role]);
-
-  const saveScaImportMapping = useCallback(async (type: ScaImportType, mapping: ScaImportMapping) => {
-    if (user?.role !== "admin") return false;
-    try {
-      await apiFetch(`/admin/sca/imports/mapping?type=${encodeURIComponent(type)}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ mapping: mapping || {} }),
-      });
-      toast.success("Mapeamento SCA salvo.");
-      return true;
-    } catch {
-      toast.error("Falha ao salvar mapeamento SCA.");
-      return false;
-    }
-  }, [user?.role]);
-
-  const refreshScaInactiveStudents = useCallback(async (days = 5, limit = 200, query = "", windowDays = 30) => {
-    if (!user) {
-      setScaInactiveStudents([]);
-      return null;
-    }
-    const safeDays = Math.max(1, Math.min(180, Math.floor(Number(days) || 5)));
-    const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 200)));
-    const params = new URLSearchParams({
-      days: String(safeDays),
-      limit: String(safeLimit),
-      window_days: String(Math.max(1, Math.min(90, Math.floor(Number(windowDays) || 30)))),
-    });
-    const q = String(query || "").trim();
-    if (q) params.set("q", q);
-    try {
-      const res = await apiFetch(`/admin/sca/students/inactive?${params.toString()}`);
-      const data = await res.json();
-      setScaInactiveStudents(Array.isArray(data?.items) ? data.items : []);
-      return {
-        days: Number(data?.days || safeDays),
-        window_days: Number(data?.window_days || windowDays),
-        window_start_at: Number(data?.window_start_at || 0),
-        cutoff_at: Number(data?.cutoff_at || 0),
-        generated_at: Number(data?.generated_at || 0),
-        total: Number(data?.total || 0),
-      } as ScaInactiveSnapshot;
-    } catch {
-      setScaInactiveStudents([]);
-      return null;
-    }
-  }, [user]);
-
-  const uploadScaImportFile = useCallback(async (type: ScaImportType, file: File) => {
-    if (user?.role !== "admin") return { ok: false, error: "forbidden" } as ScaImportUploadResult;
-    if (!file) return { ok: false, error: "missing_file" } as ScaImportUploadResult;
-    const form = new FormData();
-    form.append("file", file);
-    try {
-      const res = await apiFetch(`/admin/sca/imports/upload?type=${encodeURIComponent(type)}`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-      await Promise.all([refreshScaImportHistory(), refreshScaInactiveStudents(5, 200, ""), refreshSystemHealth()]);
-      const label = type === "students" ? "Alunos" : type === "access" ? "Acessos" : "Matriculas";
-      toast.success(`${label} importados com sucesso.`);
-      return { ok: true, ...(data || {}) } as ScaImportUploadResult;
-    } catch (error: any) {
-      const code = String(error?.code || "");
-      const status = Number(error?.status || 0);
-      const details = (error?.details || {}) as any;
-      if (code === "mapping_required") {
-        toast.warning("Arquivo com mapeamento automatico insuficiente. Revise o layout e tente novamente.");
-      } else if (code === "file_too_large" || status === 413) {
-        const maxBytes = Number(details?.maxBytes || 0);
-        const maxMb = maxBytes > 0 ? Math.floor(maxBytes / (1024 * 1024)) : 0;
-        toast.error(maxMb > 0 ? `Arquivo muito grande. Limite atual: ${maxMb} MB.` : "Arquivo muito grande para upload.");
-      } else if (code === "invalid_file_type") {
-        toast.error("Arquivo invalido. Envie CSV, XLS ou XLSX.");
-      } else {
-        toast.error("Falha ao importar arquivo SCA.");
-      }
-      return {
-        ok: false,
-        error: code || "upload_failed",
-        ...(details || {}),
-      } as ScaImportUploadResult;
-    }
-  }, [refreshScaImportHistory, refreshScaInactiveStudents, refreshSystemHealth, user?.role]);
-
-  const uploadScaImportBundle = useCallback(async (files: Partial<Record<ScaImportType, File | null>>) => {
-    if (user?.role !== "admin") return { ok: false, error: "forbidden" } as ScaImportBundleResult;
-    const form = new FormData();
-    if (files.students) form.append("students", files.students);
-    if (files.enrollments) form.append("enrollments", files.enrollments);
-    if (files.access) form.append("access", files.access);
-    if (![files.students, files.enrollments, files.access].some(Boolean)) {
-      return { ok: false, error: "missing_files" } as ScaImportBundleResult;
-    }
-    try {
-      const res = await apiFetch("/admin/sca/imports/upload-bundle", {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-      await Promise.all([
-        refreshScaImportHistory(undefined, 60),
-        refreshScaQualityIssues(200),
-        refreshScaInactiveStudents(5, 200, ""),
-        refreshSystemHealth()
-      ]);
-      toast.success("Pacote SCA importado com sucesso.");
-      return { ok: true, ...(data || {}) } as ScaImportBundleResult;
-    } catch (error: any) {
-      const code = String(error?.code || "");
-      const status = Number(error?.status || 0);
-      const details = (error?.details || {}) as any;
-      if (code === "file_too_large" || status === 413) {
-        const maxBytes = Number(details?.maxBytes || 0);
-        const maxMb = maxBytes > 0 ? Math.floor(maxBytes / (1024 * 1024)) : 0;
-        toast.error(maxMb > 0 ? `Arquivo muito grande. Limite atual: ${maxMb} MB.` : "Arquivo muito grande para upload.");
-      } else if (code === "missing_files") {
-        toast.error("Envie pelo menos um arquivo no pacote SCA.");
-      } else {
-        toast.error("Falha ao importar pacote SCA.");
-      }
-      return { ok: false, error: code || "upload_failed", ...(details || {}) } as ScaImportBundleResult;
-    }
-  }, [refreshScaImportHistory, refreshScaInactiveStudents, refreshScaQualityIssues, refreshSystemHealth, user?.role]);
-
-  const updateScaPerson = useCallback(async (id: number, payload: Partial<{
-    external_id: string;
-    name: string;
-    phone: string;
-    cpf: string;
-    status: string;
-    plan: string;
-  }>) => {
-    if (user?.role !== "admin") return false;
-    if (!id) return false;
-    try {
-      await apiFetch(`/admin/sca/people/${encodeURIComponent(String(id))}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify(payload || {}),
-      });
-      await Promise.all([refreshScaQualityIssues(200), refreshScaInactiveStudents(5, 200, "")]);
-      toast.success("Cadastro SCA atualizado.");
-      return true;
-    } catch {
-      toast.error("Falha ao atualizar cadastro SCA.");
-      return false;
-    }
-  }, [refreshScaInactiveStudents, refreshScaQualityIssues, user?.role]);
-
   const loadAiPlaybooks = useCallback(async () => {
     if (user?.role !== "admin") {
       setAiPlaybooks(null);
@@ -1421,41 +1047,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       return next;
     } catch {
       setAiPlaybooks(null);
-      return null;
-    }
-  }, [user?.role]);
-
-  const sendScaReactivationBatch = useCallback(async (payload: { studentIds: number[]; template: string; templateName?: string; maxPerHour?: number; delayMs?: number }) => {
-    if (user?.role !== "admin") return { ok: false, error: "forbidden" };
-    try {
-      const res = await apiFetch("/admin/sca/reactivation/send-batch", {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify(payload || {}),
-      });
-      const data = await res.json();
-      await Promise.all([refreshScaInactiveStudents(5, 200, ""), refreshOpsDailySummary()]);
-      return {
-        ok: true,
-        sentCount: Number(data?.sentCount || 0),
-        failedCount: Number(data?.failedCount || 0),
-      };
-    } catch (error: any) {
-      return { ok: false, error: String(error?.code || "send_failed") };
-    }
-  }, [refreshOpsDailySummary, refreshScaInactiveStudents, user?.role]);
-
-  const loadScaReactivationStats = useCallback(async () => {
-    if (user?.role !== "admin") return null;
-    try {
-      const res = await apiFetch("/admin/sca/reactivation/stats");
-      const data = await res.json();
-      return {
-        sentLastHour: Number(data?.sentLastHour || 0),
-        sentLast24h: Number(data?.sentLast24h || 0),
-        failedLast24h: Number(data?.failedLast24h || 0),
-      };
-    } catch {
       return null;
     }
   }, [user?.role]);
@@ -1489,13 +1080,13 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       refreshPixCharges(),
       loadPixSafeConfig(),
       refreshPixDailyImports(),
-      refreshScaImportHistory(undefined, 40),
-      refreshScaQualityIssues(200),
-      refreshScaInactiveStudents(5, 200, ""),
+      (undefined, 40),
+      (200),
+      (5, 200, ""),
       loadAiPlaybooks(),
       refreshOpsDailySummary(),
     ]);
-  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports, refreshScaImportHistory, refreshScaQualityIssues, refreshScaInactiveStudents, loadAiPlaybooks, refreshOpsDailySummary, requestInitialLists]);
+  }, [fetchGeoPolicy, fetchKnowledge, refreshAttendance, refreshSystemHealth, refreshPixPlans, refreshPixCharges, loadPixSafeConfig, refreshPixDailyImports,    loadAiPlaybooks, refreshOpsDailySummary, requestInitialLists]);
 
   const updateChatMessage = useCallback((
     id: string,
@@ -1530,7 +1121,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             attentionSince: shouldAttention ? now : (isSelected ? undefined : chat.attentionSince),
             slaStatus: extra?.slaStatus || chat.slaStatus || "ok",
             slaPendingSince: extra?.slaPendingSince ?? chat.slaPendingSince,
-            pixPendingSca: chat.pixPendingSca || null,
+            
           };
         });
       }
@@ -1547,7 +1138,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
         attentionSince: shouldAttention ? now : undefined,
         slaStatus: extra?.slaStatus || "ok",
         slaPendingSince: extra?.slaPendingSince ?? 0,
-        pixPendingSca: null,
+        
       }, ...prev];
     });
 
@@ -1571,7 +1162,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
           pendingHuman: !!chat.pendingHuman,
           slaStatus: (chat.slaStatus || "ok") as "ok" | "atrasando" | "critico",
           slaPendingSince: Number(chat.slaPendingSince || 0),
-          pixPendingSca: chat.pixPendingSca || null,
+          
         }));
         setChats((prev) => {
           const prevMap = new Map(prev.map((chat) => [chat.id, chat]));
@@ -1583,7 +1174,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             attentionSince: prevMap.get(chat.id)?.attentionSince,
             slaStatus: (chat.slaStatus || prevMap.get(chat.id)?.slaStatus || "ok") as "ok" | "atrasando" | "critico",
             slaPendingSince: Number(chat.slaPendingSince || prevMap.get(chat.id)?.slaPendingSince || 0),
-            pixPendingSca: chat.pixPendingSca || prevMap.get(chat.id)?.pixPendingSca || null,
+            
           }));
         });
         break;
@@ -1596,7 +1187,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             notes: payload.notes || "",
             pausedByHuman: !!payload.isPaused,
             pendingHuman: !!payload.pendingHuman,
-            pixPendingSca: payload.pixPendingSca || chat.pixPendingSca || null,
+            
           } : chat));
         }
         break;
@@ -1665,37 +1256,11 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
             ...chat,
             pausedByHuman: false,
             pendingHuman: false,
-            pixPendingSca: payload.source === "sca_done" ? null : chat.pixPendingSca || null,
+            
           } : chat));
         }
         break;
-      case "pix_charge_paid_pending_sca":
-        if (payload.from) {
-          const pendingInfo = {
-            chargeId: Number(payload.chargeId || 0),
-            studentFullName: String(payload.studentFullName || ""),
-            payerFullName: String(payload.payerFullName || ""),
-            payerCpfCnpj: String(payload.payerCpfCnpj || ""),
-            planName: String(payload.planName || ""),
-            amountCents: Number(payload.amountCents || 0),
-            paidAt: Number(payload.paidAt || Date.now()),
-          };
-          setChats((prev) => prev.map((chat) => chat.id === payload.from ? {
-            ...chat,
-            pausedByHuman: true,
-            pixPendingSca: pendingInfo,
-          } : chat));
-          toast.warning("Pix confirmado - baixa manual no SCA pendente", {
-            description: `${pendingInfo.studentFullName || payload.from} - ${pendingInfo.planName || "Plano"}`,
-          });
-          notifyPixPendingScaBrowser({
-            from: payload.from,
-            studentFullName: pendingInfo.studentFullName,
-            planName: pendingInfo.planName,
-          });
-          void refreshPixCharges({ status: "paid", sca_manual_status: "pending" });
-        }
-        break;
+      
       case "help_alert":
         toast.warning("Humano solicitado", { description: `${payload.name || payload.from}: ${payload.text || ""}` });
         updateChatMessage(
@@ -1737,7 +1302,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       default:
         break;
     }
-  }, [loadAiPlaybooks, notifyPixPendingScaBrowser, notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
+  }, [loadAiPlaybooks,  notifyUnreadMessage, refreshPixCharges, updateChatMessage]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -1886,10 +1451,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     setPixCharges([]);
     setPixSafeConfig(null);
     setPixDailyImports([]);
-    setScaImportHistory([]);
-    setScaQualityIssues([]);
-    setScaInactiveStudents([]);
-    setAiPlaybooks(null);
+                setAiPlaybooks(null);
     setOpsDailySummary(null);
   }, []);
 
@@ -2406,7 +1968,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     updatePixPlan,
     deletePixPlan,
     refreshPixCharges,
-    confirmPixScaDone,
+    
     retryPixCharge,
     pixSafeConfig,
     loadPixSafeConfig,
@@ -2414,19 +1976,19 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     pixDailyImports,
     refreshPixDailyImports,
     uploadPixDailyImport,
-    scaImportHistory,
-    refreshScaImportHistory,
-    uploadScaImportFile,
-    uploadScaImportBundle,
-    getScaImportMapping,
-    saveScaImportMapping,
-    scaQualityIssues,
-    refreshScaQualityIssues,
-    updateScaPerson,
-    scaInactiveStudents,
-    refreshScaInactiveStudents,
-    sendScaReactivationBatch,
-    loadScaReactivationStats,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     aiPlaybooks,
     loadAiPlaybooks,
     saveAiPlaybooks,
@@ -2491,7 +2053,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     updatePixPlan,
     deletePixPlan,
     refreshPixCharges,
-    confirmPixScaDone,
+    
     retryPixCharge,
     pixSafeConfig,
     loadPixSafeConfig,
@@ -2499,19 +2061,19 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     pixDailyImports,
     refreshPixDailyImports,
     uploadPixDailyImport,
-    scaImportHistory,
-    refreshScaImportHistory,
-    uploadScaImportFile,
-    uploadScaImportBundle,
-    getScaImportMapping,
-    saveScaImportMapping,
-    scaQualityIssues,
-    refreshScaQualityIssues,
-    updateScaPerson,
-    scaInactiveStudents,
-    refreshScaInactiveStudents,
-    sendScaReactivationBatch,
-    loadScaReactivationStats,
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     aiPlaybooks,
     loadAiPlaybooks,
     saveAiPlaybooks,

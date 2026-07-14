@@ -113,17 +113,6 @@ type AiPlaybooks = {
   updated_at?: number;
   updated_by?: string;
 };
-type ScaInactiveStudent = {
-  id: number;
-  external_id: string;
-  name: string;
-  phone: string;
-  status: string;
-  plan: string;
-  last_access_at: number | null;
-  days_without_visit: number;
-  inactive_reason?: "no_recent_access" | "no_access_record" | string;
-};
 
 const PIX_SAFE_DEFAULT: PixSafeConfig = {
   enabled: true,
@@ -266,8 +255,6 @@ export default function ConfiguracoesPage() {
     pixDailyImports,
     refreshPixDailyImports,
     uploadPixDailyImport,
-    scaInactiveStudents,
-    refreshScaInactiveStudents,
     aiPlaybooks,
     loadAiPlaybooks: rawLoadAiPlaybooks,
     saveAiPlaybooks: rawSaveAiPlaybooks,
@@ -317,8 +304,6 @@ export default function ConfiguracoesPage() {
   const [pixSafeSaving, setPixSafeSaving] = useState(false);
   const [dailyImportFile, setDailyImportFile] = useState<File | null>(null);
   const [dailyImportSending, setDailyImportSending] = useState(false);
-  const [inactiveDaysFilter, setInactiveDaysFilter] = useState("5");
-  const [inactiveStudentsLoading, setInactiveStudentsLoading] = useState(false);
 
   const sortedUsers = useMemo(
     () => [...managedUsers].sort((a, b) => {
@@ -488,8 +473,7 @@ export default function ConfiguracoesPage() {
     refreshPixPlans();
     loadPixSafeConfig();
     refreshPixDailyImports();
-    void refreshScaInactiveStudents(5, 200, "");
-  }, [isAdmin, refreshPixPlans, loadPixSafeConfig, refreshPixDailyImports, refreshScaInactiveStudents]);
+  }, [isAdmin, refreshPixPlans, loadPixSafeConfig, refreshPixDailyImports]);
 
   useEffect(() => {
     if (!pixSafeConfig) return;
@@ -794,22 +778,20 @@ export default function ConfiguracoesPage() {
     }
   };
 
-  const handleRefreshInactiveStudents = async () => {
-    if (!isAdmin) return;
-    setInactiveStudentsLoading(true);
-    try {
-      const days = Math.max(1, Math.min(180, Math.floor(Number(inactiveDaysFilter) || 5)));
-      await refreshScaInactiveStudents(days, 300, "");
-    } finally {
-      setInactiveStudentsLoading(false);
-    }
-  };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center gap-2">
-        <Settings className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold">Configuracoes</h1>
+    <div className="min-h-screen bg-neutral-50/50 dark:bg-neutral-950/50 p-6 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent border border-indigo-500/20 backdrop-blur-sm relative overflow-hidden">
+        <div className="absolute top-0 right-0 -mt-20 -mr-20 w-64 h-64 bg-indigo-500/20 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 left-0 -mb-20 -ml-20 w-48 h-48 bg-purple-500/20 rounded-full blur-3xl" />
+        
+        <div className="relative z-10">
+          <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900 dark:text-neutral-50 mb-1 flex items-center gap-2">
+            <Settings className="h-8 w-8 text-indigo-500" />
+            Configurações do Sistema
+          </h1>
+          <p className="text-neutral-500 dark:text-neutral-400">Gerencie regras, acessos e parâmetros da operação.</p>
+        </div>
       </div>
 
       <Tabs defaultValue="ai" className="space-y-4">
@@ -1222,14 +1204,7 @@ export default function ConfiguracoesPage() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="space-y-2">
-                    <Label>Lag SCA aviso (seg)</Label>
-                    <Input type="number" value={opsConfig.thresholds.scaLagWarnSec} onChange={(event) => updateOpsThreshold("scaLagWarnSec", event.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Lag SCA critico (seg)</Label>
-                    <Input type="number" value={opsConfig.thresholds.scaLagCriticalSec} onChange={(event) => updateOpsThreshold("scaLagCriticalSec", event.target.value)} />
-                  </div>
+                  
                   <div className="space-y-2">
                     <Label>Backup aviso (min)</Label>
                     <Input type="number" value={opsConfig.thresholds.backupWarnAgeMin} onChange={(event) => updateOpsThreshold("backupWarnAgeMin", event.target.value)} />
@@ -1408,120 +1383,8 @@ export default function ConfiguracoesPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Upload className="h-4 w-4" /> Base diaria (SCA manual)
-                </CardTitle>
-                <CardDescription>
-                  Compatibilidade temporaria. O fluxo principal agora fica no modulo SCA, com importacao de Alunos e Acessos separadas.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-md border bg-muted/40 p-3 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm text-muted-foreground">Use o novo menu SCA para importacao completa (Alunos + Matriculas + Acessos) e resumo persistente.</p>
-                  <Button asChild variant="outline" size="sm" className="gap-1">
-                    <Link to="/sca">
-                      <Upload className="h-4 w-4" /> Abrir modulo SCA
-                    </Link>
-                  </Button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
-                  <Input
-                    type="file"
-                    accept=".csv,.xls,.xlsx"
-                    onChange={(event) => setDailyImportFile(event.target.files?.[0] || null)}
-                    disabled={dailyImportSending}
-                  />
-                  <Button className="gap-1" onClick={handleUploadDailyImport} disabled={!dailyImportFile || dailyImportSending}>
-                    <Upload className="h-4 w-4" /> Enviar e converter
-                  </Button>
-                </div>
+            
 
-                <div className="space-y-2">
-                  {(pixDailyImports || []).length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nenhum envio diario registrado ainda.</p>
-                  ) : (
-                    (pixDailyImports as PixDailyImport[]).map((item) => (
-                      <div key={item.id} className="rounded-lg border p-3 flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium">{item.original_filename}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {formatDateTimeBr(item.created_at)} • Linhas: {Number(item.rows_count || 0)} • Colunas: {Number(item.columns_count || 0)}
-                          </p>
-                        </div>
-                        <a href={`/admin/pix/daily-imports/${encodeURIComponent(String(item.id))}/csv`} target="_blank" rel="noreferrer">
-                          <Button size="sm" variant="outline" className="gap-1">
-                            <Download className="h-4 w-4" /> Baixar CSV
-                          </Button>
-                        </a>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Users className="h-4 w-4" /> Alunos sem vir ha varios dias
-                </CardTitle>
-                <CardDescription>
-                  Lista para reativacao: alunos com mais de X dias sem registrar acesso.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-[200px_auto] gap-3">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={180}
-                    value={inactiveDaysFilter}
-                    onChange={(event) => setInactiveDaysFilter(event.target.value)}
-                    placeholder="Dias sem vir"
-                    disabled={inactiveStudentsLoading}
-                  />
-                  <Button className="gap-1" onClick={handleRefreshInactiveStudents} disabled={inactiveStudentsLoading}>
-                    <RotateCcw className="h-4 w-4" /> Atualizar lista
-                  </Button>
-                </div>
-
-                <div className="space-y-2">
-                  {(scaInactiveStudents || []).length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nenhum aluno acima do limite informado no momento.</p>
-                  ) : (
-                    (scaInactiveStudents as ScaInactiveStudent[]).map((item) => {
-                      const waLink = buildWhatsappLink(item.phone, item.name);
-                      return (
-                        <div key={`${item.id}-${item.external_id}`} className="rounded-lg border p-3 flex flex-wrap items-start justify-between gap-3">
-                          <div className="space-y-1">
-                            <p className="text-sm font-medium">{item.name || "Aluno sem nome"}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {item.plan ? `Plano: ${item.plan} • ` : ""}
-                              {item.phone ? `Telefone: ${item.phone} • ` : ""}
-                              Sem vir ha {Number(item.days_without_visit || 0)} dias
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              Ultimo acesso: {item.last_access_at ? formatDateTimeBr(item.last_access_at) : "Sem acesso registrado"}
-                            </p>
-                          </div>
-                          {waLink ? (
-                            <a href={waLink} target="_blank" rel="noreferrer">
-                              <Button size="sm" variant="outline" className="gap-1">
-                                <Send className="h-4 w-4" /> Chamar no WhatsApp
-                              </Button>
-                            </a>
-                          ) : (
-                            <Badge variant="secondary">Sem telefone</Badge>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </CardContent>
-            </Card>
           </TabsContent>
         ) : null}
 

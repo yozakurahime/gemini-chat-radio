@@ -1,4 +1,4 @@
-import { MessageSquare, Clock, Settings, Dumbbell, Database, LayoutDashboard } from "lucide-react";
+import { MessageSquare, Clock, Settings, Dumbbell, LayoutDashboard } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useMemo } from "react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -26,7 +26,6 @@ export function AppSidebar() {
       { title: "Dashboard", url: "/", icon: LayoutDashboard },
       { title: "Atendimento", url: "/atendimento", icon: MessageSquare },
       { title: "Ponto", url: "/ponto", icon: Clock },
-      ...(isAdmin ? [{ title: "SCA", url: "/sca", icon: Database }] : []),
       { title: "Configuracoes", url: "/configuracoes", icon: Settings },
     ],
     [isAdmin],
