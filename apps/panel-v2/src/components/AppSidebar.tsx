@@ -1,4 +1,4 @@
-import { MessageSquare, Clock, Settings, Dumbbell, LayoutDashboard } from "lucide-react";
+import { MessageSquare, Clock, Settings, Dumbbell, LayoutDashboard, Sparkles } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useMemo } from "react";
 import { usePanelData } from "@/hooks/use-panel-data";
@@ -13,6 +13,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarHeader,
+  SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
 
@@ -40,20 +41,23 @@ export function AppSidebar() {
   );
 
   return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader className="p-4">
-        <div className="flex items-center gap-2">
-          <Dumbbell className="h-6 w-6 text-sidebar-primary" />
+    <Sidebar collapsible="icon" className="border-r-0">
+      <SidebarHeader className="px-3 pb-4 pt-5">
+        <div className="flex items-center gap-3 px-1">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-sidebar-primary text-sidebar-primary-foreground shadow-[0_10px_30px_-12px_rgba(52,211,153,0.9)]">
+            <Dumbbell className="h-5 w-5" />
+          </div>
           {!collapsed && (
-            <span className="font-bold text-lg text-sidebar-foreground">
-              GymPanel
-            </span>
+            <div className="min-w-0 leading-tight">
+              <span className="block text-base font-bold tracking-tight text-sidebar-foreground">HimeFit</span>
+              <span className="block text-[10px] text-sidebar-foreground/55">Academia Oxigênio</span>
+            </div>
           )}
         </div>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Menu</SidebarGroupLabel>
+        <SidebarGroup className="px-2">
+          <SidebarGroupLabel className="px-3 text-[10px] uppercase tracking-[0.16em] text-sidebar-foreground/40">Navegação</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => {
@@ -61,19 +65,18 @@ export function AppSidebar() {
                 const hasAttention = isAtendimento && attentionTotal > 0;
                 return (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild>
+                    <SidebarMenuButton asChild className="h-11 rounded-xl">
                       <NavLink
                         to={item.url}
                         end={item.url === "/"}
-                        className={`hover:bg-sidebar-accent/50 ${hasAttention ? "relative bg-amber-500/15 text-amber-100 ring-1 ring-amber-300/60 motion-safe:animate-pulse motion-reduce:animate-none" : ""}`}
-                        activeClassName={`bg-sidebar-accent text-sidebar-primary font-medium ${hasAttention ? "ring-1 ring-amber-300/70 text-amber-100" : ""}`}
+                        className={`transition-all duration-300 hover:bg-sidebar-accent/70 ${hasAttention ? "relative bg-amber-500/10 text-amber-100 ring-1 ring-amber-300/25" : ""}`}
+                        activeClassName={`bg-sidebar-accent text-sidebar-primary font-semibold shadow-sm ${hasAttention ? "ring-1 ring-amber-300/40 text-amber-100" : ""}`}
                       >
                         <span className="relative inline-flex">
                           <item.icon className={`mr-2 h-4 w-4 ${hasAttention ? "text-amber-300" : ""}`} />
                           {hasAttention ? (
                             <>
                               <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-300" />
-                              <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-300 motion-safe:animate-ping motion-reduce:animate-none" />
                             </>
                           ) : null}
                         </span>
@@ -83,13 +86,13 @@ export function AppSidebar() {
                           </span>
                         ) : null}
                         {!collapsed && hasAttention ? (
-                          <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-200">Urgente</span>
+                          <span className="ml-auto text-[9px] uppercase tracking-wider text-amber-200">Urgente</span>
                         ) : null}
                       </NavLink>
                     </SidebarMenuButton>
                     {isAtendimento && unreadTotal > 0 && !collapsed ? (
-                      <SidebarMenuBadge className={hasAttention ? "bg-amber-500 text-white shadow-sm ring-1 ring-amber-300/80 motion-safe:animate-pulse motion-reduce:animate-none" : ""}>
-                        {hasAttention ? `NOVA ${unreadTotal > 99 ? "99+" : unreadTotal}` : (unreadTotal > 99 ? "99+" : unreadTotal)}
+                      <SidebarMenuBadge className={hasAttention ? "bg-amber-500 text-white shadow-sm ring-1 ring-amber-300/40" : ""}>
+                        {unreadTotal > 99 ? "99+" : unreadTotal}
                       </SidebarMenuBadge>
                     ) : null}
                   </SidebarMenuItem>
@@ -99,6 +102,17 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="p-3">
+        <div className={`rounded-2xl border border-sidebar-border bg-sidebar-accent/45 p-3 ${collapsed ? "grid place-items-center" : ""}`}>
+          <Sparkles className="h-4 w-4 text-sidebar-primary" />
+          {!collapsed ? (
+            <div className="mt-2">
+              <p className="text-xs font-medium text-sidebar-foreground">Hime assistente</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-sidebar-foreground/50">Automação e equipe no mesmo fluxo.</p>
+            </div>
+          ) : null}
+        </div>
+      </SidebarFooter>
     </Sidebar>
   );
 }

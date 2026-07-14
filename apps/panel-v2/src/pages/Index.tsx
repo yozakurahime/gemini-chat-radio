@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
-import { Send, Bot, User, Search, MessageSquare, Image as ImageIcon, AlertTriangle, Loader2 } from "lucide-react";
+import { Send, Bot, User, Search, MessageSquare, Image as ImageIcon, AlertTriangle, Loader2, ArrowLeft, Inbox, Sparkles, Users, CircleAlert } from "lucide-react";
 import { parsePanelMessage, usePanelData } from "@/hooks/use-panel-data";
 import WhatsAppConnect from "@/components/whatsapp/WhatsAppConnect";
 import { formatDateTimeBr, formatTimeBr } from "@/lib/date-time";
@@ -76,16 +76,16 @@ function ChatMessageBubble({ message }: { message: RenderMessage }) {
   const isSticker = message.mediaKind === "sticker";
 
   return (
-    <div className={`flex ${fromUser ? "justify-start" : "justify-end"}`}>
+    <div className={`flex ${fromUser ? "justify-start" : "justify-end"} motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-300`}>
       <div
-        className={`max-w-[78%] rounded-lg px-3 py-2 shadow-sm ${
+        className={`max-w-[84%] rounded-2xl px-3.5 py-2.5 shadow-[0_8px_24px_-18px_rgba(15,64,46,0.55)] sm:max-w-[75%] ${
           isSticker
             ? "bg-transparent shadow-none px-0"
             : fromUser
-              ? "bg-muted"
+              ? "rounded-tl-md border border-border/60 bg-white/90 dark:bg-muted"
               : fromAi
-                ? "bg-primary/10 border border-primary/20"
-                : "bg-secondary"
+                ? "rounded-tr-md border border-primary/15 bg-emerald-50/90 dark:bg-primary/10"
+                : "rounded-tr-md bg-foreground text-background"
         }`}
       >
         <div className="flex items-center gap-1 mb-1">
@@ -142,6 +142,7 @@ export default function AtendimentoPage() {
   const [aiPreview, setAiPreview] = useState<any>(null);
   const [aiPreviewLoading, setAiPreviewLoading] = useState(false);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [mobileListVisible, setMobileListVisible] = useState(false);
 
   const filteredConversations = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -157,6 +158,12 @@ export default function AtendimentoPage() {
 
     return filtered.sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
   }, [chatFilter, chats, searchQuery]);
+
+  const queueCounts = useMemo(() => ({
+    urgent: chats.filter((chat) => chat.status !== "archived" && (!!chat.needsHuman || chat.slaStatus === "atrasando" || chat.slaStatus === "critico")).length,
+    unread: chats.filter((chat) => chat.status !== "archived" && Number(chat.unreadCount || 0) > 0).length,
+    all: chats.filter((chat) => chat.status !== "archived").length,
+  }), [chats]);
 
   const currentMessages = useMemo(
     () => messages.map((message, index) => ({ ...parsePanelMessage(message), id: `${index}-${message}` })),
@@ -215,52 +222,80 @@ export default function AtendimentoPage() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
-      <div className="p-4 border-b">
-        <WhatsAppConnect />
-        {opsDailySummary ? (
-          <div className="mt-3 rounded-lg border bg-card/70 p-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <Badge variant="outline">Conversas ativas: {Number(opsDailySummary.chat?.activeConversations || 0)}</Badge>
-              <Badge variant={Number(opsDailySummary.chat?.attentionActive || 0) > 0 ? "secondary" : "outline"}>
-                Em atencao: {Number(opsDailySummary.chat?.attentionActive || 0)}
-              </Badge>
-              
-              <Badge variant="outline">Pagos hoje: {Number(opsDailySummary.pix?.paidToday || 0)}</Badge>
-              <Badge variant="outline">IA hoje: {Number(opsDailySummary.automation?.repliesToday || 0)}</Badge>
-              <Badge variant="outline">Transferencias: {Number(opsDailySummary.automation?.handoffsToday || 0)}</Badge>
-              <Badge variant="outline">Aulas solicitadas: {Number(opsDailySummary.automation?.trialRequestsToday || 0)}</Badge>
-              <Badge variant="outline">Inativos (+5d): {Number(opsDailySummary.retention?.inactiveStudents5d || 0)}</Badge>
-              <Badge
-                variant={Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? "destructive" : "default"}
-              >
-                Webhook Pix: {Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? "com falhas" : "ok"}
-              </Badge>
-              <span className="text-muted-foreground">Atualizado: {formatTime(opsDailySummary.generatedAt)}</span>
+    <div className="flex h-[calc(100vh-4rem)] flex-col gap-3 overflow-hidden p-3 sm:p-4">
+      <div className="flex shrink-0 items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="grid h-9 w-9 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-[0_10px_25px_-12px_hsl(var(--primary))]">
+              <MessageSquare className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold tracking-tight">Central de atendimento</h2>
+              <p className="text-xs text-muted-foreground">Priorize, responda e acompanhe cada conversa.</p>
             </div>
           </div>
-        ) : null}
+        </div>
+        <WhatsAppConnect />
+      </div>
+      <div className="shrink-0">
+        {opsDailySummary ? (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-6">
+            {[
+              { label: "Ativas", value: Number(opsDailySummary.chat?.activeConversations || 0), icon: Users },
+              { label: "Em atenção", value: Number(opsDailySummary.chat?.attentionActive || 0), icon: CircleAlert, alert: Number(opsDailySummary.chat?.attentionActive || 0) > 0 },
+              { label: "Respostas da IA", value: Number(opsDailySummary.automation?.repliesToday || 0), icon: Sparkles },
+              { label: "Transferências", value: Number(opsDailySummary.automation?.handoffsToday || 0), icon: User },
+              { label: "Aulas solicitadas", value: Number(opsDailySummary.automation?.trialRequestsToday || 0), icon: Inbox },
+              { label: "Pagamentos hoje", value: Number(opsDailySummary.pix?.paidToday || 0), icon: MessageSquare },
+            ].map((metric) => (
+              <div key={metric.label} className={`panel-soft flex min-w-0 items-center gap-2 rounded-2xl px-3 py-2 ${metric.alert ? "border-amber-300/70 bg-amber-50/80 dark:bg-amber-500/10" : ""}`}>
+                <metric.icon className={`h-4 w-4 shrink-0 ${metric.alert ? "text-amber-600" : "text-primary"}`} />
+                <div className="min-w-0 leading-tight">
+                  <p className="text-base font-bold tabular-nums">{metric.value}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">{metric.label}</p>
+                </div>
+              </div>
+            ))}
+            <span className="sr-only">Atualizado: {formatTime(opsDailySummary.generatedAt)}</span>
+            {Number(opsDailySummary.webhook?.consecutiveFailures || 0) > 0 ? (
+              <Badge variant="destructive" className="absolute right-4 top-4">Falha no webhook Pix</Badge>
+            ) : null}
+          </div>
+        ) : (
+          <div className="h-[52px] rounded-2xl border border-dashed border-border/70 bg-card/40" />
+        )}
       </div>
 
-      <div className="flex flex-1 min-h-0">
-        <div className="w-80 border-r flex flex-col bg-card">
-          <div className="p-3 border-b">
+      <div className="panel-glass flex min-h-0 flex-1 overflow-hidden rounded-3xl">
+        <div className={`${mobileListVisible || !selectedChat ? "flex" : "hidden md:flex"} w-full flex-col border-r border-border/60 bg-card/45 md:w-80 lg:w-[22rem]`}>
+          <div className="border-b border-border/60 p-3">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Buscar conversa..."
+                placeholder="Buscar por nome ou mensagem"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
+                className="h-10 rounded-xl border-border/60 bg-background/70 pl-9 shadow-none focus-visible:ring-2"
               />
             </div>
-            <div className="mt-2 flex gap-2">
-              <Button size="sm" variant={chatFilter === "urgent" ? "default" : "outline"} className="h-7 text-[11px] px-2" onClick={() => setChatFilter("urgent")}>Urgentes</Button>
-              <Button size="sm" variant={chatFilter === "unread" ? "default" : "outline"} className="h-7 text-[11px] px-2" onClick={() => setChatFilter("unread")}>Nao lidas</Button>
-              <Button size="sm" variant={chatFilter === "all" ? "default" : "outline"} className="h-7 text-[11px] px-2" onClick={() => setChatFilter("all")}>Todos</Button>
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-muted/70 p-1">
+              <Button aria-label="Urgentes" size="sm" variant="ghost" className={`h-8 rounded-lg px-2 text-[11px] ${chatFilter === "urgent" ? "bg-card text-foreground shadow-sm hover:bg-card" : "text-muted-foreground"}`} onClick={() => setChatFilter("urgent")}>Urgentes <span className="ml-1 opacity-60">{queueCounts.urgent}</span></Button>
+              <Button aria-label="Nao lidas" size="sm" variant="ghost" className={`h-8 rounded-lg px-2 text-[11px] ${chatFilter === "unread" ? "bg-card text-foreground shadow-sm hover:bg-card" : "text-muted-foreground"}`} onClick={() => setChatFilter("unread")}>Não lidas <span className="ml-1 opacity-60">{queueCounts.unread}</span></Button>
+              <Button aria-label="Todos" size="sm" variant="ghost" className={`h-8 rounded-lg px-2 text-[11px] ${chatFilter === "all" ? "bg-card text-foreground shadow-sm hover:bg-card" : "text-muted-foreground"}`} onClick={() => setChatFilter("all")}>Todos <span className="ml-1 opacity-60">{queueCounts.all}</span></Button>
             </div>
           </div>
           <ScrollArea className="flex-1">
+            {filteredConversations.length === 0 ? (
+              <div className="grid min-h-52 place-items-center px-6 text-center">
+                <div>
+                  <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl bg-muted text-muted-foreground">
+                    <Inbox className="h-5 w-5" />
+                  </div>
+                  <p className="text-sm font-medium">Nenhuma conversa aqui</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Tente outro filtro ou uma nova busca.</p>
+                </div>
+              </div>
+            ) : null}
             {filteredConversations.map((conv) => {
               const slaCritical = conv.slaStatus === "critico";
               const slaDelayed = conv.slaStatus === "atrasando";
@@ -268,22 +303,28 @@ export default function AtendimentoPage() {
               return (
                 <div
                   key={conv.id}
-                  onClick={() => selectChat(conv.id)}
-                  className={`relative p-3 border-b cursor-pointer transition-colors ${
+                  onClick={() => {
+                    setMobileListVisible(false);
+                    selectChat(conv.id);
+                  }}
+                  className={`relative mx-2 mt-2 cursor-pointer rounded-2xl border p-3 transition-all duration-300 ${
                     slaCritical
-                      ? "bg-red-100/90 border-l-4 border-l-red-600 ring-1 ring-red-300/80 hover:bg-red-100 dark:bg-red-500/15 dark:border-l-red-300 dark:ring-red-400/50 motion-safe:animate-pulse motion-reduce:animate-none"
+                      ? "border-rose-300/80 bg-rose-50/90 hover:bg-rose-100/90 dark:border-rose-500/30 dark:bg-rose-500/10"
                       : conv.attentionActive
-                        ? "bg-amber-100/80 border-l-4 border-l-amber-500 ring-1 ring-amber-300/80 hover:bg-amber-100 dark:bg-amber-500/10 dark:border-l-amber-300 dark:ring-amber-400/40 motion-safe:animate-pulse motion-reduce:animate-none"
+                        ? "border-amber-300/70 bg-amber-50/90 hover:bg-amber-100/80 dark:border-amber-500/30 dark:bg-amber-500/10"
                         : slaDelayed
-                          ? "bg-orange-100/80 border-l-4 border-l-orange-500 ring-1 ring-orange-300/70 hover:bg-orange-100 dark:bg-orange-500/10 dark:border-l-orange-300"
-                          : "hover:bg-muted/50"
-                  } ${selectedChatId === conv.id ? "bg-accent/30" : ""}`}
+                          ? "border-orange-300/70 bg-orange-50/80 hover:bg-orange-100/80 dark:border-orange-500/30 dark:bg-orange-500/10"
+                          : "border-transparent bg-card/35 hover:-translate-y-0.5 hover:border-border/80 hover:bg-card hover:shadow-sm"
+                  } ${selectedChatId === conv.id ? "border-primary/40 bg-accent/70 ring-2 ring-primary/10" : ""}`}
                 >
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-xs font-bold ${urgentVisual ? "bg-amber-500/15 text-amber-700 dark:text-amber-300" : "bg-primary/10 text-primary"}`}>
+                      {String(conv.name || phoneFromJid(conv.id)).slice(0, 2).toUpperCase()}
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className={`font-medium text-sm truncate ${(urgentVisual || slaDelayed) ? "font-semibold" : ""}`}>
-                          {conv.attentionActive ? `NOVA • ${conv.name || phoneFromJid(conv.id)}` : (conv.name || phoneFromJid(conv.id))}
+                          {conv.name || phoneFromJid(conv.id)}
                         </span>
                         {slaCritical ? <Badge variant="destructive" className="text-[10px] px-1.5 py-0">SLA Critico</Badge> : null}
                                                 {!slaCritical && slaDelayed ? (
@@ -314,7 +355,7 @@ export default function AtendimentoPage() {
                       {(conv.unreadCount || 0) > 0 ? (
                         <span className={`rounded-full flex items-center justify-center font-semibold ${
                           urgentVisual
-                            ? "bg-amber-500 text-white text-[11px] h-6 min-w-6 px-1.5 shadow-sm ring-2 ring-amber-300/80 motion-safe:animate-pulse motion-reduce:animate-none"
+                            ? "bg-amber-500 text-white text-[11px] h-6 min-w-6 px-1.5 shadow-sm ring-2 ring-amber-300/40"
                             : "bg-primary text-primary-foreground text-[10px] h-5 min-w-5 px-1"
                         }`}>
                           {conv.unreadCount}
@@ -328,40 +369,53 @@ export default function AtendimentoPage() {
           </ScrollArea>
         </div>
 
-        <div className="flex-1 flex flex-col">
+        <div className={`${mobileListVisible ? "hidden md:flex" : selectedChat ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
           {selectedChat ? (
             <>
-              <div className="h-14 border-b flex items-center justify-between px-4 bg-card">
-                <div>
-                  <h3 className="font-medium text-sm">{selectedChat.name || phoneFromJid(selectedChat.id)}</h3>
-                  <p className="text-xs text-muted-foreground">{phoneFromJid(selectedChat.id)}</p>
+              <div className="flex min-h-16 items-center justify-between gap-3 border-b border-border/60 bg-card/65 px-3 backdrop-blur-md sm:px-4">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-xl md:hidden" onClick={() => setMobileListVisible(true)} title="Voltar para conversas">
+                    <ArrowLeft className="h-4 w-4" />
+                  </Button>
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-xs font-bold text-primary">
+                    {String(selectedChat.name || phoneFromJid(selectedChat.id)).slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold">{selectedChat.name || phoneFromJid(selectedChat.id)}</h3>
+                    <p className="truncate text-[11px] text-muted-foreground">{phoneFromJid(selectedChat.id)}</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                                    {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA Critico</Badge> : null}
-                  {selectedChat.slaStatus === "atrasando" ? <Badge variant="secondary">SLA Atrasando</Badge> : null}
-                  <span className="text-xs text-muted-foreground">Resposta IA</span>
-                  <Switch
-                    checked={!selectedChat.pausedByHuman}
-                    disabled={iaSwitchLoading}
-                    onCheckedChange={async (checked) => {
-                      setIaSwitchLoading(true);
-                      try {
-                        await setChatIAEnabled(checked);
-                      } finally {
-                        setIaSwitchLoading(false);
-                      }
-                    }}
-                  />
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="hidden lg:flex">
+                    {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA crítico</Badge> : null}
+                    {selectedChat.slaStatus === "atrasando" ? <Badge variant="secondary">SLA atrasando</Badge> : null}
+                  </div>
+                  <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/70 px-2.5 py-1.5">
+                    <Bot className="h-3.5 w-3.5 text-primary" />
+                    <span className="hidden text-[11px] font-medium sm:inline">IA ativa</span>
+                    <Switch
+                      checked={!selectedChat.pausedByHuman}
+                      disabled={iaSwitchLoading}
+                      onCheckedChange={async (checked) => {
+                        setIaSwitchLoading(true);
+                        try {
+                          await setChatIAEnabled(checked);
+                        } finally {
+                          setIaSwitchLoading(false);
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
 
-              <ScrollArea className="flex-1 p-4">
-                <div className="space-y-3 max-w-2xl mx-auto">
-                  <div className="rounded-lg border bg-card/70 p-3 space-y-2">
+              <ScrollArea className="subtle-grid flex-1 bg-muted/20 p-3 sm:p-5">
+                <div className="mx-auto max-w-3xl space-y-3 pb-3">
+                  <div className="panel-soft space-y-2 rounded-2xl p-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <AlertTriangle className="h-4 w-4 text-primary" />
-                        <p className="text-sm font-medium">Transparencia da IA</p>
+                        <p className="text-sm font-medium">Contexto da Hime</p>
                       </div>
                       <div className="flex flex-wrap justify-end gap-1">
                         <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => void sendAiFeedback("correta", "Resposta validada pelo atendente.")} disabled={feedbackLoading || aiPreviewLoading}>Correta</Button>
@@ -444,26 +498,29 @@ export default function AtendimentoPage() {
                 </div>
               </ScrollArea>
 
-              <div className="border-t p-3 bg-card">
-                <div className="flex gap-2 max-w-2xl mx-auto">
+              <div className="border-t border-border/60 bg-card/70 p-3 backdrop-blur-md">
+                <div className="mx-auto flex max-w-3xl gap-2 rounded-2xl border border-border/70 bg-background/80 p-1.5 shadow-[0_12px_30px_-22px_rgba(15,64,46,0.7)] focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
                   <Input
                     placeholder="Digite uma mensagem..."
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
-                    className="flex-1"
+                    className="h-10 flex-1 border-0 bg-transparent shadow-none focus-visible:ring-0"
                     onKeyDown={(e) => e.key === "Enter" && submit()}
                   />
-                  <Button size="icon" onClick={submit} disabled={!messageInput.trim()}>
+                  <Button size="icon" className="h-10 w-10 rounded-xl shadow-sm" onClick={submit} disabled={!messageInput.trim()} title="Enviar mensagem">
                     <Send className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <MessageSquare className="h-12 w-12 mx-auto mb-2 opacity-30" />
-                <p>Selecione uma conversa</p>
+            <div className="subtle-grid flex flex-1 items-center justify-center text-muted-foreground">
+              <div className="max-w-xs text-center">
+                <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-3xl border border-primary/15 bg-primary/10 text-primary shadow-sm">
+                  <MessageSquare className="h-7 w-7" />
+                </div>
+                <p className="font-semibold text-foreground">Sua caixa de entrada</p>
+                <p className="mt-1 text-sm">Selecione uma conversa para visualizar o histórico e responder.</p>
               </div>
             </div>
           )}

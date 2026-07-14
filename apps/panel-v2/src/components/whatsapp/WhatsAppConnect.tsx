@@ -68,8 +68,25 @@ export default function WhatsAppConnect() {
 
   const currentStatus = statusConfig[state] || statusConfig.disconnected;
 
+  if (state === "connected") {
+    return (
+      <div className="flex items-center gap-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/80 px-3 py-2 shadow-sm backdrop-blur-md dark:border-emerald-500/20 dark:bg-emerald-500/10">
+        <div className="grid h-8 w-8 place-items-center rounded-xl bg-emerald-500 text-white shadow-sm">
+          <Wifi className="h-4 w-4" />
+        </div>
+        <div className="hidden leading-tight sm:block">
+          <p className="text-xs font-semibold text-emerald-900 dark:text-emerald-100">WhatsApp conectado</p>
+          <p className="text-[10px] text-emerald-700/70 dark:text-emerald-300/70">{phone || "Sessão ativa"}</p>
+        </div>
+        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg text-emerald-700 hover:bg-emerald-500/10" onClick={fetchStatus} disabled={loading} title="Atualizar conexão">
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+        </Button>
+      </div>
+    );
+  }
+
   return (
-    <Card>
+    <Card className="panel-soft overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
