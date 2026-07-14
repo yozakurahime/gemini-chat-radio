@@ -873,6 +873,7 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
             `# FERIADO OFICIAL\n${holidayLine}`,
             `# REGRA DE DATA\nQuando mencionar "hoje", use EXATAMENTE o dia da semana oficial acima. Nunca invente outro dia da semana para hoje.`,
             `# REGRA DE FERIADO\nSe hoje for feriado, nao assuma horario regular. Use horario de feriado somente se estiver explicito na base de conhecimento. Se nao houver horario de feriado explicito, informe que o horario pode ser especial e ofereca confirmacao com atendente humano.`,
+            `# REGRA DE IDENTIFICACAO (NOME DO USUARIO)\n1. Se o nome do usuario estiver no "CONTEXTO DO ALUNO (SCA)" (ex: "Aluno SCA: NomeDoAluno") ou se o usuario ja tiver se apresentado/identificado no historico de conversa, voce DEVE usar o nome dele para trata-lo de forma personalizada, amigavel e calorosa (ex: "Ola, [Nome]!", "Como posso te ajudar hoje, [Nome]?").\n2. Se voce ainda nao souber o nome do usuario (nao constar no SCA e ele nao tiver dito no historico), voce deve perguntar educadamente o nome dele de forma acolhedora logo na primeira resposta.`,
             playbooksBlock,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,
