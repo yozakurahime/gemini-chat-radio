@@ -478,7 +478,13 @@ export default function ConfiguracoesPage() {
       toast.error("Informe a data de validade para evitar que a IA use uma vaga antiga.");
       return;
     }
-    const availableSpots = availabilityForm.availableSpots.trim() === ""
+    if (availabilityForm.status === "available" && availabilityForm.availableSpots.trim() === "") {
+      toast.error("Informe quantas vagas estão disponíveis.");
+      return;
+    }
+    const availableSpots = availabilityForm.status === "full" && availabilityForm.availableSpots.trim() === ""
+      ? 0
+      : availabilityForm.availableSpots.trim() === ""
       ? null
       : Math.max(0, Number.parseInt(availabilityForm.availableSpots, 10) || 0);
     const capacity = availabilityForm.capacity.trim() === ""
@@ -950,7 +956,7 @@ export default function ConfiguracoesPage() {
             <Bot className="h-4 w-4" /> Contexto da IA
           </TabsTrigger>
           <TabsTrigger value="availability" className="gap-1">
-            <CalendarClock className="h-4 w-4" /> Vagas
+            <CalendarClock className="h-4 w-4" /> Vagas disponíveis
           </TabsTrigger>
           <TabsTrigger value="location" className="gap-1">
             <MapPin className="h-4 w-4" /> Localizacao
@@ -1196,7 +1202,7 @@ export default function ConfiguracoesPage() {
               </div>
               <div className="flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
-                  {aiPlaybooks?.updated_at ? `Atualizado em ${formatDateTime(aiPlaybooks.updated_at)} por ${aiPlaybooks?.updated_by || "admin"}.` : "Use este bloco para padronizar respostas comerciais da IA."}
+                  {aiPlaybooks?.updated_at ? `Atualizado em ${formatDateTimeBr(aiPlaybooks.updated_at)} por ${aiPlaybooks?.updated_by || "admin"}.` : "Use este bloco para padronizar respostas comerciais da IA."}
                 </p>
                 <Button className="gap-1" onClick={handleSavePlaybooks} disabled={!isAdmin || savingAiPlaybooks}>
                   <Save className="h-4 w-4" /> {savingAiPlaybooks ? "Salvando..." : "Salvar playbooks"}
@@ -1248,7 +1254,7 @@ export default function ConfiguracoesPage() {
                     <CalendarClock className="h-4 w-4 text-primary" /> Vagas por modalidade e turma
                   </CardTitle>
                   <CardDescription className="mt-1 max-w-2xl">
-                    Cadastre somente modalidades com limite de vagas. A Hime usa os registros vigentes quando perguntarem por disponibilidade.
+                    Informe aqui a quantidade exata disponível por modalidade, turma e horário. Esses números entram diretamente no contexto da Hime.
                   </CardDescription>
                 </div>
                 {availabilityUpdatedAt ? (
@@ -1320,13 +1326,14 @@ export default function ConfiguracoesPage() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Vagas disponíveis</Label>
+                    <Label>Vagas disponíveis {availabilityForm.status === "available" ? "*" : ""}</Label>
                     <Input
                       type="number"
                       min="0"
                       value={availabilityForm.availableSpots}
                       onChange={(event) => setAvailabilityForm((current) => ({ ...current, availableSpots: event.target.value }))}
                       placeholder="Ex: 3"
+                      required={availabilityForm.status === "available"}
                       disabled={!isAdmin}
                     />
                   </div>

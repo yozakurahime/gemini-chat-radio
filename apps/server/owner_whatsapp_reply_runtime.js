@@ -58,7 +58,6 @@ function applyOwnerWhatsappReplyToConversation({
     appendHistoryEntry,
     saveChat,
     broadcast,
-    scheduleBotResume,
     acknowledgeConversationAttention
 }) {
     if (!conversationState || !contactId || !text) return null;
@@ -119,7 +118,6 @@ function applyOwnerWhatsappReplyToConversation({
             source: 'whatsapp_owner'
         });
     }
-    if (typeof scheduleBotResume === 'function') scheduleBotResume(contactId);
     return convo;
 }
 

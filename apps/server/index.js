@@ -58,7 +58,7 @@ const {
     buildTrialRequest,
     isGlobalOptIn,
     isGlobalOptOut,
-    shouldEscalateAutomation,
+    parseContextAwareAiReply,
     updateCustomerAutomationState
 } = require('./customer_automation_runtime');
 
@@ -4097,7 +4097,7 @@ function shouldReuseHumanOriginalText(text) {
     return true;
 }
 
-async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit', matchedRule = '', eventTimestamp = Date.now() }) {
+async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit', matchedRule = '', eventTimestamp = Date.now(), appendUserMessage = true }) {
     if (!user || user.pausedByHuman) return false;
     user.pausedByHuman = true;
     user.humanRequested = true;
@@ -4107,7 +4107,7 @@ async function executeHumanHandoff({ sender, user, text, triggerMode = 'explicit
     const userTs = Number(eventTimestamp) > 0 ? Number(eventTimestamp) : Date.now();
     const replyTs = Date.now();
     if (sock) await sock.sendMessage(getSendTarget(sender), { text: reply });
-    appendHistoryEntry(user.history, 'Usuario', text, userTs);
+    if (appendUserMessage) appendHistoryEntry(user.history, 'Usuario', text, userTs);
     appendHistoryEntry(user.history, 'Hime', reply, replyTs);
     saveChat(sender);
     recordAutomationEvent(sender, 'human_handoff', {
@@ -8363,8 +8363,10 @@ function getDailyOperationsSnapshot() {
         acc.activeConversations += 1;
         if (convo.attentionActive) acc.attentionActive += 1;
         if (convo.pendingHumanHandoff) acc.pendingHuman += 1;
+        if (convo.pausedByHuman) acc.humanOwned += 1;
+        if (convo.humanRequested) acc.awaitingHuman += 1;
         return acc;
-    }, { activeConversations: 0, attentionActive: 0, pendingHuman: 0 });
+    }, { activeConversations: 0, attentionActive: 0, pendingHuman: 0, humanOwned: 0, awaitingHuman: 0 });
 
     const countSafe = (sql, ...params) => {
         try {
@@ -8420,8 +8422,9 @@ function getDailyOperationsSnapshot() {
     `, startTs, endTs);
     const automationIntentsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='intent_detected' AND created_at>=? AND created_at<?`, startTs, endTs);
     const automationRepliesToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='ai_reply' AND created_at>=? AND created_at<?`, startTs, endTs);
-    const automationHandoffsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='human_handoff' AND created_at>=? AND created_at<?`, startTs, endTs);
+    const directHandoffsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='human_handoff' AND created_at>=? AND created_at<?`, startTs, endTs);
     const trialRequestsToday = countSafe(`SELECT COUNT(1) AS total FROM trial_requests WHERE created_at>=? AND created_at<?`, startTs, endTs);
+    const automationHandoffsToday = directHandoffsToday + trialRequestsToday;
     const optOutsToday = countSafe(`SELECT COUNT(1) AS total FROM automation_events WHERE event_type='global_opt_out' AND created_at>=? AND created_at<?`, startTs, endTs);
 
     const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
@@ -8500,6 +8503,7 @@ function getDailyOperationsSnapshot() {
             intentsToday: automationIntentsToday,
             repliesToday: automationRepliesToday,
             handoffsToday: automationHandoffsToday,
+            directHandoffsToday,
             trialRequestsToday,
             optOutsToday
         },
@@ -8801,7 +8805,6 @@ registerChatAdminRoutes({
     appendHistoryEntry,
     saveChat,
     broadcast,
-    scheduleBotResume,
     chatImageUpload,
     chatStickerUpload,
     saveChatImageBuffer,
@@ -9420,10 +9423,9 @@ wss.on('connection', (ws, req) => {
                     saveChat(data.to);
                     acknowledgeConversationAttention(data.to, { actor: ws.username || '', reason: 'admin_reply_ws' });
                     broadcast({ type: 'admin_reply_success', from: data.to, text: data.text, senderName: sn, isPaused: true, timestamp: now });
-                    scheduleBotResume(data.to);
                 }
             }
-            if (data.type === 'resume_bot') { const u=conversationState[data.to]; if(u){ u.pausedByHuman=false; saveChat(data.to); broadcast({type:'bot_resumed', from:data.to}); } }
+            if (data.type === 'resume_bot') { const u=conversationState[data.to]; if(u){ u.pausedByHuman=false; u.humanRequested=false; if (u.inactivityTimer) { clearTimeout(u.inactivityTimer); u.inactivityTimer=null; } saveChat(data.to); broadcast({type:'bot_resumed', from:data.to}); } }
             if (data.type === 'end_chat') { 
                 const u = conversationState[data.to]; if (u) { u.status = 'archived'; saveChat(data.to); broadcast({ type: 'chat_archived_update', id: data.to }); }
             }
@@ -9527,26 +9529,6 @@ fs.watchFile(BASE_CONTEXT_FILE, { interval: 1000 }, () => {
         }
     }, 200);
 });
-function scheduleBotResume(contactId) {
-    const u = conversationState[contactId];
-    if (!u) return;
-    if (u.inactivityTimer) clearTimeout(u.inactivityTimer);
-    u.inactivityTimer = setTimeout(async () => {
-        try {
-            if (!u.pausedByHuman) return;
-            u.pausedByHuman = false;
-            const m = "Hime de volta! Posso ajudar em algo mais?";
-            const now = Date.now();
-            if (sock) await sock.sendMessage(getSendTarget(contactId), { text: m });
-            appendHistoryEntry(u.history, 'Hime', m, now);
-            saveChat(contactId);
-            broadcast({ type: 'bot_resumed', from: contactId, timestamp: now });
-        } catch (resumeErr) {
-            console.error('[chat] erro ao retomar bot automaticamente:', resumeErr?.message || resumeErr);
-        }
-    }, 30 * 60000);
-}
-
 function getMessageTimestampMs(msg) {
     const raw = msg?.messageTimestamp;
     if (typeof raw === 'number') return raw > 9999999999 ? raw : (raw * 1000);
@@ -9581,7 +9563,6 @@ async function handleOwnerWhatsappReplyMessage(msg, senderRaw, msgTimestampMs) {
         appendHistoryEntry,
         saveChat,
         broadcast,
-        scheduleBotResume,
         acknowledgeConversationAttention
     });
 
@@ -9810,7 +9791,6 @@ async function startBot() {
 
         let isAttendanceContact = false;
         let automationAnalysis = null;
-        let automationEscalation = null;
         let skipStandardUserEcho = false;
         if (ATTENDANCE_ENABLED) {
             const commandPreview = detectAttendanceCommand(text || '');
@@ -9854,7 +9834,6 @@ async function startBot() {
         if (!isAttendanceContact) {
             if (text) {
                 automationAnalysis = updateCustomerAutomationState(user, text, msgTimestampMs);
-                automationEscalation = shouldEscalateAutomation(automationAnalysis);
                 recordAutomationEvent(sender, 'intent_detected', {
                     intent: automationAnalysis.intent,
                     confidence: automationAnalysis.confidence,
@@ -9895,7 +9874,6 @@ async function startBot() {
             user.globalOptOut = false;
             user.marketingOptIn = true;
             user.automationUnknownCount = 0;
-            automationEscalation = null;
             saveChat(sender);
             recordAutomationEvent(sender, 'global_opt_in', { intent: automationAnalysis?.intent, confidence: automationAnalysis?.confidence });
         }
@@ -10094,23 +10072,6 @@ async function startBot() {
                 }
             }
 
-            if (!skipHumanIntentDetection && automationEscalation) {
-                recordAutomationEvent(sender, 'automatic_handoff', {
-                    intent: automationAnalysis?.intent,
-                    confidence: automationAnalysis?.confidence,
-                    data: { reason: automationEscalation.reason }
-                });
-                await executeHumanHandoff({
-                    sender,
-                    user,
-                    text,
-                    triggerMode: 'automation',
-                    matchedRule: automationEscalation.reason,
-                    eventTimestamp: msgTimestampMs
-                });
-                return;
-            }
-
             if (!skipHumanIntentDetection) {
                 const humanIntent = detectHumanHandoffIntent(text);
                 if (humanIntent.type === 'explicit') {
@@ -10215,7 +10176,25 @@ async function startBot() {
                     user.history,
                     { sca: scaContextSnippet || '', text: automationContext }
                 );
-                const resp = sanitizeAssistantReply(respRaw);
+                const contextAwareReply = parseContextAwareAiReply(respRaw);
+                if (contextAwareReply.requiresHuman) {
+                    recordAutomationEvent(sender, 'context_missing', {
+                        intent: user.lastIntent,
+                        confidence: user.intentConfidence,
+                        data: { question: String(input || '').slice(0, 300) }
+                    });
+                    await executeHumanHandoff({
+                        sender,
+                        user,
+                        text: input || text || '',
+                        triggerMode: 'context_missing',
+                        matchedRule: 'information_not_in_context',
+                        eventTimestamp: msgTimestampMs,
+                        appendUserMessage: false
+                    });
+                    return;
+                }
+                const resp = sanitizeAssistantReply(contextAwareReply.reply);
                 if (resp) {
                     const replyTs = Date.now();
                     await sock.sendMessage(getSendTarget(sender), { text: resp });

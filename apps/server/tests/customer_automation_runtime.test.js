@@ -7,7 +7,7 @@ const {
   classifyIntent,
   isGlobalOptIn,
   isGlobalOptOut,
-  shouldEscalateAutomation,
+  parseContextAwareAiReply,
   updateCustomerAutomationState,
 } = require('../customer_automation_runtime');
 
@@ -33,14 +33,22 @@ test('builds persistent customer memory and sales stage', () => {
   assert.equal(request.requestedTime, '18:00');
 });
 
-test('escalates sensitive topics and repeated unknown requests', () => {
+test('tracks repeated unknown messages without using them as a handoff rule', () => {
   const conversation = {};
-  const complaint = updateCustomerAutomationState(conversation, 'Estou muito insatisfeito com o atendimento');
-  assert.equal(shouldEscalateAutomation(complaint).reason, 'complaint');
-
   updateCustomerAutomationState(conversation, 'xyz');
-  const repeated = updateCustomerAutomationState(conversation, 'abc');
-  assert.equal(shouldEscalateAutomation(repeated).reason, 'repeated_unknown');
+  updateCustomerAutomationState(conversation, 'abc');
+  updateCustomerAutomationState(conversation, 'def');
+  assert.equal(conversation.automationUnknownCount, 3);
+});
+
+test('recognizes the private marker for information missing from context', () => {
+  const parsed = parseContextAwareAiReply('[[HUMAN_HANDOFF_CONTEXT_MISSING]]');
+  assert.equal(parsed.requiresHuman, true);
+  assert.equal(parsed.reply, '');
+
+  const normal = parseContextAwareAiReply('A academia abre as 6h.');
+  assert.equal(normal.requiresHuman, false);
+  assert.equal(normal.reply, 'A academia abre as 6h.');
 });
 
 test('recognizes global opt-out and opt-in', () => {

@@ -65,11 +65,11 @@ type AiPlaybooks = {
 type OpsDailySummary = {
   generatedAt: number;
   period?: { startAt?: number; endAt?: number };
-  chat?: { activeConversations?: number; attentionActive?: number; pendingHuman?: number };
+  chat?: { activeConversations?: number; attentionActive?: number; pendingHuman?: number; humanOwned?: number; awaitingHuman?: number };
   pix?: { generatedToday?: number; paidToday?: number; pendingSca?: number };
   retention?: { inactiveStudents5d?: number };
   ai?: { feedbackToday?: number };
-  automation?: { intentsToday?: number; repliesToday?: number; handoffsToday?: number; trialRequestsToday?: number; optOutsToday?: number };
+  automation?: { intentsToday?: number; repliesToday?: number; handoffsToday?: number; directHandoffsToday?: number; trialRequestsToday?: number; optOutsToday?: number };
   kpis?: {
     studentsNew7d?: number;
     studentsActive?: number;
@@ -331,6 +331,7 @@ type PanelDataContextValue = {
   geoPolicy: any;
   saveGeoPolicy: (policy: { academyLat: string; academyLng: string; radiusM: string }) => Promise<boolean>;
   systemHealth: SystemHealthSnapshot | null;
+  refreshSystemHealth: () => Promise<void>;
   pixPlans: PixPlan[];
   pixCharges: PixCharge[];
   refreshPixPlans: () => Promise<void>;
@@ -1100,9 +1101,6 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
       refreshPixCharges(),
       loadPixSafeConfig(),
       refreshPixDailyImports(),
-      (undefined, 40),
-      (200),
-      (5, 200, ""),
       loadAiPlaybooks(),
       refreshOpsDailySummary(),
     ]);
@@ -2083,6 +2081,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     geoPolicy,
     saveGeoPolicy,
     systemHealth,
+    refreshSystemHealth,
     pixPlans,
     pixCharges,
     refreshPixPlans,
@@ -2168,6 +2167,7 @@ export function PanelDataProvider({ children }: { children: React.ReactNode }) {
     geoPolicy,
     saveGeoPolicy,
     systemHealth,
+    refreshSystemHealth,
     pixPlans,
     pixCharges,
     refreshPixPlans,

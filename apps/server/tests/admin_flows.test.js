@@ -253,7 +253,7 @@ test('owner whatsapp reply runtime extracts text/media and ignores non-chat targ
   }), { text: '[Audio enviado pelo atendimento via WhatsApp]', kind: 'audio' });
 });
 
-test('owner whatsapp reply runtime pauses IA and schedules bot resume', () => {
+test('owner whatsapp reply runtime keeps IA paused until manual resume', () => {
   const conversationState = {};
   const broadcasts = [];
   const saved = [];
@@ -279,7 +279,7 @@ test('owner whatsapp reply runtime pauses IA and schedules bot resume', () => {
   assert.equal(convo.status, 'active');
   assert.equal(convo.history[0], '[ts=1770000000000] Atendente WhatsApp: Ja te respondi pelo WhatsApp.');
   assert.deepEqual(saved, ['5511888888888@s.whatsapp.net']);
-  assert.deepEqual(resumed, ['5511888888888@s.whatsapp.net']);
+  assert.deepEqual(resumed, []);
   assert.equal(broadcasts.some((event) => event.type === 'admin_reply_success' && event.isPaused === true), true);
   assert.equal(broadcasts.some((event) => event.type === 'chat_ia_state_updated' && event.isPaused === true), true);
   assert.equal(acknowledged[0].payload.reason, 'owner_whatsapp_reply');

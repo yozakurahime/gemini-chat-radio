@@ -1,200 +1,242 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Activity,
+  ArrowRight,
+  Bot,
+  CheckCircle2,
+  Clock3,
+  CreditCard,
+  MessageCircleMore,
+  MessageSquareWarning,
+  RefreshCcw,
+  Server,
+  ShieldAlert,
+  Sparkles,
+  UserRoundCheck,
+  UsersRound,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { RefreshCcw, Activity, MessageSquareWarning, Settings, ArrowRight, Server, ShieldCheck, Zap, CreditCard } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePanelData } from "@/hooks/use-panel-data";
+
+const number = (value: unknown) => Math.max(0, Number(value || 0));
+const toneClasses = {
+  rose: "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400",
+  amber: "bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400",
+  indigo: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-400",
+  violet: "bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-400",
+  emerald: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400",
+  sky: "bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-400",
+} as const;
 
 export default function DashboardPage() {
   const navigate = useNavigate();
   const {
     chats,
+    opsDailySummary,
+    refreshOpsDailySummary,
     systemHealth,
-    refreshOpsDailySummary: rawRefreshOpsDailySummary,
+    refreshSystemHealth,
   } = usePanelData();
-  const refreshOpsDailySummary = rawRefreshOpsDailySummary || (async () => null);
-  const [loadingQueues, setLoadingQueues] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const runRefresh = async () => {
-    setLoadingQueues(true);
+  const refresh = async () => {
+    setRefreshing(true);
     try {
-      await refreshOpsDailySummary();
+      await Promise.all([refreshOpsDailySummary(), refreshSystemHealth()]);
     } finally {
-      setLoadingQueues(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    void runRefresh();
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const urgentChats = useMemo(
-    () => (chats || []).filter((chat) => chat.attentionActive || chat.slaStatus === "critico" || chat.slaStatus === "atrasando").length,
+    () => (chats || [])
+      .filter((chat) => chat.needsHuman || chat.attentionActive || chat.slaStatus === "critico" || chat.slaStatus === "atrasando")
+      .sort((a, b) => number(b.timestamp) - number(a.timestamp)),
     [chats],
   );
 
+  const unreadMessages = useMemo(
+    () => (chats || []).reduce((total, chat) => total + number(chat.unreadCount), 0),
+    [chats],
+  );
+
+  const automationReplies = number(opsDailySummary?.automation?.repliesToday);
+  const automationHandoffs = number(opsDailySummary?.automation?.handoffsToday);
+  const handledByAutomation = automationReplies + automationHandoffs;
+  const handoffRate = handledByAutomation > 0 ? Math.round((automationHandoffs / handledByAutomation) * 100) : 0;
+  const activeConversations = number(opsDailySummary?.chat?.activeConversations) || (chats || []).length;
+  const localAwaitingHuman = (chats || []).filter((chat) => chat.needsHuman).length;
+  const awaitingHuman = Math.max(number(opsDailySummary?.chat?.awaitingHuman), localAwaitingHuman);
+  const humanOwned = number(opsDailySummary?.chat?.humanOwned);
+  const generatedAt = number(opsDailySummary?.generatedAt);
+
+  const metrics = [
+    {
+      label: "Aguardando atendente",
+      value: awaitingHuman,
+      detail: `${unreadMessages} mensagens não lidas`,
+      icon: MessageSquareWarning,
+      color: "rose",
+    },
+    {
+      label: "Com atendimento humano",
+      value: humanOwned,
+      detail: "IA pausada até liberação manual",
+      icon: UserRoundCheck,
+      color: "amber",
+    },
+    {
+      label: "Respostas da IA hoje",
+      value: automationReplies,
+      detail: `${number(opsDailySummary?.automation?.intentsToday)} intenções identificadas`,
+      icon: Bot,
+      color: "indigo",
+    },
+    {
+      label: "Transferências hoje",
+      value: automationHandoffs,
+      detail: `${handoffRate}% da automação, incluindo confirmações`,
+      icon: UsersRound,
+      color: "violet",
+    },
+    {
+      label: "Pix pagos hoje",
+      value: number(opsDailySummary?.pix?.paidToday),
+      detail: `${number(opsDailySummary?.pix?.generatedToday)} cobranças geradas`,
+      icon: CreditCard,
+      color: "emerald",
+    },
+    {
+      label: "Aulas solicitadas hoje",
+      value: number(opsDailySummary?.automation?.trialRequestsToday),
+      detail: `${number(opsDailySummary?.pix?.pendingSca)} baixas Pix pendentes`,
+      icon: Sparkles,
+      color: "sky",
+    },
+  ] as const;
+
+  const healthStatus = systemHealth?.status || "degraded";
+  const healthLabel = healthStatus === "ok" ? "Sistema estável" : healthStatus === "critical" ? "Falha crítica" : "Atenção necessária";
+
   return (
-    <div className="min-h-screen bg-neutral-50/50 dark:bg-neutral-950/50 p-6 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-      {/* Header Section */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent border border-indigo-500/20 backdrop-blur-sm relative overflow-hidden">
-        <div className="absolute top-0 right-0 -mt-20 -mr-20 w-64 h-64 bg-indigo-500/20 rounded-full blur-3xl" />
-        <div className="absolute bottom-0 left-0 -mb-20 -ml-20 w-48 h-48 bg-purple-500/20 rounded-full blur-3xl" />
-        
-        <div className="relative z-10">
-          <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900 dark:text-neutral-50 mb-1 flex items-center gap-2">
-            <Activity className="h-8 w-8 text-indigo-500" />
-            Dashboard Operacional
-          </h1>
-          <p className="text-neutral-500 dark:text-neutral-400">Visão em tempo real do sistema de ponto e atendimento.</p>
+    <div className="min-h-screen space-y-6 bg-neutral-50/60 p-4 dark:bg-neutral-950/60 sm:p-6">
+      <section className="relative overflow-hidden rounded-3xl border border-indigo-200/70 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 p-6 text-white shadow-xl shadow-indigo-950/10 sm:p-8">
+        <div className="absolute -right-16 -top-20 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+        <div className="relative flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
+          <div className="max-w-2xl">
+            <Badge className="mb-4 border-white/20 bg-white/15 text-white hover:bg-white/20">
+              <Activity className="mr-1.5 h-3.5 w-3.5" /> Operação em tempo real
+            </Badge>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Dashboard de atendimento</h1>
+            <p className="mt-2 text-sm text-indigo-100 sm:text-base">
+              Acompanhe a fila humana, o desempenho da IA e os resultados do dia com dados reais do sistema.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3 text-sm text-white/90">
+              <span className="rounded-full bg-black/15 px-3 py-1.5">{activeConversations} conversas ativas</span>
+              <span className="rounded-full bg-black/15 px-3 py-1.5">{humanOwned} sob cuidado humano</span>
+              <span className="rounded-full bg-black/15 px-3 py-1.5">{handoffRate}% de transferência hoje</span>
+            </div>
+          </div>
+          <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+            {generatedAt > 0 && (
+              <span className="text-xs text-indigo-100">
+                Atualizado às {new Date(generatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            <Button className="rounded-full bg-white text-indigo-700 hover:bg-indigo-50" onClick={() => void refresh()} disabled={refreshing}>
+              <RefreshCcw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+              {refreshing ? "Atualizando" : "Atualizar dados"}
+            </Button>
+          </div>
         </div>
-        <div className="relative z-10 flex items-center gap-3">
-          <Button 
-            variant="outline" 
-            className="rounded-full shadow-sm hover:shadow-md transition-all gap-2 border-indigo-200 dark:border-indigo-900/50 hover:bg-indigo-50 dark:hover:bg-indigo-900/20" 
-            onClick={() => runRefresh()} 
-            disabled={loadingQueues}
-          >
-            <RefreshCcw className={`h-4 w-4 ${loadingQueues ? "animate-spin text-indigo-500" : ""}`} /> 
-            {loadingQueues ? "Sincronizando..." : "Sincronizar"}
-          </Button>
-        </div>
-      </div>
+      </section>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {/* Atendimento Card */}
-        <Card className="relative overflow-hidden group hover:shadow-xl transition-all duration-500 border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-neutral-900/60 backdrop-blur-xl">
-          <div className="absolute inset-0 bg-gradient-to-br from-rose-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-          <CardHeader className="pb-2">
-            <div className="w-12 h-12 rounded-2xl bg-rose-100 dark:bg-rose-500/20 flex items-center justify-center mb-4 text-rose-500 group-hover:scale-110 transition-transform duration-500">
-              <MessageSquareWarning className="h-6 w-6" />
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {metrics.map(({ label, value, detail, icon: Icon, color }) => (
+          <Card key={label} className="overflow-hidden border-neutral-200/80 bg-white/90 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-900/90">
+            <CardContent className="flex items-start gap-4 p-5">
+              <div className={`rounded-2xl p-3 ${toneClasses[color]}`}>
+                <Icon className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-neutral-500 dark:text-neutral-400">{label}</p>
+                <p className="mt-1 text-3xl font-bold tracking-tight text-neutral-950 dark:text-white">{value}</p>
+                <p className="mt-1 truncate text-xs text-neutral-500">{detail}</p>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[1.35fr_1fr]">
+        <Card className="border-neutral-200/80 dark:border-neutral-800">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-lg"><MessageCircleMore className="h-5 w-5 text-rose-500" />Fila prioritária</CardTitle>
+              <CardDescription>Conversas que precisam de atenção agora.</CardDescription>
             </div>
-            <CardDescription className="font-medium text-neutral-500">Conversas Urgentes</CardDescription>
-            <CardTitle className="text-5xl font-light tracking-tighter mt-1">{urgentChats}</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/atendimento")}>Abrir fila <ArrowRight className="ml-1 h-4 w-4" /></Button>
           </CardHeader>
-          <CardContent>
-            <div className="mt-4 flex items-center justify-between">
-              <Badge variant={urgentChats > 0 ? "destructive" : "secondary"} className="rounded-full px-3 py-1 font-medium shadow-sm">
-                {urgentChats > 0 ? "Ação Requerida" : "Tudo Estável"}
-              </Badge>
-              <Button variant="ghost" size="sm" className="rounded-full group/btn text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-500/10" onClick={() => navigate("/atendimento")}>
-                Ver Atendimento
-                <ArrowRight className="h-4 w-4 ml-1 group-hover/btn:translate-x-1 transition-transform" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        
-        {/* Pix Card */}
-        <Card className="relative overflow-hidden group hover:shadow-xl transition-all duration-500 border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-neutral-900/60 backdrop-blur-xl">
-          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-          <CardHeader className="pb-2">
-            <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center mb-4 text-emerald-500 group-hover:scale-110 transition-transform duration-500">
-              <CreditCard className="h-6 w-6" />
-            </div>
-            <CardDescription className="font-medium text-neutral-500">Pix Pagos Hoje</CardDescription>
-            <CardTitle className="text-5xl font-light tracking-tighter mt-1">{systemHealth?.metrics?.pix?.paidToday || 0}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="mt-4 flex items-center justify-between">
-              <Badge variant="outline" className="rounded-full px-3 py-1 font-medium shadow-sm bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20">
-                Gerados hoje: {systemHealth?.metrics?.pix?.generatedToday || 0}
-              </Badge>
-              <Button variant="ghost" size="sm" className="rounded-full group/btn text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10" onClick={() => navigate("/configuracoes")}>
-                Planos
-                <ArrowRight className="h-4 w-4 ml-1 group-hover/btn:translate-x-1 transition-transform" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Shortcuts Card */}
-        <Card className="relative overflow-hidden group hover:shadow-xl transition-all duration-500 border-neutral-200/50 dark:border-neutral-800/50 bg-white/60 dark:bg-neutral-900/60 backdrop-blur-xl lg:col-span-2">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-          <CardHeader>
-            <div className="w-12 h-12 rounded-2xl bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center mb-4 text-blue-500 group-hover:scale-110 transition-transform duration-500">
-              <Zap className="h-6 w-6" />
-            </div>
-            <CardTitle className="text-xl">Acesso Rápido</CardTitle>
-            <CardDescription>Pule direto para as funcionalidades principais.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div 
-              onClick={() => navigate("/atendimento")}
-              className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 hover:border-blue-300 dark:hover:border-blue-700/50 hover:bg-blue-50/50 dark:hover:bg-blue-900/20 cursor-pointer transition-all group/card flex items-center gap-4"
-            >
-              <div className="p-3 rounded-xl bg-white dark:bg-neutral-900 shadow-sm text-blue-500 group-hover/card:scale-110 transition-transform">
-                <MessageSquareWarning className="h-5 w-5" />
+          <CardContent className="space-y-2">
+            {urgentChats.length === 0 ? (
+              <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                <CheckCircle2 className="h-5 w-5" /> Nenhuma conversa urgente neste momento.
               </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-neutral-900 dark:text-neutral-100 group-hover/card:text-blue-600 dark:group-hover/card:text-blue-400 transition-colors">Atendimento</h3>
-                <p className="text-sm text-neutral-500">Gerenciar conversas</p>
-              </div>
-            </div>
-            
-            <div 
-              onClick={() => navigate("/configuracoes")}
-              className="p-4 rounded-2xl border border-neutral-200 dark:border-neutral-800 hover:border-indigo-300 dark:hover:border-indigo-700/50 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20 cursor-pointer transition-all group/card flex items-center gap-4"
-            >
-              <div className="p-3 rounded-xl bg-white dark:bg-neutral-900 shadow-sm text-indigo-500 group-hover/card:scale-110 transition-transform">
-                <Settings className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-neutral-900 dark:text-neutral-100 group-hover/card:text-indigo-600 dark:group-hover/card:text-indigo-400 transition-colors">Configurações</h3>
-                <p className="text-sm text-neutral-500">Ajustes do sistema</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* System Health Section */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-2 px-1">
-          <Server className="h-5 w-5 text-neutral-500" />
-          <h2 className="text-lg font-semibold text-neutral-800 dark:text-neutral-200">Saúde do Sistema</h2>
-        </div>
-        
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {!systemHealth?.components ? (
-            <div className="col-span-full p-8 text-center rounded-3xl border border-dashed border-neutral-300 dark:border-neutral-800 text-neutral-500">
-              <ShieldCheck className="h-8 w-8 mx-auto mb-3 opacity-50" />
-              <p>Diagnóstico indisponível no momento.</p>
-            </div>
-          ) : (
-            Object.entries(systemHealth.components).slice(0, 8).map(([key, component]) => {
-              const isError = component?.status === "critical";
-              const isWarning = component?.status === "degraded";
-              
-              return (
-                <div 
-                  key={`health-${key}`} 
-                  className={`relative overflow-hidden rounded-2xl border p-5 transition-all hover:-translate-y-1 hover:shadow-lg
-                    ${isError ? 'bg-rose-50/80 border-rose-200 dark:bg-rose-950/30 dark:border-rose-900/50' : 
-                      isWarning ? 'bg-amber-50/80 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900/50' : 
-                      'bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800'}`}
-                >
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-neutral-900 dark:text-neutral-100 truncate">{key}</p>
-                    </div>
-                    <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 mt-1.5 animate-pulse
-                      ${isError ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 
-                        isWarning ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]' : 
-                        'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]'}`} 
-                    />
-                  </div>
-                  <p className="text-sm text-neutral-500 dark:text-neutral-400 line-clamp-2">
-                    {String(component?.message || "Operando normalmente")}
-                  </p>
+            ) : urgentChats.slice(0, 5).map((chat) => (
+              <button key={chat.id} onClick={() => navigate("/atendimento")} className="flex w-full items-center gap-3 rounded-2xl border border-neutral-200 p-3 text-left transition hover:border-rose-200 hover:bg-rose-50/60 dark:border-neutral-800 dark:hover:border-rose-900 dark:hover:bg-rose-950/20">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-100 font-semibold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
+                  {(chat.name || "?").slice(0, 1).toUpperCase()}
                 </div>
-              );
-            })
-          )}
-        </div>
-      </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-semibold">{chat.name || chat.id}</p>
+                    {number(chat.unreadCount) > 0 && <Badge variant="destructive">{number(chat.unreadCount)}</Badge>}
+                  </div>
+                  <p className="truncate text-xs text-neutral-500">{chat.lastMessage || "Aguardando atendimento"}</p>
+                </div>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className="border-neutral-200/80 dark:border-neutral-800">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg"><Server className="h-5 w-5 text-indigo-500" />Saúde do sistema</CardTitle>
+            <CardDescription>Estado dos serviços que mantêm a operação funcionando.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className={`flex items-center justify-between rounded-2xl p-4 ${healthStatus === "ok" ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300" : healthStatus === "critical" ? "bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300" : "bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300"}`}>
+              <div className="flex items-center gap-2 font-semibold">
+                {healthStatus === "ok" ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
+                {healthLabel}
+              </div>
+              <Badge variant="outline" className="border-current">{healthStatus}</Badge>
+            </div>
+            <div className="space-y-2">
+              {Object.entries(systemHealth?.components || {}).slice(0, 6).map(([key, component]) => (
+                <div key={key} className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 px-3 py-2.5 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium capitalize">{key.replace(/[_-]/g, " ")}</p>
+                    <p className="truncate text-xs text-neutral-500">{String(component?.message || "Operando normalmente")}</p>
+                  </div>
+                  <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${component?.status === "critical" ? "bg-rose-500" : component?.status === "degraded" ? "bg-amber-500" : "bg-emerald-500"}`} />
+                </div>
+              ))}
+              {!systemHealth?.components && (
+                <div className="flex items-center gap-2 rounded-xl border border-dashed p-4 text-sm text-neutral-500"><Clock3 className="h-4 w-4" />Diagnóstico ainda não carregado.</div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </section>
     </div>
   );
 }

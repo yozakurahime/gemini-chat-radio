@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { resolveAppPaths } = require('./app_paths');
 const { buildAvailabilityContext } = require('./modality_availability_runtime');
+const { CONTEXT_MISSING_HANDOFF_MARKER } = require('./customer_automation_runtime');
 
 const API_KEY = process.env.HIMEFIT_PROVIDER_AI_KEY || process.env.GEMINI_API_KEY;
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || '').trim();
@@ -896,6 +897,7 @@ async function gerarRespostaIA(pergunta, historico = [], extraContext = null) {
             `# REGRA DE DATA\nQuando mencionar "hoje", use EXATAMENTE o dia da semana oficial acima. Nunca invente outro dia da semana para hoje.`,
             `# REGRA DE FERIADO\nSe hoje for feriado, nao assuma horario regular. Use horario de feriado somente se estiver explicito na base de conhecimento. Se nao houver horario de feriado explicito, informe que o horario pode ser especial e ofereca confirmacao com atendente humano.`,
             `# REGRA DE IDENTIFICACAO (NOME DO USUARIO)\n1. Se o nome do usuario estiver no "CONTEXTO DO ALUNO (SCA)" (ex: "Aluno SCA: NomeDoAluno") ou se o usuario ja tiver se apresentado/identificado no historico de conversa, voce DEVE usar o nome dele para trata-lo de forma personalizada, amigavel e calorosa (ex: "Ola, [Nome]!", "Como posso te ajudar hoje, [Nome]?").\n2. Se voce ainda nao souber o nome do usuario (nao constar no SCA e ele nao tiver dito no historico), voce deve perguntar educadamente o nome dele de forma acolhedora logo na primeira resposta.`,
+            `# REGRA DE TRANSFERENCIA POR CONTEXTO\n- Nunca solicite transferencia apenas porque nao entendeu uma ou varias mensagens. Nesse caso, faca uma pergunta curta para esclarecer.\n- Quando o usuario pedir uma informacao factual da academia e a resposta confiavel NAO existir no contexto fornecido, responda EXATAMENTE ${CONTEXT_MISSING_HANDOFF_MARKER} e nada mais.\n- Use o marcador somente para informacao ausente. Nao use para saudacoes, conversa geral, orientacoes genericas ou quando basta pedir esclarecimento ao usuario.\n- Para vagas, considere a informacao existente somente quando houver registro vigente da modalidade, turma ou horario exatos perguntados.`,
             playbooksBlock,
             contextoAcademia,
             `# AVISOS DO DIA\n${avisosDoDia || ""}`,

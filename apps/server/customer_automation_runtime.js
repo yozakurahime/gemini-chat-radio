@@ -119,15 +119,15 @@ function updateCustomerAutomationState(conversation, text, now = Date.now()) {
     return { ...classified, facts, memory, salesStage, unknownCount };
 }
 
-function shouldEscalateAutomation(analysis) {
-    if (!analysis) return null;
-    if (['complaint', 'cancellation', 'payment_issue'].includes(analysis.intent)) {
-        return { reason: analysis.intent, priority: 'urgent' };
-    }
-    if (analysis.intent === 'unknown' && Number(analysis.unknownCount || 0) >= 2) {
-        return { reason: 'repeated_unknown', priority: 'urgent' };
-    }
-    return null;
+const CONTEXT_MISSING_HANDOFF_MARKER = '[[HUMAN_HANDOFF_CONTEXT_MISSING]]';
+
+function parseContextAwareAiReply(value) {
+    const raw = String(value || '');
+    const requiresHuman = raw.includes(CONTEXT_MISSING_HANDOFF_MARKER);
+    return {
+        requiresHuman,
+        reply: raw.replaceAll(CONTEXT_MISSING_HANDOFF_MARKER, '').trim()
+    };
 }
 
 function buildAutomationContext(conversation) {
@@ -171,12 +171,13 @@ function buildTrialRequest(conversation, now = Date.now()) {
 }
 
 module.exports = {
+    CONTEXT_MISSING_HANDOFF_MARKER,
     buildAutomationContext,
     buildTrialRequest,
     classifyIntent,
     extractMemoryFacts,
     isGlobalOptIn,
     isGlobalOptOut,
-    shouldEscalateAutomation,
+    parseContextAwareAiReply,
     updateCustomerAutomationState
 };

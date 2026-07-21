@@ -18,7 +18,6 @@ function registerChatAdminRoutes({
     appendHistoryEntry,
     saveChat,
     broadcast,
-    scheduleBotResume,
     chatImageUpload,
     chatStickerUpload,
     saveChatImageBuffer,
@@ -146,7 +145,6 @@ function registerChatAdminRoutes({
                 isPaused: true,
                 timestamp: now
             });
-            scheduleBotResume(contactId);
             return res.json({ ok: true, previewText: text });
         } catch (error) {
             console.error('[chat-text] send error:', error?.message || error);
@@ -164,13 +162,14 @@ function registerChatAdminRoutes({
         const enabled = req.body?.enabled !== false;
         if (enabled) {
             convo.pausedByHuman = false;
+            convo.humanRequested = false;
             if (convo.inactivityTimer) {
                 try { clearTimeout(convo.inactivityTimer); } catch (_) {}
                 convo.inactivityTimer = null;
             }
         } else {
             convo.pausedByHuman = true;
-            scheduleBotResume(contactId);
+            convo.humanRequested = false;
         }
 
         if (convo.pendingHumanHandoff) {
@@ -263,7 +262,6 @@ function registerChatAdminRoutes({
                     kind: 'image',
                     media
                 });
-                scheduleBotResume(contactId);
                 return res.json({ ok: true, media, previewText: marker });
             } catch (error) {
                 if (saved?.fullPath) {
@@ -341,7 +339,6 @@ function registerChatAdminRoutes({
                     kind: 'sticker',
                     media
                 });
-                scheduleBotResume(contactId);
                 return res.json({ ok: true, media, previewText: marker });
             } catch (error) {
                 if (saved?.fullPath) {

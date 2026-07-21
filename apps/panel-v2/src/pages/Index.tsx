@@ -390,11 +390,14 @@ export default function AtendimentoPage() {
                     {selectedChat.slaStatus === "critico" ? <Badge variant="destructive">SLA crítico</Badge> : null}
                     {selectedChat.slaStatus === "atrasando" ? <Badge variant="secondary">SLA atrasando</Badge> : null}
                   </div>
-                  <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/70 px-2.5 py-1.5">
-                    <Bot className="h-3.5 w-3.5 text-primary" />
-                    <span className="hidden text-[11px] font-medium sm:inline">IA ativa</span>
+                  <div className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 ${selectedChat.pausedByHuman ? "border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" : "border-border/60 bg-background/70"}`}>
+                    {selectedChat.pausedByHuman ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5 text-primary" />}
+                    <span className="hidden text-[11px] font-medium sm:inline">
+                      {selectedChat.pausedByHuman ? "Atendimento humano" : "IA ativa"}
+                    </span>
                     <Switch
                       checked={!selectedChat.pausedByHuman}
+                      aria-label={selectedChat.pausedByHuman ? "Reativar IA nesta conversa" : "Pausar IA nesta conversa"}
                       disabled={iaSwitchLoading}
                       onCheckedChange={async (checked) => {
                         setIaSwitchLoading(true);
