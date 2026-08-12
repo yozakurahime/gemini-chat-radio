@@ -84,6 +84,26 @@ describe("ConfiguracoesPage guided IA context profile", () => {
           },
         });
       }
+      if (url === "/admin/knowledge/availability/sync") {
+        return jsonResponse({
+          ok: true,
+          availability: {
+            entries: [{
+              id: "sheet-natacao-baby-09-00",
+              modality: "Natacao Baby",
+              className: "Natacao Baby",
+              schedule: "09:00",
+              status: "available",
+              availableSpots: 3,
+              capacity: 5,
+              active: true,
+              validUntil: Date.now() + 1800000,
+            }],
+            updatedAt: Date.now(),
+            updatedBy: "admin",
+          },
+        });
+      }
       if (url === "/admin/knowledge/profile/save") {
         const body = JSON.parse(String(options?.body || "{}"));
         return jsonResponse({
@@ -167,5 +187,21 @@ describe("ConfiguracoesPage guided IA context profile", () => {
       schedule: "Ter/Qui às 16:00",
       availableSpots: 1,
     }));
+  });
+
+  it("syncs modality availability from the published sheet", async () => {
+    render(<ConfiguracoesPage />);
+
+    const availabilityTab = await screen.findByRole("tab", { name: /Vagas/i });
+    fireEvent.mouseDown(availabilityTab, { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("button", { name: /Sincronizar planilha/i }));
+
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        "/admin/knowledge/availability/sync",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Natacao Baby")).toBeInTheDocument();
   });
 });

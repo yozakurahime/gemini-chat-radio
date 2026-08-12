@@ -7,7 +7,8 @@ const {
 } = require('../knowledge_context_profile');
 const {
     normalizeAvailabilityEntry,
-    normalizeAvailabilityPayload
+    normalizeAvailabilityPayload,
+    parseAvailabilityCsv
 } = require('../modality_availability_runtime');
 
 function registerKnowledgeAdminRoutes({
@@ -24,7 +25,11 @@ function registerKnowledgeAdminRoutes({
     getAIContextSnapshot,
     setBaseContext,
     syncAttendanceClassTemplatesFromContext,
-    broadcast
+    broadcast,
+    availabilitySheetCsvUrl = '',
+    availabilitySheetSyncIntervalMs = 0,
+    availabilitySheetValidForMs = 0,
+    fetchFn = globalThis.fetch
 }) {
     const contextProfileFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'context_profile.json');
     const playbooksFile = path.join(knowledgeDir || path.dirname(baseContextFile), 'ai_playbooks.json');
@@ -52,6 +57,52 @@ function registerKnowledgeAdminRoutes({
     function writeAvailability(payload) {
         fs.mkdirSync(path.dirname(availabilityFile), { recursive: true });
         fs.writeFileSync(availabilityFile, JSON.stringify(payload, null, 2), 'utf-8');
+    }
+
+    function broadcastAvailability(payload) {
+        try {
+            broadcast({
+                type: 'modality_availability_updated',
+                availability: payload,
+                updated_at: payload.updatedAt,
+                updated_by: payload.updatedBy
+            });
+        } catch (_) {}
+    }
+
+    async function syncAvailabilityFromSheet({ actor = 'sheet-sync' } = {}) {
+        const url = String(availabilitySheetCsvUrl || '').trim();
+        if (!url) {
+            const error = new Error('sheet_url_missing');
+            error.code = 'sheet_url_missing';
+            throw error;
+        }
+        if (typeof fetchFn !== 'function') {
+            const error = new Error('fetch_unavailable');
+            error.code = 'fetch_unavailable';
+            throw error;
+        }
+        const response = await fetchFn(url, { signal: AbortSignal.timeout(20000) });
+        if (!response || !response.ok) {
+            const error = new Error(`sheet_fetch_failed:${response?.status || 0}`);
+            error.code = 'sheet_fetch_failed';
+            error.status = response?.status || 0;
+            throw error;
+        }
+        const csvText = await response.text();
+        const payload = parseAvailabilityCsv(csvText, {
+            actor,
+            now: Date.now(),
+            validForMs: availabilitySheetValidForMs || undefined
+        });
+        if (!payload.entries.length) {
+            const error = new Error('sheet_empty');
+            error.code = 'sheet_empty';
+            throw error;
+        }
+        writeAvailability(payload);
+        broadcastAvailability(payload);
+        return payload;
     }
 
     function defaultPlaybooks() {
@@ -176,19 +227,33 @@ function registerKnowledgeAdminRoutes({
         });
         try {
             writeAvailability(payload);
-            try {
-                broadcast({
-                    type: 'modality_availability_updated',
-                    availability: payload,
-                    updated_at: payload.updatedAt,
-                    updated_by: payload.updatedBy
-                });
-            } catch (_) {}
+            broadcastAvailability(payload);
             return res.json({ ok: true, availability: payload });
         } catch (_) {
             return res.status(500).json({ error: 'write_failed' });
         }
     });
+
+    app.post('/admin/knowledge/availability/sync', async (req, res) => {
+        const user = requireAdmin(req, res); if (!user) return;
+        try {
+            const availability = await syncAvailabilityFromSheet({ actor: user.username || 'admin' });
+            return res.json({ ok: true, availability });
+        } catch (error) {
+            const code = error?.code || 'sheet_sync_failed';
+            const status = code === 'sheet_url_missing' ? 400 : 502;
+            return res.status(status).json({ error: code, status: error?.status || 0 });
+        }
+    });
+
+    const intervalMs = Number(availabilitySheetSyncIntervalMs || 0);
+    if (String(availabilitySheetCsvUrl || '').trim() && Number.isFinite(intervalMs) && intervalMs > 0) {
+        setInterval(() => {
+            syncAvailabilityFromSheet({ actor: 'sheet-sync' }).catch((error) => {
+                console.error('[knowledge] availability sheet sync error:', error?.message || error);
+            });
+        }, intervalMs).unref?.();
+    }
 
     app.post('/admin/knowledge/playbooks/save', (req, res) => {
         const user = requireAdmin(req, res); if (!user) return;

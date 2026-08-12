@@ -1,4 +1,5 @@
 const ALLOWED_STATUSES = new Set(['available', 'full', 'waitlist', 'unavailable']);
+const DEFAULT_SHEET_VALIDITY_MS = 6 * 60 * 60 * 1000;
 
 function cleanText(value, maxLength) {
     return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
@@ -59,6 +60,112 @@ function normalizeAvailabilityPayload(raw, { actor = 'system', now = Date.now() 
     };
 }
 
+function parseCsvRows(csvText) {
+    const text = String(csvText || '').replace(/^\uFEFF/, '');
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        const next = text[i + 1];
+        if (inQuotes) {
+            if (ch === '"' && next === '"') {
+                cell += '"';
+                i += 1;
+            } else if (ch === '"') {
+                inQuotes = false;
+            } else {
+                cell += ch;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inQuotes = true;
+        } else if (ch === ',') {
+            row.push(cell);
+            cell = '';
+        } else if (ch === '\n') {
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = '';
+        } else if (ch !== '\r') {
+            cell += ch;
+        }
+    }
+    row.push(cell);
+    rows.push(row);
+    return rows
+        .map((cells) => cells.map((value) => cleanText(value, 200)))
+        .filter((cells) => cells.some(Boolean));
+}
+
+function parsePositiveInteger(value) {
+    const normalized = String(value ?? '').replace(/[^\d-]/g, '');
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : null;
+}
+
+function normalizeSheetHeader(value) {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function resolveSummaryHeaderIndexes(headerRow) {
+    const normalized = headerRow.map(normalizeSheetHeader);
+    return {
+        classIndex: normalized.findIndex((value) => value === 'turma' || value === 'modalidade'),
+        scheduleIndex: normalized.findIndex((value) => value === 'horario' || value === 'hora'),
+        capacityIndex: normalized.findIndex((value) => value.includes('vagas totais') || value === 'capacidade'),
+        occupiedIndex: normalized.findIndex((value) => value.includes('matriculados') || value.includes('ocupadas')),
+        availableIndex: normalized.findIndex((value) => value.includes('vagas disponiveis') || value.includes('disponiveis'))
+    };
+}
+
+function parseAvailabilityCsv(csvText, { now = Date.now(), validForMs = DEFAULT_SHEET_VALIDITY_MS, actor = 'sheet-sync' } = {}) {
+    const rows = parseCsvRows(csvText);
+    const headerIndex = rows.findIndex((row) => {
+        const indexes = resolveSummaryHeaderIndexes(row);
+        return indexes.classIndex >= 0 && indexes.scheduleIndex >= 0 && indexes.availableIndex >= 0;
+    });
+    if (headerIndex < 0) {
+        return normalizeAvailabilityPayload({ entries: [] }, { actor, now });
+    }
+    const indexes = resolveSummaryHeaderIndexes(rows[headerIndex]);
+    const validUntil = now + Math.max(5 * 60 * 1000, Number(validForMs || DEFAULT_SHEET_VALIDITY_MS));
+    const entries = [];
+    for (let i = headerIndex + 1; i < rows.length; i += 1) {
+        const row = rows[i];
+        const modality = cleanText(row[indexes.classIndex], 80);
+        const schedule = cleanText(row[indexes.scheduleIndex], 120);
+        if (!modality || normalizeSheetHeader(modality) === 'vaga') break;
+        if (!schedule && !row.some(Boolean)) break;
+        const availableSpots = parsePositiveInteger(row[indexes.availableIndex]);
+        const capacity = indexes.capacityIndex >= 0 ? parsePositiveInteger(row[indexes.capacityIndex]) : null;
+        const occupied = indexes.occupiedIndex >= 0 ? parsePositiveInteger(row[indexes.occupiedIndex]) : null;
+        if (availableSpots === null && capacity === null) continue;
+        entries.push({
+            id: `sheet-${normalizeSheetHeader(`${modality}-${schedule}`).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || i}`,
+            modality,
+            className: modality,
+            schedule,
+            status: availableSpots === 0 ? 'full' : 'available',
+            availableSpots,
+            capacity,
+            note: occupied !== null ? `${occupied} alunos matriculados` : '',
+            active: true,
+            validUntil
+        });
+    }
+    return normalizeAvailabilityPayload({ entries }, { actor, now });
+}
+
 function formatDateTime(timestamp, timezone = 'America/Sao_Paulo') {
     if (!timestamp) return '';
     try {
@@ -111,7 +218,10 @@ function buildAvailabilityContext(raw, { now = Date.now(), timezone = 'America/S
 
 module.exports = {
     ALLOWED_STATUSES,
+    DEFAULT_SHEET_VALIDITY_MS,
     normalizeAvailabilityEntry,
     normalizeAvailabilityPayload,
+    parseCsvRows,
+    parseAvailabilityCsv,
     buildAvailabilityContext
 };

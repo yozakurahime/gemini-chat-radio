@@ -345,6 +345,16 @@ const envNum = (raw, fallback) => {
     const n = Number(raw);
     return Number.isFinite(n) ? n : fallback;
 };
+const DEFAULT_AVAILABILITY_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRWVKlqvbwWbLl5ViJm5sY8oiD1Oz6cd53eRar6weNteNOXQTyKD0w9i6ujdhAv3TBi7mNWBq-mVW0t/pub?output=csv';
+const AVAILABILITY_SHEET_CSV_URL = String(process.env.HIMEFIT_AVAILABILITY_SHEET_CSV_URL || DEFAULT_AVAILABILITY_SHEET_CSV_URL).trim();
+const AVAILABILITY_SHEET_SYNC_INTERVAL_MS = Math.max(
+    0,
+    Math.floor(envNum(process.env.HIMEFIT_AVAILABILITY_SHEET_SYNC_INTERVAL_MIN, 10) * 60 * 1000)
+);
+const AVAILABILITY_SHEET_VALID_FOR_MS = Math.max(
+    5 * 60 * 1000,
+    Math.floor(envNum(process.env.HIMEFIT_AVAILABILITY_SHEET_VALID_FOR_MIN, 30) * 60 * 1000)
+);
 const PIX_DAILY_IMPORT_MAX_BYTES = Math.max(
     1 * 1024 * 1024,
     Math.floor(envNum(process.env.PIX_DAILY_IMPORT_MAX_MB, 20) * 1024 * 1024)
@@ -9313,7 +9323,10 @@ registerKnowledgeAdminRoutes({
     getAIContextSnapshot,
     setBaseContext: (nextValue) => { baseContextCache = nextValue; },
     syncAttendanceClassTemplatesFromContext,
-    broadcast
+    broadcast,
+    availabilitySheetCsvUrl: AVAILABILITY_SHEET_CSV_URL,
+    availabilitySheetSyncIntervalMs: AVAILABILITY_SHEET_SYNC_INTERVAL_MS,
+    availabilitySheetValidForMs: AVAILABILITY_SHEET_VALID_FOR_MS
 });
 
 // --- WEBSOCKET ---

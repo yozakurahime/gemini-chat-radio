@@ -328,6 +328,7 @@ export default function ConfiguracoesPage() {
   const [availabilityUpdatedBy, setAvailabilityUpdatedBy] = useState("");
   const [loadingAvailability, setLoadingAvailability] = useState(false);
   const [savingAvailability, setSavingAvailability] = useState(false);
+  const [syncingAvailability, setSyncingAvailability] = useState(false);
 
   const [gymLat, setGymLat] = useState("-23.5505");
   const [gymLng, setGymLng] = useState("-46.6333");
@@ -465,6 +466,29 @@ export default function ConfiguracoesPage() {
       toast.error("Falha ao salvar as vagas.");
     } finally {
       setSavingAvailability(false);
+    }
+  };
+
+  const syncAvailabilityFromSheet = async () => {
+    if (!isAdmin || syncingAvailability) return;
+    setSyncingAvailability(true);
+    try {
+      const res = await apiFetch("/admin/knowledge/availability/sync", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(String(data?.error || "sync_failed"));
+      const availability = data.availability || {};
+      setAvailabilityEntries(Array.isArray(availability.entries) ? availability.entries : []);
+      setAvailabilityUpdatedAt(Number(availability.updatedAt || 0));
+      setAvailabilityUpdatedBy(String(availability.updatedBy || ""));
+      toast.success("Vagas sincronizadas com a planilha.");
+    } catch {
+      toast.error("Falha ao sincronizar a planilha de vagas.");
+    } finally {
+      setSyncingAvailability(false);
     }
   };
 
@@ -1390,14 +1414,19 @@ export default function ConfiguracoesPage() {
               </div>
 
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="text-sm font-semibold">Registros cadastrados</p>
                     <p className="text-xs text-muted-foreground">{availabilityEntries.length} {availabilityEntries.length === 1 ? "registro" : "registros"}</p>
                   </div>
-                  <Button className="gap-2" onClick={saveAvailability} disabled={!isAdmin || savingAvailability || loadingAvailability}>
-                    <Save className="h-4 w-4" /> {savingAvailability ? "Salvando..." : "Salvar vagas para a IA"}
-                  </Button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Button variant="outline" className="gap-2" onClick={syncAvailabilityFromSheet} disabled={!isAdmin || syncingAvailability || loadingAvailability}>
+                      <RotateCcw className="h-4 w-4" /> {syncingAvailability ? "Sincronizando..." : "Sincronizar planilha"}
+                    </Button>
+                    <Button className="gap-2" onClick={saveAvailability} disabled={!isAdmin || savingAvailability || loadingAvailability || syncingAvailability}>
+                      <Save className="h-4 w-4" /> {savingAvailability ? "Salvando..." : "Salvar vagas para a IA"}
+                    </Button>
+                  </div>
                 </div>
 
                 {loadingAvailability ? (
