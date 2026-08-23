@@ -155,8 +155,11 @@ function registerSystemAdminRoutes({
         if (!connected && (getStartingSock() || getReconnectTimer())) status = 'connecting';
         if (!connected && lastQrRaw) status = 'qr_ready';
         if (!connected && lastPairingCode) status = 'pairing_code_ready';
-        if (!connected && !lastQrRaw && !lastPairingCode && (lastErrorCode === 401 || lastErrorCode === 405 || lastError === 'loggedOut')) {
+        if (!connected && !lastQrRaw && !lastPairingCode && (lastErrorCode === 401 || lastError === 'loggedOut')) {
             status = 'relogin_required';
+        }
+        if (!connected && !lastQrRaw && !lastPairingCode && lastErrorCode === 405) {
+            status = 'client_update_required';
         }
         const qrUrl = lastQrRaw
             ? `https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=${encodeURIComponent(lastQrRaw)}`

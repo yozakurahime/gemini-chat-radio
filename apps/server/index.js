@@ -61,6 +61,10 @@ const {
     parseContextAwareAiReply,
     updateCustomerAutomationState
 } = require('./customer_automation_runtime');
+const {
+    resolveWhatsappVersion,
+    shouldResetWhatsappAuth
+} = require('./baileys_connection_runtime');
 
 // IMPORTACOES BAILEYS (CJS + ESM compat)
 let makeWASocket = null;
@@ -68,6 +72,7 @@ let useMultiFileAuthState = null;
 let downloadMediaMessage = null;
 let DisconnectReason = null;
 let fetchLatestBaileysVersion = null;
+let fetchLatestWaWebVersion = null;
 let generateWAMessageFromContent = null;
 
 async function ensureBaileysLoaded() {
@@ -89,6 +94,7 @@ async function ensureBaileysLoaded() {
     downloadMediaMessage = loaded?.downloadMediaMessage;
     DisconnectReason = loaded?.DisconnectReason;
     fetchLatestBaileysVersion = loaded?.fetchLatestBaileysVersion;
+    fetchLatestWaWebVersion = loaded?.fetchLatestWaWebVersion;
     generateWAMessageFromContent = loaded?.generateWAMessageFromContent || null;
 
     if (!makeWASocket || !useMultiFileAuthState || !downloadMediaMessage || !DisconnectReason || !fetchLatestBaileysVersion) {
@@ -9636,15 +9642,25 @@ async function startBot() {
     whatsappLastErrorCode = 0;
     await ensureBaileysLoaded();
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_SESSION_DIR);
-    let waVersion;
-    try {
-        const latest = await fetchLatestBaileysVersion();
-        waVersion = latest?.version;
-        if (Array.isArray(waVersion)) console.log(`[baileys] usando versao WA ${waVersion.join('.')}`);
-    } catch (e) {
-        console.log('[baileys] nao foi possivel obter versao WA mais recente, usando fallback');
+    const resolvedWaVersion = await resolveWhatsappVersion({
+        fetchLatestWaWebVersion,
+        fetchLatestBaileysVersion
+    });
+    const socketOptions = {
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: ['HimeFit', 'Chrome', '10.0'],
+        connectTimeoutMs: 60000,
+        syncFullHistory: false
+    };
+    if (Array.isArray(resolvedWaVersion.version)) {
+        socketOptions.version = resolvedWaVersion.version;
+        console.log(`[baileys] usando versao WA ${resolvedWaVersion.version.join('.')} source=${resolvedWaVersion.source}`);
+    } else {
+        console.log('[baileys] fontes de versao indisponiveis; usando padrao interno da biblioteca');
     }
-    const currentSock = instrumentSocketOutboundTracking(makeWASocket({ logger: pino({ level: 'silent' }), printQRInTerminal: false, auth: state, browser: ['HimeFit', 'Chrome', '10.0'], connectTimeoutMs: 60000, syncFullHistory: false, version: waVersion }));
+    const currentSock = instrumentSocketOutboundTracking(makeWASocket(socketOptions));
     sock = currentSock;
     
     if (!server.listening) server.listen(PORT, () => {
@@ -9707,7 +9723,7 @@ async function startBot() {
             whatsappLastErrorCode = Number(statusCode || 0);
             whatsappLastError = reasonName || 'connection_closed';
             console.log(`[baileys] conexao fechada. code=${statusCode} reason=${reasonName}`);
-            const needsRelogin = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 405;
+            const needsRelogin = shouldResetWhatsappAuth(statusCode, DisconnectReason);
             if (needsRelogin) {
                 console.log('[baileys] sessao invalida/deslogada. Refaça o pareamento (QR).');
                 if (resetWhatsappAuthSession()) {
@@ -9716,6 +9732,8 @@ async function startBot() {
                     lastPairingCode = '';
                     lastPairingAt = 0;
                 }
+            } else if (statusCode === 405) {
+                console.log('[baileys] cliente desatualizado; sessao preservada e versao sera consultada novamente.');
             }
             scheduleReconnect();
         }

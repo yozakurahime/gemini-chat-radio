@@ -12,7 +12,14 @@ type WhatsAppStatus = {
   phone?: string;
   phone_number?: string;
   last_error?: string;
+  lastError?: string;
+  lastErrorCode?: number;
   pairing_code?: string;
+  pairing?: {
+    available?: boolean;
+    code?: string;
+    updated_at?: number;
+  };
   qr?: {
     available?: boolean;
     qr?: string;
@@ -47,7 +54,8 @@ export default function WhatsAppConnect() {
   const qrUrl = status?.qr?.qr_url || "";
   const phone = status?.phone_number || status?.phone || "";
   const state = status?.connected ? "connected" : status?.qr?.available ? "qr_ready" : status?.status || "disconnected";
-  const pairingCode = status?.pairing_code || "";
+  const pairingCode = status?.pairing?.code || status?.pairing_code || "";
+  const lastError = status?.lastError || status?.last_error || "";
 
   const copyQr = () => {
     const value = status?.qr?.qr || pairingCode || "";
@@ -62,6 +70,9 @@ export default function WhatsAppConnect() {
     connected: { label: "Conectado", color: "bg-green-500", icon: <Wifi className="h-4 w-4" /> },
     qr_ready: { label: "QR Code pronto", color: "bg-yellow-500", icon: <QrCode className="h-4 w-4" /> },
     connecting: { label: "Conectando", color: "bg-blue-500", icon: <RefreshCw className="h-4 w-4 animate-spin" /> },
+    pairing_code_ready: { label: "Código pronto", color: "bg-yellow-500", icon: <Smartphone className="h-4 w-4" /> },
+    relogin_required: { label: "Reconectar", color: "bg-orange-500", icon: <QrCode className="h-4 w-4" /> },
+    client_update_required: { label: "Atualização necessária", color: "bg-orange-500", icon: <RefreshCw className="h-4 w-4" /> },
     disconnected: { label: "Desconectado", color: "bg-muted-foreground", icon: <WifiOff className="h-4 w-4" /> },
     offline: { label: "Sem resposta", color: "bg-destructive", icon: <WifiOff className="h-4 w-4" /> },
   };
@@ -126,10 +137,14 @@ export default function WhatsAppConnect() {
           <div className="text-center space-y-3 py-4">
             <WifiOff className="h-12 w-12 mx-auto text-muted-foreground/30" />
             <p className="text-sm text-muted-foreground">
-              WhatsApp ainda nao conectado. O QR aparece aqui quando o Baileys local gera uma nova sessao.
+              {state === "client_update_required"
+                ? "A versão do conector precisa ser atualizada. A sessão foi preservada e a conexão será retomada depois da atualização."
+                : state === "relogin_required"
+                  ? "A sessão do WhatsApp foi encerrada. Aguarde o novo QR Code para conectar novamente."
+                  : "WhatsApp ainda não conectado. O QR aparece aqui quando o Baileys local gera uma nova sessão."}
             </p>
-            {status?.last_error ? (
-              <p className="text-xs text-destructive">Ultimo erro: {status.last_error}</p>
+            {lastError ? (
+              <p className="text-xs text-destructive">Último erro: {lastError}</p>
             ) : null}
           </div>
         ) : null}

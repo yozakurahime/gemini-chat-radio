@@ -32,7 +32,7 @@ jobs:
         run: npm --prefix apps/panel-v2 run test
 
       - name: Run server tests
-        run: node --test apps/server/tests/security.test.js apps/server/tests/admin_flows.test.js
+        run: npm --prefix apps/server run test
 
       - name: Build panel
         run: npm --prefix apps/panel-v2 run build

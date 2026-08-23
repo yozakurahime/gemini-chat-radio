@@ -16,7 +16,7 @@
     "landing:dev": "tools\\bin\\npm.cmd --prefix apps\\landing run dev",
     "landing:build": "tools\\bin\\npm.cmd --prefix apps\\landing run build",
     "server:start": "tools\\bin\\node.cmd apps\\server\\index.js",
-    "server:test": "tools\\bin\\node.cmd --test apps\\server\\tests\\security.test.js apps\\server\\tests\\admin_flows.test.js apps\\server\\tests\\contact_name_runtime.test.js apps\\server\\tests\\customer_automation_runtime.test.js apps\\server\\tests\\modality_availability_runtime.test.js",
+    "server:test": "tools\\bin\\node.cmd --test apps\\server\\tests\\security.test.js apps\\server\\tests\\admin_flows.test.js apps\\server\\tests\\contact_name_runtime.test.js apps\\server\\tests\\customer_automation_runtime.test.js apps\\server\\tests\\modality_availability_runtime.test.js apps\\server\\tests\\baileys_connection_runtime.test.js",
     "server:health-check": "bash tools/deploy/health-check.sh",
     "server:timezone:set": "bash tools/deploy/set-timezone-brasilia.sh",
     "server:health-check:install-cron": "bash tools/deploy/install-health-check-cron.sh",
